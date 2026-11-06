@@ -120,12 +120,14 @@ def main():
     run_llc(variant(chain, DECL_S), "A3 标量化（%d 元素）" % N, results)
 
     print("=== §4 反方向 <N x float> → <N x bfloat>（写回时用；alloca+store 保活）===")
-    lead = ["  %znv0 = insertelement %s poison, float 0.0, i32 0" % ft]
+    # 注意：必须**继续用 %63 这个名字**——LLVM 文本 IR 要求无名临时量按顺序编号，删掉 %63 的
+    # 定义后面会报 "instruction expected to be numbered"。这是实验脚本的约束，不是后端行为。
+    names = [lhs] + ["%%znv%d" % i for i in range(1, N)]
+    lead = ["  %s = insertelement %s poison, float 0.0, i32 0" % (names[0], ft)]
     for i in range(1, N):
-        lead.append("  %%znv%d = insertelement %s %%znv%d, float 0.0, i32 %d"
-                    % (i, ft, i - 1, i))
-    last = "%%znv%d" % (N - 1)
-    alloca = "  %znsl = alloca %s" % vt
+        lead.append("  %s = insertelement %s %s, float 0.0, i32 %d"
+                    % (names[i], ft, names[i - 1], i))
+    last = names[-1]
     for tag, decl, call in (
         ("B1 @llvm.bi.float2bfloat(<N x float>)",
          "declare %s @llvm.bi.float2bfloat(%s)\n" % (vt, ft),
@@ -134,7 +136,9 @@ def main():
          "declare %s @llvm.bi.float2bfloat.v%dbf16(%s)\n" % (vt, N, ft),
          "  %%zn = call %s @llvm.bi.float2bfloat.v%dbf16(%s %s)" % (vt, N, ft, last)),
     ):
-        body = lead + [alloca, call, "  store %s %%zn, ptr %%znsl" % vt]
+        # 不能用 alloca（内核里是 dynamic_stackalloc，bi 后端 selects 不出来——那会掩盖真正要测的
+        # 指令能不能选）。改成 store 到函数第一个指针参数上，纯为保活。
+        body = lead + [call, "  store %s %%zn, ptr addrspace(1) %%0, align 16" % vt]
         run_llc(variant(body, decl), tag, results)
 
     print("=== §5 结论 ===")

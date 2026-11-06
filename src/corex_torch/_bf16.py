@@ -46,8 +46,18 @@ SCALAR_DECLARATIONS = (
     "declare bfloat @llvm.bi.float2bfloat(float)",
 )
 
+#: 向量形态该走哪条路。
+#:
+#: ``"intrinsic"``：用 ``llvm.bi.bfloat2float.v<N>bf16`` 这类**带后缀的重载**（`probes/194` 实测
+#: llc 认，obj 4992–6568 B）。与厂商语义完全一致（RNE、NaN 都由后端实现），一条指令搞定。
+#: ``"bits"``：整数位运算（`probes/015` 实测也能过）。作为退路保留——万一哪天工具的 intrinsic
+#: 重载没了，改这一个常量即可，不必改内核。
+#:
+#: 早期用「不带后缀的向量 intrinsic」会失败：那与标量同名，llc 报
+#: ``invalid redefinition of function 'llvm.bi.float2bfloat'``（`probes/015` V2）。
+VECTOR_STRATEGY = "intrinsic"
+
 _NAME = r"%[-A-Za-z0-9_.$]+"
-_VEC = r"<(?P<n>\d+) x (?P<elem>(?:b)?float)>"
 
 #: 标量两种方向。
 _SCALAR_WIDEN = re.compile(
@@ -62,8 +72,19 @@ _VEC_NARROW = re.compile(
     rf"(?P<lhs>{_NAME})\s*=\s*fptrunc\s+<(?P<n>\d+) x float>\s+(?P<arg>{_NAME})\s+to\s+<(?P=n) x bfloat>")
 
 
+def _vec_intrinsic(base: str, n: int, src_ty: str, dst_ty: str, arg: str, lhs: str) -> str:
+    """生成一条向量 intrinsic 调用 + 它需要的声明。
+
+    ``base`` 是 ``bfloat2float`` / ``float2bfloat``；mangled 后缀的形状是
+    ``.v<N>bf16``（元素数 + 源/目的共同的 bf16 家族），例如 ``<8 x float> ← <8 x bfloat>``
+    用 ``llvm.bi.bfloat2float.v8bf16``。
+    """
+    name = f"llvm.bi.{base}.v{n}bf16"
+    return f"{lhs} = call {dst_ty} @{name}({src_ty} {arg})"
+
+
 def _vec_const(n: int, value: int) -> str:
-    """造一个显式向量常量。
+    """造一个显式向量常量（``bits`` 策略用）。
 
     不能用 ``splat (i32 16)``：那是 LLVM 20 的写法，厂商 llc 是 16，会报
     ``expected value token``（triton-bridge 在 `probes/190` 里踩过）。
@@ -106,6 +127,8 @@ def rewrite_bf16_conversions(ir: str) -> Tuple[str, int]:
     """
     changed = 0
     fresh = _NameGen(ir)
+    #: 向量 intrinsic 用到的元素数集合，决定要补哪些 declare。
+    vec_widths: set = set()
 
     def _widen_scalar(match: "re.Match[str]") -> str:
         nonlocal changed
@@ -123,6 +146,10 @@ def rewrite_bf16_conversions(ir: str) -> Tuple[str, int]:
         nonlocal changed
         changed += 1
         lhs, arg, n = match.group("lhs"), match.group("arg"), int(match.group("n"))
+        if VECTOR_STRATEGY == "intrinsic":
+            vec_widths.add(n)
+            return _vec_intrinsic("bfloat2float", n, f"<{n} x bfloat>", f"<{n} x float>",
+                                  arg, lhs)
         h, z, s = fresh(), fresh(), fresh()
         # bf16 -> f32 就是「把 16 位搬到高半」：zext 到 i32 再左移 16，按位重解释。
         return (f"{h} = bitcast <{n} x bfloat> {arg} to <{n} x i16>\n"
@@ -134,6 +161,10 @@ def rewrite_bf16_conversions(ir: str) -> Tuple[str, int]:
         nonlocal changed
         changed += 1
         lhs, arg, n = match.group("lhs"), match.group("arg"), int(match.group("n"))
+        if VECTOR_STRATEGY == "intrinsic":
+            vec_widths.add(n)
+            return _vec_intrinsic("float2bfloat", n, f"<{n} x float>", f"<{n} x bfloat>",
+                                  arg, lhs)
         i, lo, lsb, c1, c2, hi, t = (fresh() for _ in range(7))
         # f32 -> bf16：取高 16 位，但先按 RNE 补偿（+0x7FFF+最低位），否则与厂商 intrinsic
         # 在「正好半程」的值上差 1 ulp。
@@ -158,7 +189,11 @@ def rewrite_bf16_conversions(ir: str) -> Tuple[str, int]:
     if not changed:
         return ir, 0
 
-    missing = [decl for decl in SCALAR_DECLARATIONS if decl not in out]
+    declares = list(SCALAR_DECLARATIONS)
+    for n in sorted(vec_widths):
+        declares.append(f"declare <{n} x float> @llvm.bi.bfloat2float.v{n}bf16(<{n} x bfloat>)")
+        declares.append(f"declare <{n} x bfloat> @llvm.bi.float2bfloat.v{n}bf16(<{n} x float>)")
+    missing = [decl for decl in declares if decl not in out]
     if missing:
         out = out.rstrip() + "\n" + "\n".join(missing) + "\n"
     return out, changed

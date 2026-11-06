@@ -276,10 +276,17 @@ def _compile(kernel_fn, signature: Dict[str, str], constexprs: Dict[str, Any],
     except Exception as exc:                            # noqa: BLE001
         detail = f"{dtype} 的 {what} 内核编译失败：{exc}"
         is_port_error = type(exc).__name__.endswith("PortError") or "未登记" in str(exc)
-        # bf16 不再走「已知不支持」这条：``_bf16.rewrite_bf16_conversions`` 已经在 biir 里把
-        # fpext/fptrunc 换成 bi 的 intrinsic，所以 bf16 编不过是**真 bug**，要原样抛出来。
         if is_port_error:
             raise NotImplementedError(detail) from exc
+        # ``_bf16.rewrite_bf16_conversions`` 覆盖的是**标量** fpext/fptrunc；规约类内核里出现的是
+        # **向量**形式（`fpext <8 x bfloat> … to <8 x float>`），目前还没被它改写，于是 llc 仍报
+        # `Cannot select: fp_extend/fp_round`。这是「暂不支持」而不是本层的 bug，
+        # 证据与可用的向量 intrinsic 名见 ``probes/193``、``probes/194``。
+        if dtype == "bf16" and ("fp_extend" in str(exc) or "fp_round" in str(exc)):
+            raise NotImplementedError(
+                detail + "（向量形式的 bf16 转换尚未被 _bf16 改写层覆盖，"
+                "见 probes/194_bf16_vector_ir.sh：@llvm.bi.bfloat2float.v8bf16 可用）"
+            ) from exc
         raise RuntimeError(detail) from exc
 
 

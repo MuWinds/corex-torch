@@ -305,3 +305,24 @@ coffin 的 decode 每 token 六百多次发射（`../../docs/corex_drive/GRAPH-R
 * 多算子串联（两次矩阵乘 + softmax + 再一次矩阵乘）的判据换成**全局相对误差** `max|diff|/max|ref|`：
   逐元素相对误差在「参照值接近 0」的元素上会被放大到 1e-4 量级，看着像错其实是 fp32 累加的正常结果。
   换口径后注意力小块是 **1.62e-07**。
+
+## 19. 更正 §17 的一条否定结论：向量 intrinsic 是支持的，名字要带后缀
+
+§17 里写的「`llvm.bi.*` 不支持向量重载」是**误判**，原因是我试的名字不对。triton-bridge 的
+`probes/194` 用真 biir 逐行改喂 llc 试出了正确形态：
+
+| 写法 | llc |
+| --- | --- |
+| `@llvm.bi.float2bfloat(<8 x float>)`（不带后缀） | `invalid redefinition of function` —— 与标量同名 |
+| **`@llvm.bi.float2bfloat.v8bf16(<8 x float>)`** | **rc=0，obj 4992 B** |
+| **`@llvm.bi.bfloat2float.v8bf16(<8 x bfloat>)`** | **rc=0，obj 6568 B** |
+| 手工标量化（extract → 标量 call → insert） | rc=0（备用方案，指令多） |
+
+也就是 mangled 后缀的形状是 **`.v<N>bf16`**（元素数 + bf16 家族），两个方向都有。
+
+**最终实现**（`_bf16.py`）：标量与向量**都走 intrinsic**，`declare` 按 IR 里实际出现的 N 自动补；
+整数位运算那版留在文件里当退路（`VECTOR_STRATEGY = "bits"` 一个常量切换），因为它是先验过
+逐字节相等的。真机复验（`probes/013`）：**bf16 矩阵乘 4096/4096 逐字节相等**，改写命中 17 处。
+
+教训：**「intrinsic 不支持向量」这种否定结论，必须先确认 mangled 名字写对了再说**。
+`probes/015` 的 V2/W1 两行现在是「名字写错」的案例，保留不改——它还得能重放出那个错误结论。
