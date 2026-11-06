@@ -120,15 +120,10 @@ def _compile_checked(sig: Dict[str, str], cexpr: Dict[str, Any], dtype: str, num
     except Exception as exc:                            # noqa: BLE001
         detail = f"{dtype} 的 mm 内核编译失败：{exc}"
         is_port_error = type(exc).__name__.endswith("PortError") or "未登记" in str(exc)
+        # bf16 是正常支持的 dtype（``_bf16`` 改写层已覆盖标量与向量的 fpext/fptrunc），
+        # 所以 bf16 编不动就是真 bug，原样抛。
         if is_port_error:
             raise NotImplementedError(detail) from exc
-        # 与 `_ops_reduce` 同因：``_bf16`` 改写层只覆盖标量 fpext/fptrunc，矩阵乘里是向量形式
-        # （`fpext <8 x bfloat> … to <8 x float>` / 反方向），llc 仍报 fp_extend/fp_round。
-        if dtype == "bf16" and ("fp_extend" in str(exc) or "fp_round" in str(exc)):
-            raise NotImplementedError(
-                detail + "（向量形式的 bf16 转换尚未被 _bf16 改写层覆盖，"
-                "见 probes/194_bf16_vector_ir.sh）"
-            ) from exc
         raise RuntimeError(detail) from exc
 
 

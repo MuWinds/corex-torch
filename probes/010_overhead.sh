@@ -68,6 +68,11 @@ def main():
     _ops_matmul.mm(pa, pb, pc, M, N, K, "fp32")
     torch.corex.synchronize()
     print("  内核已编译，缓存：", _ops_matmul.cache_info()["kernels"], "个")
+    # mm 现在由 C++ 的 TORCH_LIBRARY_IMPL 接管：登记成功的话这里应该列出 fp32/fp16（可能还有 bf16）。
+    try:
+        print("  C++ 侧已登记的 mm dtype（ScalarType 编号）：", list(shim.mm_kernel_dtypes()))
+    except Exception as exc:                            # noqa: BLE001
+        print("  mm_kernel_dtypes 不可用（旧 shim？）：", type(exc).__name__, exc)
 
     print("=== A. 只有内核 + 启动（不经 aten，指针现成）===")
     per_a = bench("mm 256 直接调 _ops_matmul.mm", lambda: _ops_matmul.mm(pa, pb, pc, M, N, K, "fp32"), 20)

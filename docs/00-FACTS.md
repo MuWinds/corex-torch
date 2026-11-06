@@ -326,3 +326,29 @@ coffin 的 decode 每 token 六百多次发射（`../../docs/corex_drive/GRAPH-R
 
 教训：**「intrinsic 不支持向量」这种否定结论，必须先确认 mangled 名字写对了再说**。
 `probes/015` 的 V2/W1 两行现在是「名字写错」的案例，保留不改——它还得能重放出那个错误结论。
+
+## 20. 判据更正：「llc 编得过」不等于「intrinsic 有实现」——必须 llc + lld 双过
+
+§19 里我把向量 intrinsic 的结论又改了一次，这次是最终定案，教训比结论更值钱。
+
+| 写法 | llc | **lld --no-undefined** |
+| --- | --- | --- |
+| 原样 `fpext <8 x bfloat>` | `Cannot select: f32 = fp_extend` | — |
+| `@llvm.bi.bfloat2float.v8bf16(<8 x bfloat>)` | **rc=0，obj 6568 B** | **`undefined symbol: llvm.bi.bfloat2float.v8bf16`** |
+| 标量化（extract → 标量 call → insert） | rc=0 | **rc=0，elf 6104 B** |
+
+**为什么会被骗**：LLVM 允许目标文件里留未解析的外部调用，`llc` 照样返回 0、照样产出目标文件；
+真正拦住它的是下一步 `lld --no-undefined`（corex-triton 的 `make_cubin` 正好带这个 flag）。
+triton-bridge 的 `probes/194` 只看 llc 就判「向量重载可用」，`probes/195` 补上链接这一步后推翻。
+
+**硬规矩**：凡是要判断「bi 后端支不支持某个 intrinsic / 某条指令」，判据必须是
+`llc -march=bi` **和** `lld --no-undefined` 都过；只看前者会把「parse 进去但没 lowering」
+误判成「支持」。旧探针不改，更正写在新的探针里（`probes/195`）。
+
+**最终实现**（`_bf16.py`，默认策略 `scalar`）：向量转换展开成 `extractelement → 标量 intrinsic →
+insertelement` 链，用**真实现**的标量 intrinsic，语义与厂商一致，且不碰 `trunc nuw` / `splat`
+这两个「手写位运算」的死点。另留两档：`intrinsic`（部分元素数确有实现，我这边 16×16 的 mm 用它
+编过且逐字节相等，但不通用）、`bits`（整数位运算，已验逐字节相等）。切换用
+`_bf16.set_vector_strategy(...)`，内核代码不用改。
+
+真机复验（`probes/013`）：**bf16 矩阵乘 4096/4096 逐字节相等**，编译 + 链接 + 运行 + 数值四项全过。

@@ -118,8 +118,14 @@ def read_f32(ptr, n):
 BAD = ("fpext", "fptrunc", "trunc nuw", "trunc nsw", "splat", "fp_extend", "fp_round")
 
 
-def scan(label, cache, expect_bf16_conversion=True):
-    """扫一个模块的内核缓存：打印每个 bf16 内核的改写命中数与 biir 里的可疑语法计数。"""
+def scan(label, cache):
+    """扫一个模块的内核缓存：改写命中数 + **进 llc 的那份 IR** 里的可疑语法计数。
+
+    注意口径：``kernel.asm['biir']`` 是**改写前**的文本（``make_biir`` 的产物），fpext/fptrunc
+    出现在里面是**正常的**——``_bf16.rewrite_bf16_conversions`` 在 ``make_cubin`` 里才动手。
+    所以要断言的是「**改写后**的文本里一条都不剩」，即这里再跑一遍改写器、看剩下的计数。
+    """
+    from corex_torch import _bf16
     print(f"--- {label}：{len(cache)} 个内核 ---")
     total_conv = 0
     bad_total = 0
@@ -127,18 +133,17 @@ def scan(label, cache, expect_bf16_conversion=True):
         md = kernel.metadata
         counts = getattr(md, "corex_rewrite_counts", None) or {}
         conv = int(counts.get("bf16_conversions", 0) or 0)
-        biir = kernel.asm.get("biir", "")
-        hits = {b: biir.count(b) for b in BAD if biir.count(b)}
+        raw = kernel.asm.get("biir", "")
+        rewritten, hits = _bf16.rewrite_bf16_conversions(raw)
+        left = {b: rewritten.count(b) for b in BAD if rewritten.count(b)}
         total_conv += conv
-        bad_total += sum(hits.values())
-        is_bf16 = "bf16" in str(key)
+        bad_total += sum(left.values())
         flag = ""
-        if is_bf16 and conv == 0 and expect_bf16_conversion and hits == {}:
-            # 要么这个内核根本不需要转换（纯搬运），要么改写没生效——由调用方判断
+        if conv == 0:
             flag = "  ← 无转换（纯搬运/纯 bf16 算术）"
-        print(f"  {str(key):58s} cubin={len(kernel.asm['cubin']):5d} "
-              f"bf16_conversions={conv:2d} 可疑语法={hits or '{}'}{flag}")
-    print(f"  {label} 合计 bf16_conversions={total_conv}，可疑语法命中={bad_total}")
+        print(f"  {str(key):56s} cubin={len(kernel.asm['cubin']):5d} "
+              f"bf16_conversions={conv:2d} 改写后剩余可疑语法={left or '{}'}{flag}")
+    print(f"  {label} 合计 bf16_conversions={total_conv}，改写后可疑语法={bad_total}")
     return total_conv, bad_total
 
 
@@ -237,8 +242,10 @@ def reductions():
         rt.synchronize()
         got = unpack_bf16(from_dev_bf16(prow, rows), rows)
         ma = max(abs(g - d) for g, d in zip(got, dbl))
-        # 我们的输出本身是 bf16，至少有一次输出舍入；限 = 输出舍入 + 一点
-        limit = max(1e-2 * max(1.0, max(abs(d) for d in dbl)) / 256.0, 4 * err_seq) + 1e-6
+        # 输出本身是 bf16（8 位尾数，相对粒度 2^-8），所以下限是「行和量级的一个 bf16 ulp」；
+        # 反面参照是「纯 bf16 累加」：累加器也是 bf16，几千项下来误差到几千分之一以上。
+        ulp = max(4.0 * max(abs(d) for d in dbl) * 2.0 ** -8, 1e-6)
+        limit = max(ulp, 2.0 * err_seq)
         total += 1
         ok += 1 if ma <= limit else 0
         print(f"  sum_last  rows={rows} cols={cols:4d}  max_abs={ma:.3e} 限={limit:.3e}"

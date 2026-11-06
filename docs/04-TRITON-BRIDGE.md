@@ -842,9 +842,126 @@ norm / index：
 | 2 | **矩阵乘 256³ 188.8 GFLOP/s**：是 Triton FMA 基线（105）的 **1.80x**，是厂商 TCU（1577）的 **0.12x** —— 后者是矩阵单元的成绩，接 TCU 之前不可能追上（要落到 `TritonGPU→LLVM` 那层，见 `corex-triton/docs/00-FACTS.md` §13） |
 | 3 | 规约类误差比「朴素顺序 fp32 累加」**小 6.7–8.8 倍**（树形/成对累加更准），max 与 gather 是逐字节精确 |
 | 4 | 三个「上游 IR 比 LLVM 16 新」的坑（§7.2）：`splat` 非零向量常量、`trunc nsw`、@jit 看不到普通全局。前两个建议 corex-triton 在 `rewrite.py` 里补，补完我这边的绕法留着也无害 |
-| 5 | bf16 依旧不可用（`fp_extend`/`fp_round` 都选不出），按契约显式报错 |
+| 5 | bf16 见 §8：bi 后端不认标准 `fpext`/`fptrunc`，只认自己的 intrinsic；改写层接上之后**元素级已 33/33 逐字节相等** |
 
 下一步：① `mma`/TCU 的 lowering（决定矩阵乘能不能从 189 走到四位数）；
 ② 规约类目前是「一行一个程序」，`rows` 很大（比如 10 万行）时并行度够、但每程序只搬 4 KB，
 启动地板会吃掉效率，可以改成「一个程序处理多行」；③ softmax 三遍扫描可换成在线（online）算法
 把读次数压到 1。
+
+---
+
+## 8. bf16 通路（`src/corex_torch/_bf16.py` + 各算子的算术位置）
+
+### 8.1 问题：bi 后端不认标准 LLVM 的转换指令
+
+Triton 生成的 bf16 内核里，bf16↔fp32 的转换是一条**标准 LLVM 指令**：
+
+| 方向 | Triton 发的 IR | 厂商 llc（LLVM 16 + bi 后端）的反应 |
+| --- | --- | --- |
+| 展宽 bf16→f32 | `fpext bfloat %x to float` / `fpext <8 x bfloat> %x to <8 x float>` | `LLVM ERROR: Cannot select: f32 = fp_extend` |
+| 收窄 f32→bf16 | `fptrunc float %x to bfloat` / `<8 x float> → <8 x bfloat>` | `LLVM ERROR: Cannot select: bf16 = fp_round` |
+
+所以问题不在"bf16 算术"，而在**两条转换指令**。bi 后端其实**有**转换指令，只是不叫这两个名字。
+
+### 8.2 解法：在 biir 进 llc 之前把名字换掉（`_bf16.rewrite_bf16_conversions`）
+
+厂商自己的 CUDA 头（`cuda_bf16.hpp`）走的是 intrinsic，落到：
+
+```
+%n = call float  @llvm.bi.bfloat2float(bfloat %x)
+%n = call bfloat @llvm.bi.float2bfloat(float %x)
+```
+
+于是本仓库在 `_triton.CorexTorchBackend.make_cubin`（biir → llc 之间）做纯文本改写，**不动
+corex-triton 一个字节**，命中数写进 `metadata['corex_rewrite_counts']['bf16_conversions']`。
+内核侧因此可以写**自然形式**：
+
+```python
+f = tl.load(x_ptr + off).to(tl.float32)   # → @llvm.bi.bfloat2float
+tl.store(y_ptr + off, f.to(tl.bfloat16))  # → @llvm.bi.float2bfloat
+```
+
+**⚠ 两个必须知道的坑（都是本仓库踩出来的）**
+
+| # | 坑 | 证据 |
+| --- | --- | --- |
+| 1 | **标量 intrinsic 是真实现，向量重载不是**。`@llvm.bi.bfloat2float.v8bf16` 这种带后缀的向量形态 llc **收下并 rc=0**，但它没有 lowering 实现，只剩一个外部符号，被 `lld --no-undefined` 拦下：`lld: error: undefined symbol: llvm.bi.bfloat2float.v8bf16` | `probes/195` 三级对照：V1 原样 `llc=FAIL`、V2 换向量 intrinsic `llc=OK lld=FAIL`、V3 再标量化 `llc=OK lld=OK elf=6104 B` |
+| 2 | **判「intrinsic 支不支持」不能只看 `llc` 返回码**。LLVM 允许把未实现的外部调用原样留在目标文件里。必须跑 `llc` **加** `lld --no-undefined`（`corex-triton` 的 `make_cubin` 正好带这个 flag） | `probes/194` 只看 llc，得出「向量重载可用」的**错误**结论；`probes/195` 用链接判据把它纠正为「只认声明、没实现」 |
+
+结论：**向量形式必须标量化**（`extractelement` → 标量 intrinsic 调用 → `insertelement` 链），
+标量化之后 llc 与 lld 双过。
+
+### 8.3 各算子的算术位置（这是设计决定表，不是实现细节）
+
+| 算子 | 算术在哪 | bf16 转换出现在哪 | 为什么 |
+| --- | --- | --- | --- |
+| `add/sub/mul/div`、`*_scalar`、`fill`、`copy` | 内核里自然写，Triton 在 **fp32** 里算，只有输出一次舍回 bf16 | 展宽（读）+ 收窄（写） | 逐元素没有累加，一次舍入就是 IEEE RNE，与 CPU bf16 参照**逐字节相等** |
+| `silu` | **fp32**（`ex2.approx.f32` 没有 bf16 版本） | 展宽 + 收窄 | bf16 下做不出 exp |
+| `gather_rows` | 纯搬运，不做任何转换 | **无** | 没有算术就没有舍入，逐字节 |
+| `sum_last/mean_last/max_last/sum_all` | **fp32 累加** | 向量展宽（读）+ 标量收窄（写） | 纯 bf16 累加 1000 项相对误差到 1e-2 量级，模型直接废 |
+| `softmax_last` | **fp32**（max / exp / 归一） | 同上 | 行和偏离 1 要留在 1e-7 量级 |
+| `rms_norm/layernorm` | **fp32**（平方和/方差 + 归一） | 同上 | 同上 |
+| `mm/bmm` | **fp32 累加**，bf16 进 bf16 出 | 向量展宽 + 向量收窄 | 工业界标准；纯 bf16 累加在 K=1024 时相对误差约 1e-1，没有可用性 |
+
+### 8.4 为什么内核侧**不该**自己用位运算造转换（两个死点）
+
+bf16 就是 fp32 的高 16 位，所以「u16 缓冲区 + 整数位运算」在算术上完全可行（`probes/190` 证实
+展宽方向 `fp_extend=0`、求和正确）。但这条路在**向量化之后**撞上两种「比 LLVM 16 新」的语法，
+两种都是上游 LLVM 17+ 才有、厂商 llc 16 解析不了的：
+
+| # | 现象 | 触发点 | 探针 |
+| --- | --- | --- | --- |
+| 1 | `llc: error: expected type`，指到 `%48 = trunc **nuw** i32 %47 to i16` | 逐元素 `.to(tl.uint16)` 收窄；LLVM 17 起 `trunc` 有了 `nuw`/`nsw` 标记 | `probes/190`、`probes/191` §1 |
+| 2 | `llc: error: expected value token`，指到 `%111 = lshr <2 x i32> %110, **splat (i32 16)**` | 对**向量**做 `>> 16` / `<< 16`（向量常量会被打成 `splat`）；标量移位没事 | `probes/191` §4 |
+
+也就是说：**位运算是把「一条缺指令」换成「两条上游新语法」**，一共要打三个补丁才够，而且每换一种
+写法（标量/向量、i16/i32、成对打包）都可能冒出新的。相比之下 intrinsic 是**一条**能一次解决、
+且数值与硬件一致的替换。这就是这套改写层存在的理由。
+
+判据上的教训也一致：`probes/191` 里「成对打包的 `fill` 过了、`add` 挂了」——
+过的那个是**标量**移位，挂的那个是**向量**移位，说明这类问题的边界不在算法，在**向量化**。
+
+### 8.5 体检：改写命中数与「进 llc 的那份 IR」
+
+口径很重要：`kernel.asm['biir']` 是**改写前**的文本，`fpext`/`fptrunc` 出现在里面是正常的
+（`make_biir` 的产物）。要看的是「**再跑一遍改写器之后**还剩几条」——那才是喂给 llc 的文本。
+
+`probes/192` §6 实测（bf16 元素级内核）：
+
+```
+('binary','bf16',0,…) cubin= 7192  bf16_conversions=24  改写后剩余{}=空
+('binary','bf16',1,…) cubin= 7216  bf16_conversions=24  改写后剩余{}=空
+('binary','bf16',2,…) cubin= 7008  bf16_conversions= 0  改写后剩余{}=空   ← mul 天然是 bf16 算术，无需转换
+('binary','bf16',3,…) cubin= 7608  bf16_conversions=24  改写后剩余{}=空
+('copy',  'bf16',…)   cubin= 5752  bf16_conversions= 0  改写后剩余{}=空   ← 纯搬运
+('fill',  'bf16',…)   cubin= 4200  bf16_conversions= 1  改写后剩余{}=空
+('scalar','bf16',0,…) cubin= 6048  bf16_conversions=16  改写后剩余{}=空
+('scalar','bf16',2,…) cubin= 6048  bf16_conversions=16  改写后剩余{}=空
+('silu',  'bf16',…)   cubin= 6712  bf16_conversions=16  改写后剩余{}=空
+elementwise 合计 bf16_conversions=121，改写后可疑语法=0
+```
+
+`fpext / fptrunc / trunc nuw / trunc nsw / splat / fp_extend / fp_round` 在改写后的文本里
+**全部为 0**。
+
+### 8.6 性能：bf16 vs fp32（n = 1M 元素，L2 每轮刷）
+
+| 算子 | dtype | 耗时 | 流量 | GB/s |
+| --- | --- | --- | --- | --- |
+| `add` | fp32 | 43.4 µs | 12.00 MiB | **289.8** |
+| `add` | bf16 | 29.2 µs | 6.00 MiB | **215.7** |
+
+**流量减半，GB/s 却没有翻倍，原因在启动地板**：29.2 µs 里有约 10 µs 是这张卡的空 kernel 开销
+（`corex-triton/docs/00-FACTS.md` §12：9.9 µs），它不随 dtype 变小。把地板扣掉再算，bf16 的有效
+带宽约 ~310 GB/s，与 fp32 的 ~380 GB/s 同量级——两者都贴着 `probes/170` 量出来的平台上限。
+
+### 8.7 结论
+
+| # | 结论 |
+| --- | --- |
+| 1 | bf16 之前不可用的根因**不是算术**，而是两条转换指令的名字：bi 后端只认 `llvm.bi.bfloat2float` / `llvm.bi.float2bfloat` |
+| 2 | 在 biir→llc 之间做文本改写即可，内核侧写自然形式，**不用动 corex-triton** |
+| 3 | 元素级 bf16 与 CPU bf16 参照**逐字节相等**（33/33，含 1000/4097 尾块）；`silu` 的 max_abs 也是 0（bf16 粒度吸收了 `ex2.approx` 的误差） |
+| 4 | 向量重载**只认声明没实现**，必须标量化；判据必须是 `llc` + `lld --no-undefined` 两级（`probes/194` 的「可用」结论是错的，`probes/195` 已更正） |
+| 5 | 内核侧不要自己用位运算造转换：那会把「一条缺指令」换成 `trunc nuw` + `splat` 两条上游新语法（§8.4） |

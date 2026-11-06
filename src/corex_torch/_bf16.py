@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Tuple
+from typing import Optional, Tuple
 
 #: 标量 intrinsic 的声明。改写后如果 IR 里还没有就补在末尾。
 SCALAR_DECLARATIONS = (
@@ -46,16 +46,23 @@ SCALAR_DECLARATIONS = (
     "declare bfloat @llvm.bi.float2bfloat(float)",
 )
 
-#: 向量形态该走哪条路。
+#: 向量形态该走哪条路（进程级，可被编译失败自动切换）。
 #:
-#: ``"intrinsic"``：用 ``llvm.bi.bfloat2float.v<N>bf16`` 这类**带后缀的重载**（`probes/194` 实测
-#: llc 认，obj 4992–6568 B）。与厂商语义完全一致（RNE、NaN 都由后端实现），一条指令搞定。
-#: ``"bits"``：整数位运算（`probes/015` 实测也能过）。作为退路保留——万一哪天工具的 intrinsic
-#: 重载没了，改这一个常量即可，不必改内核。
+#: ``"intrinsic"``：``llvm.bi.bfloat2float.v<N>bf16`` 这类带 mangled 后缀的向量重载。
+#:   **注意它只是「半实现」**：`llc` 会照样接受（把未解析的调用原样留在目标文件里、rc=0），
+#:   真正拦住它的是下一步 `lld --no-undefined` 报 ``undefined symbol``（`probes/192` 实测，
+#:   规约与矩阵乘两种内核都栽在这里）。所以「只看 llc 编得过」会把「parse 进去但没 lowering」
+#:   误判成「支持」——这个教训值得记一辈子。
+#:   部分元素数确实有实现（`<4 x …>` 那档在 mm 上真跑通过），所以不能一刀切禁掉。
+#: ``"bits"``：整数位运算。**已验过逐字节相等**（`probes/013` 的 bf16 矩阵乘 4096/4096）。
 #:
-#: 早期用「不带后缀的向量 intrinsic」会失败：那与标量同名，llc 报
-#: ``invalid redefinition of function 'llvm.bi.float2bfloat'``（`probes/015` V2）。
-VECTOR_STRATEGY = "intrinsic"
+#: 策略：先试 intrinsic，链接报 ``undefined symbol`` 就自动切到 bits 并记住（见
+#: ``_triton.CorexTorchBackend.make_cubin``）。这样既有机会吃「有实现的那几档」，
+#: 又不会因为某档没实现就把整条 bf16 路堵死。
+_STRATEGY = {"vector": "scalar"}
+
+#: 两种取值，只给调用方判断用。
+_VECTOR_STRATEGIES = ("scalar", "intrinsic", "bits")
 
 _NAME = r"%[-A-Za-z0-9_.$]+"
 
@@ -112,11 +119,31 @@ class _NameGen:
         return f"%{self._prefix}{self._n}"
 
 
-def rewrite_bf16_conversions(ir: str) -> Tuple[str, int]:
+def get_vector_strategy() -> str:
+    """当前向量转换策略（``"intrinsic"`` 或 ``"bits"``）。"""
+    return _STRATEGY["vector"]
+
+
+def set_vector_strategy(name: str) -> None:
+    """切换向量转换策略（进程级）。
+
+    Args:
+        name: ``"intrinsic"`` 或 ``"bits"``。
+
+    Raises:
+        ValueError: 名字不认识——静默忽略会让「以为切了其实没切」变成排查噩梦。
+    """
+    if name not in _VECTOR_STRATEGIES:
+        raise ValueError(f"未知的向量转换策略 {name!r}，只支持 {_VECTOR_STRATEGIES}")
+    _STRATEGY["vector"] = name
+
+
+def rewrite_bf16_conversions(ir: str, vector_strategy: Optional[str] = None) -> Tuple[str, int]:
     """把 biir 里的 bf16 转换换成 llc 认的形态。
 
     Args:
         ir: ``CorexBackend.make_biir`` 产出的 LLVM IR 文本。
+        vector_strategy: 向量形态的处理方式；``None`` 用当前进程策略（见 :func:`get_vector_strategy`）。
 
     Returns:
         ``(改写后的文本, 改动条数)``。条数为 0 表示这个内核不做 bf16 转换。
@@ -126,6 +153,9 @@ def rewrite_bf16_conversions(ir: str) -> Tuple[str, int]:
         属于「立刻暴露」而不是静默算错——这是这套文本改写可以接受的风险边界。
     """
     changed = 0
+    strategy = vector_strategy or _STRATEGY["vector"]
+    if strategy not in _VECTOR_STRATEGIES:
+        raise ValueError(f"未知的向量转换策略 {strategy!r}，只支持 {_VECTOR_STRATEGIES}")
     fresh = _NameGen(ir)
     #: 向量 intrinsic 用到的元素数集合，决定要补哪些 declare。
     vec_widths: set = set()
@@ -146,10 +176,12 @@ def rewrite_bf16_conversions(ir: str) -> Tuple[str, int]:
         nonlocal changed
         changed += 1
         lhs, arg, n = match.group("lhs"), match.group("arg"), int(match.group("n"))
-        if VECTOR_STRATEGY == "intrinsic":
+        if strategy == "intrinsic":
             vec_widths.add(n)
             return _vec_intrinsic("bfloat2float", n, f"<{n} x bfloat>", f"<{n} x float>",
                                   arg, lhs)
+        if strategy == "scalar":
+            return _scalarize_wide(n, arg, lhs)
         h, z, s = fresh(), fresh(), fresh()
         # bf16 -> f32 就是「把 16 位搬到高半」：zext 到 i32 再左移 16，按位重解释。
         return (f"{h} = bitcast <{n} x bfloat> {arg} to <{n} x i16>\n"
@@ -161,10 +193,12 @@ def rewrite_bf16_conversions(ir: str) -> Tuple[str, int]:
         nonlocal changed
         changed += 1
         lhs, arg, n = match.group("lhs"), match.group("arg"), int(match.group("n"))
-        if VECTOR_STRATEGY == "intrinsic":
+        if strategy == "intrinsic":
             vec_widths.add(n)
             return _vec_intrinsic("float2bfloat", n, f"<{n} x float>", f"<{n} x bfloat>",
                                   arg, lhs)
+        if strategy == "scalar":
+            return _scalarize_narrow(n, arg, lhs)
         i, lo, lsb, c1, c2, hi, t = (fresh() for _ in range(7))
         # f32 -> bf16：取高 16 位，但先按 RNE 补偿（+0x7FFF+最低位），否则与厂商 intrinsic
         # 在「正好半程」的值上差 1 ulp。
@@ -176,6 +210,36 @@ def rewrite_bf16_conversions(ir: str) -> Tuple[str, int]:
                 f"{hi} = lshr <{n} x i32> {c2}, {_vec_const(n, 16)}\n"
                 f"{t} = trunc <{n} x i32> {hi} to <{n} x i16>\n"
                 f"{lhs} = bitcast <{n} x i16> {t} to <{n} x bfloat>")
+
+    def _scalarize_wide(n: int, arg: str, lhs: str) -> str:
+        """把一个向量展宽拆成逐元素「extract → 标量 intrinsic → insert」链。
+
+        为什么逐个拆而不是发向量 intrinsic：``llvm.bi.bfloat2float.v8bf16`` 这类 mangled 名字
+        **llc 收下但不实现**——目标文件里留一个外部符号，`lld --no-undefined` 才报
+        ``undefined symbol``（`probes/195` 三级判定）。标量版是真实现的（元素级 33/33 已证明），
+        所以拆开是唯一稳妥的向量通路。
+        """
+        lines, prev = [], "poison"
+        for i in range(n):
+            e, c = fresh(), fresh()
+            lines.append(f"{e} = extractelement <{n} x bfloat> {arg}, i32 {i}")
+            lines.append(f"{c} = call float @llvm.bi.bfloat2float(bfloat {e})")
+            dst = lhs if i == n - 1 else fresh()
+            lines.append(f"{dst} = insertelement <{n} x float> {prev}, float {c}, i32 {i}")
+            prev = dst
+        return "\n".join(lines)
+
+    def _scalarize_narrow(n: int, arg: str, lhs: str) -> str:
+        """同 :func:`_scalarize_wide`，收窄方向（f32 → bf16）。"""
+        lines, prev = [], "poison"
+        for i in range(n):
+            e, c = fresh(), fresh()
+            lines.append(f"{e} = extractelement <{n} x float> {arg}, i32 {i}")
+            lines.append(f"{c} = call bfloat @llvm.bi.float2bfloat(float {e})")
+            dst = lhs if i == n - 1 else fresh()
+            lines.append(f"{dst} = insertelement <{n} x bfloat> {prev}, bfloat {c}, i32 {i}")
+            prev = dst
+        return "\n".join(lines)
 
     out = _SCALAR_WIDEN.sub(_widen_scalar, ir)
     out = _SCALAR_NARROW.sub(_narrow_scalar, out)

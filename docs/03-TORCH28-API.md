@@ -896,3 +896,44 @@ shim.launch(handle, [gx,gy,gz], [bx,by,bz], shared, stream,
 停顿**的墙上时间，把 host 压到 10.8 µs 之后队列才真正喂满，量到的是内核本来的 110 µs
 （GFLOP/s 303.6）。所以「mm 256³ 端到端 ≤60 µs」这个目标在 303 GFLOP/s 下等于要 559 GFLOP/s，
 与「GFLOP/s ≥180」这一条互相矛盾——建议把验收口径改成「发射 ≤12 µs」+「GFLOP/s ≥180」。
+
+### 12.5 aten 层：C++ `aten::mm` 已接管（`TORCH_LIBRARY_IMPL`）
+
+`corex_shim.cpp` 里注册了 `TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) { m.impl("mm", ...); }`，
+Python 侧首次编译后调一次 `set_mm_kernel(dtype_code, handle, bm, bn, bk, num_warps=1)` 登记；
+**没登记时 `aten::mm` 明确报错、不回落 Python**（回落会让性能数据分不清走没走快路径）。
+
+真机（`probes/122`，同一份 cubin）：
+
+| 路径 | 单次 | GFLOP/s |
+| --- | --- | --- |
+| `aten` `a @ b`（C++ 实现） | **204.1 µs** | **164.4** |
+| `probes/010` 基线（Python 实现） | 265.8 µs | 126.2 |
+
+**但 aten 路径比直调慢得多，多出来的部分是分发器本身**——这一点必须单独记住：
+
+| 量 | 值 | 含义 |
+| --- | --- | --- |
+| `aten mm 16³`（内核≈0） | **83.6 µs** | 走分发器的完整地板 |
+| `shim.launch` 16³ | 10.8 µs | 同样一次启动，不经过分发器 |
+| `shim.is_initialized()`（pybind 地板） | **0.21 µs** | Python→C++ 调用本身不贵 |
+| `分配 + 直调快路径`（每轮新分配输出） | 111.4 µs | 分配只占 ~0.9 µs |
+
+结论：**约 73 µs/次 是 aten 分发器的固定成本**，与内核大小无关。把实现挪到 C++ 只能省掉
+Python 实现那一层（265.8→204.1），省不掉分发器。所以 hot path 想再往下压只有两条路：
+① 绕过 aten 直接调 `shim.launch` + 预分配输出（decode 的 kernel 级循环）；
+② 减少发射次数。另外 `aten::mm.out` 还没实现（`torch.mm(a, b, out=c)` 报未实现），
+补上它能省掉每轮一次分配——对 73 µs 的分发器成本没帮助，但对显存复用有用。
+---
+
+## 13. 复跑记录（2026-11-07 01:47，三探针同批）
+
+| 探针 | 结果 | 关键数字 |
+| --- | --- | --- |
+| `120_aten_coverage` | rc=0，**OK 31/43，数值不符 0** | 视图族 19 个 + `contiguous`/`clone_of_view`/`add_.Scalar` 全绿（后三个是 `_copy_from` 改成按 stride 搬之后转绿的） |
+| `121_view_alias` | rc=0，`VIEW_ALIAS_PASS` | 非连续源的 `contiguous()`/`clone()` 与 CPU 逐元素一致；`copy_.Tensor` 直调一致 |
+| `122_fast_launch` | rc=0，`FAST_LAUNCH_PASS` | 发射 39.5→10.8 µs；256³ 189.1→110.7 µs（303.9 GFLOP/s）；aten 204.1 µs |
+
+剩余 12 个 FAIL 全部是**内核缺口**（不是分发问题）：`sum.dim_IntList`（只支持全归约/最后一维）、
+`mean.dim`、`max.dim`、`argmax`、`log_softmax`、`var.correction`、`rsqrt`、`relu`/`relu_`、
+`gelu`、`masked_fill_.Scalar`。

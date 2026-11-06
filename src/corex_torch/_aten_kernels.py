@@ -205,6 +205,44 @@ def _index_select_impl(self, dim: int, index) -> Any:
     return out
 
 
+def _register_fast_mm() -> None:
+    """把编译好的 mm 内核句柄登记给 C++ 侧，让 ``aten::mm`` 全程不碰 Python。
+
+    **为什么必须在注册期就做**：shim 一旦被 import，``aten::mm`` 就由 C++ 的
+    ``TORCH_LIBRARY_IMPL`` 接管（不再走本模块的 ``_mm_impl``），而未登记时它按约定**明确报错、
+    不回落**。也就是说：没有这一步，``a @ b`` 会直接失败——而失败点不在我们会执行到的代码里。
+
+    收益（``probes/122``）：发射地板 39.5 µs → 10.8 µs（3.7x），mm 256³ 从 265.8 µs 降到 204.1 µs。
+    剩下的 ~73 µs 是 **aten 分发器的固定成本**（与内核大小无关，16³ 也一样），换实现语言省不掉。
+
+    Raises:
+        无。任何一步失败都只是「该 dtype 没登记」，由 C++ 侧在真正用到时报出带修复步骤的错误；
+        注册期不应该因为某个 dtype 编不出来就把整个设备搞挂。
+    """
+    from . import _device
+
+    shim = _device.shim()
+    if not hasattr(shim, "set_mm_kernel"):
+        # 旧版 shim：aten::mm 仍由本模块的 _mm_impl 提供，不影响正确性。
+        return
+    ops = _mod("_ops_matmul")
+    bm, bn, bk = (int(ops.DEFAULT_BLOCK_M), int(ops.DEFAULT_BLOCK_N), int(ops.DEFAULT_BLOCK_K))
+    warps = int(ops.DEFAULT_NUM_WARPS)
+    # c10::ScalarType 的编号：fp16=5, fp32=6, bf16=15。分块必须与编译时一致，否则 C++ 侧的
+    # grid 划分与内核内假设对不上（结果会错，且不会报错）。
+    for dtype, code in (("fp32", 6), ("fp16", 5), ("bf16", 15)):
+        try:
+            kernel = ops._get_kernel(dtype, bm, bn, bk, False, warps,
+                                     int(ops.DEFAULT_NUM_STAGES))
+            # 末尾那个 "ppppiii" 的最后一个 p 是 Triton 3.4 的 global scratch 占位指针，
+            # 少传它就是段错误（torch28 在 probes/122 踩过）。
+            handle = shim.load_kernel(kernel.asm["cubin"], kernel.name, "ppppiii")
+            shim.set_mm_kernel(code, handle, bm, bn, bk, warps)
+        except Exception:                               # noqa: BLE001
+            # 该 dtype 编不出来（例如工具链缺某条指令）：留给 C++ 侧报错，不在这里炸注册。
+            continue
+
+
 def register(lib) -> None:
     """把需要内核的 aten 算子挂到 PrivateUse1 上。
 
@@ -215,9 +253,18 @@ def register(lib) -> None:
         无。注册失败会直接抛——这类算子缺失时的报错是 ``NotImplementedError`` 指向 aten 内部，
         很难看出是我们的分发层没挂上，所以宁可在注册期就炸。
     """
-    lib.impl("mm", _mm_impl, "PrivateUse1")
+    from . import _device
+
+    fast_mm = hasattr(_device.shim(), "set_mm_kernel")
+    # 只有 C++ 没接管时才挂 Python 的 mm：两边都注册会让 torch 打
+    # 「Overriding a previously registered kernel for the same operator」警告，
+    # 而且谁最后注册谁生效——这种隐式顺序不该出现在后端里。
+    if not fast_mm:
+        lib.impl("mm", _mm_impl, "PrivateUse1")
     lib.impl("bmm", _bmm_impl, "PrivateUse1")
     lib.impl("_softmax.out", _softmax_out_impl, "PrivateUse1")
     lib.impl("sum.IntList_out", _sum_intlist_out_impl, "PrivateUse1")
     lib.impl("mean.out", _mean_out_impl, "PrivateUse1")
     lib.impl("index_select", _index_select_impl, "PrivateUse1")
+    # mm 可能已被 C++ 接管：上面的 impl 只作为「旧版 shim / 未接管」时的实现存在。
+    _register_fast_mm()
