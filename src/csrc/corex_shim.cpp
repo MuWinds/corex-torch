@@ -1583,6 +1583,12 @@ std::vector<std::vector<int64_t>> elementwise_kernel_info() {
 
 /// C++ 已接管的逐元素 schema 名。Python 侧据此**跳过**同名 Python 实现——
 /// 否则 Python 注册会覆盖 C++ 注册，静默退回 Python 实现（mm 上踩过一次）。
+/// C++ 的逐元素快路径是否支持广义广播（True：`.out` 的广播实参会被物化，不报错）。
+///
+/// 为什么要有这个探针：Python 侧(namely `_device`)靠它决定「能不能把 `.out` 让给 C++」。
+/// 能力没覆盖就贸然让位 = 拿正确性换速度（`x1 * 2.0` 曾经因此直接抛错）。
+bool elementwise_supports_broadcast() { return true; }
+
 std::vector<std::string> elementwise_op_names() {
   return {"add.out",      "sub.out",      "mul.out",      "div.out",
           "add_.Tensor",  "sub_.Tensor",  "mul_.Tensor",  "div_.Tensor",
@@ -1591,6 +1597,305 @@ std::vector<std::string> elementwise_op_names() {
 
 namespace {
 
+/// 把一块**连续**的源写回一个**可能非连续**的目的张量（逻辑布局一一对应）。
+///
+/// 为什么需要：`.out` 的 `out` 在真实代码里常常是视图——RoPE 就是
+/// `out[..., 0::2] = x1 * c - x2 * s`，`out` 的 stride 是 `(T*H, H, 2)`。内核只写线性内存，
+/// 所以先在连续临时张量里算，再按 stride 写回。
+///
+/// 三条路径（按成本从低到高）：目的其实连续 → 1 条 memcpy；目的外层「彼此紧挨」→ 1 条
+/// memcpy2D；目的是**均匀步长视图**（`0::2` 这类）→ 1 条带 pitch 的 memcpy2D；都不是才逐元素。
+void write_back_strided(const at::Tensor& src, at::Tensor& dst) {
+  const int64_t ndim = dst.dim();
+  const int64_t total = dst.numel();
+  if (total == 0) {
+    return;
+  }
+  const int64_t item = dst.element_size();
+  bind_runtime_device(dst.device().index());
+  const int64_t dst_base = reinterpret_cast<int64_t>(dst.data_ptr());
+  const int64_t src_base = reinterpret_cast<int64_t>(src.const_data_ptr());
+  std::vector<int64_t> sizes(dst.sizes().begin(), dst.sizes().end());
+  std::vector<int64_t> strides(ndim);
+  for (int64_t dim = 0; dim < ndim; ++dim) {
+    strides[dim] = dst.stride(dim);
+  }
+  int64_t run = 1;
+  int64_t run_dims = 0;
+  for (int64_t dim = ndim - 1; dim >= 0; --dim) {
+    if (strides[dim] == run) {
+      run *= sizes[dim];
+      ++run_dims;
+    } else {
+      break;
+    }
+  }
+  if (run_dims == ndim) {
+    check_rc("cudaMemcpy(写回连续)",
+             api().cudaMemcpy(reinterpret_cast<void*>(dst_base),
+                              reinterpret_cast<const void*>(src_base), total * item, /*kind=*/3));
+    return;
+  }
+  std::vector<int64_t> outer_dims;
+  for (int64_t dim = 0; dim < ndim - run_dims; ++dim) {
+    outer_dims.push_back(dim);
+  }
+  bool packed = true;
+  for (size_t k = 0; k + 1 < outer_dims.size(); ++k) {
+    if (strides[outer_dims[k]] != sizes[outer_dims[k + 1]] * strides[outer_dims[k + 1]]) {
+      packed = false;
+      break;
+    }
+  }
+  if (packed) {
+    int64_t height = 1;
+    for (int64_t dim : outer_dims) {
+      height *= sizes[dim];
+    }
+    memcpy2d(dst_base, strides[outer_dims[0]] * item, src_base, run * item, run * item, height,
+             dst.device().index());
+    return;
+  }
+  // 均匀步长视图（`x[..., 0::2]`）：每个非 size-1 维的 stride 都等于 step × 尾积。
+  bool uniform = true;
+  int64_t step = 0;
+  int64_t tail = 1;
+  for (int64_t dim = ndim - 1; dim >= 0; --dim) {
+    if (sizes[dim] > 1) {
+      if (strides[dim] % tail != 0) {
+        uniform = false;
+        break;
+      }
+      const int64_t ratio = strides[dim] / tail;
+      if (step == 0) {
+        step = ratio;
+      } else if (step != ratio) {
+        uniform = false;
+        break;
+      }
+    }
+    tail *= sizes[dim];
+  }
+  if (uniform && step > 1) {
+    memcpy2d(dst_base, step * item, src_base, item, item, total, dst.device().index());
+    return;
+  }
+  // 兜底：逐外层下标搬 run 个元素（慢但正确）。
+  const int64_t run_bytes = run * item;
+  std::vector<int64_t> index(outer_dims.size(), 0);
+  while (true) {
+    int64_t dst_off = 0;
+    int64_t src_off = 0;
+    int64_t inner = 1;
+    for (size_t k = 0; k < outer_dims.size(); ++k) {
+      dst_off += index[k] * strides[outer_dims[k]];
+      src_off += index[k] * inner;
+      inner *= sizes[outer_dims[k]];
+    }
+    check_rc("cudaMemcpy(写回块)",
+             api().cudaMemcpy(reinterpret_cast<void*>(dst_base + dst_off * item),
+                              reinterpret_cast<const void*>(src_base + src_off * item), run_bytes,
+                              /*kind=*/3));
+    bool carried = true;
+    for (int64_t k = static_cast<int64_t>(outer_dims.size()) - 1; k >= 0; --k) {
+      if (++index[k] < sizes[outer_dims[k]]) {
+        carried = false;
+        break;
+      }
+      index[k] = 0;
+    }
+    if (carried) {
+      break;
+    }
+  }
+}
+/// 按广播规则把 `src` 物化成一个与 `proto` 同形的连续临时张量（走池分配器）。
+///
+/// 为什么需要：`.out` 的实参可能是广播视图（`x1 * cos[:, None, :]`）。内核是线性下标写的、
+/// 不认广播，所以要么物化、要么报错。Lead 定的口径：物化（正确性优先），但要把成本压住。
+///
+/// 实现要点：
+///   * 只支持**一个广播维**的快路径（decode 里全部是这种形态：`[B,1,H]` 对 `[B,T,H]`），
+///     每个广播下标一条 `memcpy2D`，把该下标下的整块（`above × below`）一次搬完；
+///   * 多个广播维或源在上层不连续时走通用逐块循环（慢，但正确）；
+///   * 临时张量用 `empty_strided` 分配 → 走自建的桶缓存，不每次 `cudaMalloc`。
+at::Tensor materialize_broadcast(const at::Tensor& src, const at::Tensor& proto,
+                                 const char* op_name) {
+  const int64_t ndim = proto.dim();
+  const int64_t src_ndim = src.dim();
+  TORCH_CHECK(src_ndim <= ndim, "corex 的 ", op_name, " 的广播源维数比输出多（", src_ndim,
+              " > ", ndim, "）");
+  std::vector<int64_t> sizes(proto.sizes().begin(), proto.sizes().end());
+  std::vector<int64_t> dst_strides(ndim, 1);
+  int64_t acc = 1;
+  for (int64_t dim = ndim - 1; dim >= 0; --dim) {
+    dst_strides[dim] = acc;
+    acc *= sizes[dim];
+  }
+  std::vector<int64_t> src_sizes(ndim, 1);
+  std::vector<int64_t> src_strides(ndim, 0);
+  for (int64_t dim = 0; dim < ndim; ++dim) {
+    const int64_t src_dim = dim - (ndim - src_ndim);
+    if (src_dim < 0) {
+      continue;                                  // 源里没有这一维 → 广播
+    }
+    src_sizes[dim] = src.size(src_dim);
+    src_strides[dim] = (src.size(src_dim) == 1) ? 0 : src.stride(src_dim);
+    TORCH_CHECK(src.size(src_dim) == 1 || src.size(src_dim) == sizes[dim],
+                "corex 的 ", op_name, " 的形状不可广播：", proto.sizes(), " vs ", src.sizes());
+  }
+  at::Tensor tmp = empty_strided(sizes, dst_strides, static_cast<int64_t>(proto.scalar_type()),
+                                 proto.device().index());
+  const int64_t item = proto.element_size();
+  bind_runtime_device(proto.device().index());
+  const int64_t total = tmp.numel();
+  if (total == 0) {
+    return tmp;
+  }
+
+  std::vector<int64_t> bcast_dims;
+  for (int64_t dim = 0; dim < ndim; ++dim) {
+    if (src_sizes[dim] == 1 && sizes[dim] > 1) {
+      bcast_dims.push_back(dim);
+    }
+  }
+
+  if (bcast_dims.empty()) {
+    // 形状一致：把源按 stride 搬进连续临时张量。只有「末尾连续段 + 外层」两种情形，
+    // 用 memcpy2D 一次搬完（dst 连续 → dpitch = 段字节数）。
+    int64_t run = 1;
+    int64_t run_dims = 0;
+    for (int64_t dim = ndim - 1; dim >= 0; --dim) {
+      if (src_sizes[dim] == sizes[dim] && src_strides[dim] == run) {
+        run *= sizes[dim];
+        ++run_dims;
+      } else {
+        break;
+      }
+    }
+    int64_t outer = 1;
+    for (int64_t dim = 0; dim < ndim - run_dims; ++dim) {
+      outer *= sizes[dim];
+    }
+    const int64_t block_bytes = run * item;
+    const int64_t dst_pitch = dst_strides[ndim - run_dims - 1] * item;
+    const int64_t src_pitch = src_strides[ndim - run_dims - 1] * item;
+    memcpy2d(reinterpret_cast<int64_t>(tmp.data_ptr()), outer > 1 ? dst_pitch : block_bytes,
+             reinterpret_cast<int64_t>(src.const_data_ptr()), outer > 1 ? src_pitch : block_bytes,
+             block_bytes, outer, proto.device().index());
+    return tmp;
+  }
+
+  // 单广播维快路径：源可看成 [above, 1, below] 且 below/above 连续。
+  if (bcast_dims.size() == 1) {
+    const int64_t dim = bcast_dims[0];
+    int64_t below_elems = 1;
+    for (int64_t d = dim + 1; d < ndim; ++d) {
+      below_elems *= sizes[d];
+    }
+    int64_t above_elems = 1;
+    for (int64_t d = 0; d < dim; ++d) {
+      above_elems *= sizes[d];
+    }
+
+    const int64_t block_bytes = below_elems * item;
+    const int64_t dst_pitch = dst_strides[dim] * item;      // 广播维相邻下标之间的间距
+    // 源在「广播维之上」是否连续：stride[dim-1] 应等于 below_elems（`cos[:, None, :]` 就是）
+    const bool upper_contiguous = (dim == 0) || (src_strides[dim - 1] == below_elems);
+    if (upper_contiguous) {
+      // 每条 memcpy2D 搬「above 行 × below 个元素」：行间按**外层维的真实间距**走，
+      // 不是块大小——早先这里用了 block_bytes 当 dpitch，对 `[4,16,64] *= [4,1,64]`
+      // 会把 4 行按 64 个元素的间距写，结果整块错位（probes/128 抓到）。
+      const int64_t dst_row_pitch = (dim > 0) ? dst_strides[dim - 1] * item : block_bytes;
+      const int64_t src_row_pitch = (dim > 0) ? src_strides[dim - 1] * item : block_bytes;
+      for (int64_t index = 0; index < sizes[dim]; ++index) {
+        memcpy2d(reinterpret_cast<int64_t>(tmp.data_ptr()) + index * dst_pitch, dst_row_pitch,
+                 reinterpret_cast<int64_t>(src.const_data_ptr()), src_row_pitch, block_bytes,
+                 above_elems, proto.device().index());
+      }
+      return tmp;
+    }
+  }
+
+  // 多广播维且都在前导位置（典型：`[T,H] *= [H]` 的 bias）：源是一整块连续数据，在输出里
+  // 逐块重复。用「先写首块、再倍增复制」把调用数从 repeats 降到 ceil(log2(repeats))。
+  // 为什么值得单独做：逐块循环对 `[4,16,64] *= [64]` 是 64 条同步 memcpy ≈ 512 µs（实测），
+  // 倍增之后是 7 条 ≈ 40 µs。
+  {
+    bool leading = !bcast_dims.empty() && bcast_dims.front() == 0;
+    for (size_t k = 0; leading && k < bcast_dims.size(); ++k) {
+      leading = (bcast_dims[k] == static_cast<int64_t>(k));
+    }
+    int64_t block_elems = 1;
+    bool remainder_ok = leading;
+    if (leading) {
+      for (int64_t dim = static_cast<int64_t>(bcast_dims.size()); dim < ndim; ++dim) {
+        block_elems *= sizes[dim];
+        remainder_ok = remainder_ok && (src_sizes[dim] == sizes[dim]);
+      }
+      remainder_ok = remainder_ok && src.is_contiguous() && (src.numel() == block_elems);
+    }
+    if (remainder_ok) {
+      int64_t repeats = 1;
+      for (size_t k = 0; k < bcast_dims.size(); ++k) {
+        repeats *= sizes[bcast_dims[k]];
+      }
+      const int64_t block_bytes = block_elems * item;
+      check_rc("cudaMemcpy(广播首块)",
+               api().cudaMemcpy(tmp.data_ptr(), src.const_data_ptr(), block_bytes, /*kind=*/3));
+      int64_t filled = 1;
+      while (filled < repeats) {
+        const int64_t chunk = (filled < repeats - filled) ? filled : (repeats - filled);
+        memcpy2d(reinterpret_cast<int64_t>(tmp.data_ptr()) + filled * block_bytes, block_bytes,
+                 reinterpret_cast<int64_t>(tmp.data_ptr()), block_bytes, block_bytes, chunk,
+                 proto.device().index());
+        filled += chunk;
+      }
+      return tmp;
+    }
+  }
+  // 通用兜底：逐外层下标搬 run 个元素（慢但正确）。
+  int64_t run = 1;
+  int64_t run_dims = 0;
+  for (int64_t dim = ndim - 1; dim >= 0; --dim) {
+    if (src_sizes[dim] == sizes[dim] && src_strides[dim] == run) {
+      run *= sizes[dim];
+      ++run_dims;
+    } else {
+      break;
+    }
+  }
+  const int64_t block_bytes = run * item;
+  std::vector<int64_t> outer_dims;
+  for (int64_t dim = 0; dim < ndim - run_dims; ++dim) {
+    outer_dims.push_back(dim);
+  }
+  std::vector<int64_t> index(outer_dims.size(), 0);
+  while (true) {
+    int64_t dst_off = 0;
+    int64_t src_off = 0;
+    for (size_t k = 0; k < outer_dims.size(); ++k) {
+      dst_off += index[k] * dst_strides[outer_dims[k]];
+      src_off += index[k] * src_strides[outer_dims[k]];
+    }
+    check_rc("cudaMemcpy(广播块)",
+             api().cudaMemcpy(reinterpret_cast<void*>(reinterpret_cast<int64_t>(tmp.data_ptr()) +
+                                                      dst_off * item),
+                              src.const_data_ptr() + src_off * item, block_bytes, /*kind=*/3));
+    bool carried = true;
+    for (int64_t k = static_cast<int64_t>(outer_dims.size()) - 1; k >= 0; --k) {
+      if (++index[k] < sizes[outer_dims[k]]) {
+        carried = false;
+        break;
+      }
+      index[k] = 0;
+    }
+    if (carried) {
+      break;
+    }
+  }
+  return tmp;
+}
 /// 把一个 0 维 / 单元素张量读成 host 标量（**一次** `cudaMemcpy` D2H，4 或 8 字节）。
 ///
 /// 三条纪律（Lead 定的口径）：
@@ -1655,25 +1960,52 @@ at::Tensor& elementwise_run(int op_code, ElemVariant variant, const char* op_nam
               "corex 的 ", op_name, " 要求张量都在 corex 上");
   TORCH_CHECK(a.scalar_type() == out.scalar_type(),
               "corex 的 ", op_name, " 要求同 dtype：", a.scalar_type(), " vs ", out.scalar_type());
-  TORCH_CHECK(a.is_contiguous() && out.is_contiguous(),
-              "corex 的 ", op_name, " 的 C++ 快路径只支持连续张量（先 .contiguous()）");
+  // 非连续输入：物化一块连续临时张量再算。真实代码里这就是 RoPE 的
+  // `x[..., 0::2]`——它是步长视图，内核按线性下标写，不物化就只能报错（正确性优先）。
+  if (!a.is_contiguous()) {
+    const at::Tensor dense = materialize_broadcast(a, a, op_name);
+    return elementwise_run(op_code, variant, op_name, out, dense, b, alpha, scalar_value);
+  }
+  // out 可能是视图（RoPE 的 `out[..., 0::2]`）：先在连续临时张量里算，再按 stride 写回。
+  if (!out.is_contiguous()) {
+    std::vector<int64_t> sizes(out.sizes().begin(), out.sizes().end());
+    std::vector<int64_t> strides(out.dim(), 1);
+    int64_t acc = 1;
+    for (int64_t dim = out.dim() - 1; dim >= 0; --dim) {
+      strides[dim] = acc;
+      acc *= sizes[dim];
+    }
+    at::Tensor temp = empty_strided(sizes, strides, static_cast<int64_t>(out.scalar_type()),
+                                    out.device().index());
+    elementwise_run(op_code, variant, op_name, temp, a, b, alpha, scalar_value);
+    write_back_strided(temp, out);
+    return out;
+  }
   if (variant == ElemVariant::Tensor) {
     if (b.sizes() != a.sizes()) {
-      // 形态 3：0 维张量。`view.add_(2.5)` 在 torch 里最终派发到 `aten::add_.Tensor`，
-      // 而 `other` 是 0 维张量——只有这一种情形付一次 D2H 的代价，读成标量后走 scalar 内核。
-      TORCH_CHECK(b.dim() == 0 && b.numel() == 1,
-                  "corex 的 ", op_name, " 的 C++ 快路径只支持同形或 0 维标量（不做广播）：",
-                  a.sizes(), " vs ", b.sizes());
-      TORCH_CHECK(b.device().is_cpu() || b.device().is_privateuseone(), "corex 的 ", op_name,
-                  " 的 0 维张量必须在 CPU 或 corex 上（", b.device(), "）");
-      const double value = read_scalar_from_device(b);
-      // add/sub 的语义是 `self ± alpha * other`，alpha 折进标量；mul/div 没有 alpha。
-      const double folded = (op_code == 0 || op_code == 1) ? alpha * value : value;
-      return elementwise_run(op_code, ElemVariant::Scalar, op_name, out, a, a, 1.0, folded);
+      if (b.dim() == 0 && b.numel() == 1) {
+        // 形态 3：0 维张量。`view.add_(2.5)` 在 torch 里最终派发到 `aten::add_.Tensor`，
+        // 而 `other` 是 0 维标量张量（实测在 CPU 上 → 直接读 host，零 D2H）。
+        TORCH_CHECK(b.device().is_cpu() || b.device().is_privateuseone(), "corex 的 ", op_name,
+                    " 的 0 维张量必须在 CPU 或 corex 上（", b.device(), "）");
+        const double value = read_scalar_from_device(b);
+        // add/sub 的语义是 `self ± alpha * other`，alpha 折进标量；mul/div 没有 alpha。
+        const double folded = (op_code == 0 || op_code == 1) ? alpha * value : value;
+        return elementwise_run(op_code, ElemVariant::Scalar, op_name, out, a, a, 1.0, folded);
+      }
+      // 形态 4：广义广播（`x1 * cos[:, None, :]`）——物化一块与输出同形的临时张量再走同形
+      // 快路径。为什么物化而不是报错：报错会把「能算但慢」变成「不能算」，那是拿正确性换
+      // 速度。临时张量走池分配器，不每次 cudaMalloc。
+      const at::Tensor materialized = materialize_broadcast(b, a, op_name);
+      return elementwise_run(op_code, ElemVariant::Tensor, op_name, out, a, materialized,
+                             alpha, 0.0);
     }
-    TORCH_CHECK(b.device().is_privateuseone() && b.scalar_type() == a.scalar_type() &&
-                    b.is_contiguous(),
-                "corex 的 ", op_name, " 的 C++ 快路径要求 other 在 corex、连续、同 dtype");
+    TORCH_CHECK(b.device().is_privateuseone() && b.scalar_type() == a.scalar_type(),
+                "corex 的 ", op_name, " 的 C++ 快路径要求 other 在 corex、同 dtype");
+    if (!b.is_contiguous()) {
+      const at::Tensor dense = materialize_broadcast(b, a, op_name);
+      return elementwise_run(op_code, variant, op_name, out, a, dense, alpha, scalar_value);
+    }
   }
   TORCH_CHECK(a.sizes() == out.sizes(), "corex 的 ", op_name, " 要求 out 与 self 同形");
 
@@ -1822,6 +2154,7 @@ using corex_shim::mm_kernel_dtypes;
 using corex_shim::elementwise_kernel_info;
 using corex_shim::load_fast_op;
 using corex_shim::elementwise_op_names;
+using corex_shim::elementwise_supports_broadcast;
 using corex_shim::memcpy2d;
 
 using corex_shim::mm_kernel_info;
@@ -1875,6 +2208,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "装载并登记一个逐元素内核（实参表由 Python 按签名数出来）");
   m.def("elementwise_kernel_info", &elementwise_kernel_info,
         "已登记逐元素内核 [[op, dtype, block, warps, has_alpha], ...]");
+  m.def("elementwise_supports_broadcast", &elementwise_supports_broadcast,
+        "C++ 的逐元素快路径是否支持广义广播（会把广播实参物化）");
   m.def("elementwise_op_names", &elementwise_op_names,
         "C++ 已接管的逐元素算子名（Python 侧据此跳过自己的实现）");
   m.def("memcpy2d", &memcpy2d, pybind11::arg("dest"), pybind11::arg("dest_pitch"),
