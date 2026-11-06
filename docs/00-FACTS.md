@@ -864,3 +864,21 @@ torch.corex.Stream / Event / current_stream / stream / synchronize   全部就�
   句柄（构造应当走 `Stream.create()`），继承的话子类得复刻创建逻辑；转发只有一行。
 * **`__enter__`/`__exit__` 必须显式定义**：`with` 语句查的是**类型**上的这两个名字，
   `__getattr__` 转发对它们无效——第一次写就撞到 `AttributeError: __enter__`。
+
+## 40. 操作纪律：推代码与排队探针之间存在竞态
+
+`probes/008` 在「批量排队」那一轮报了 PARTIAL，单独重跑立刻 PASS（「还缺的算子：(无)」）。
+原因不是代码：`tar` 解包与队列启动撞在一起，探针可能读到**正在被覆盖的目录**（`src/corex_torch`
+的 mtime 正好是那一分钟）。同一条错误信息在仓库里已经不存在了，这个矛盾正是线索。
+
+三条纪律（都写进 `tools/remote.py` 或流程）：
+
+1. **每次 `pushdir` 之后自动清 `__pycache__`**（已实现）——tar 保留的是 Windows 的 mtime，
+   比远端已有 `.pyc` 更旧，CPython 会继续用旧字节码。这条单独就造成过两轮「改了没生效」。
+2. **推完 `src` 再排队探针**，不要在同一条命令里连着做——两次操作对远端目录的写入有先后，
+   队列可能在解包中途启动。
+3. **看到「报错文案在源码里已经不存在」时，先怀疑加载了旧副本**（`__pycache__`、别的 checkout、
+   半覆盖的目录），不要怀疑自己的修改。三次排查里有三次是这个原因。
+
+顺带确认：`$W/ops/corex-torch/src` 是**另一份 checkout**（torch28 的工作目录），它的 `_device.py`
+确实还留着旧文案——所以「哪份在生效」必须靠打印 `corex_torch.__file__` 来确认（`probes/029`）。
