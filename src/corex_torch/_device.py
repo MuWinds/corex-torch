@@ -282,11 +282,15 @@ def _scalar_from_stage(stage_ptr: int, dtype) -> Any:
 
     import torch
 
-    raw = ctypes.string_at(stage_ptr, torch.empty((), dtype=dtype).element_size())
+    nbytes = torch.empty((), dtype=dtype).element_size()
+    raw = ctypes.string_at(stage_ptr, nbytes)
+    if dtype == torch.bfloat16:
+        # bf16 就是 fp32 的高 16 位：补 16 个 0 低位再按 f32 解释，不需要任何 bf16 转换指令。
+        return struct.unpack("<f", raw + b"\x00\x00")[0]
     fmt = {torch.float32: "<f", torch.float16: "<e", torch.float64: "<d",
            torch.int8: "<b", torch.uint8: "<B", torch.int16: "<h",
            torch.int32: "<i", torch.int64: "<q", torch.bool: "<?",
-           torch.bfloat16: None}.get(dtype)
+           torch.float8_e4m3fn: None}.get(dtype)
     if fmt is None:
         raise NotImplementedError(f"corex 的 .item() 还没覆盖 dtype={dtype}")
     return struct.unpack(fmt, raw)[0]

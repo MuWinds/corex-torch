@@ -781,6 +781,251 @@ int64_t slab_alignment() {
   return static_cast<int64_t>(observed);
 }
 
+// ---------------------------------------------------------------------------
+// 快速启动路径：cuModuleLoadData + cuLaunchKernel，绕开 Python 的实参打包
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// CUDA driver API（`libcuda.so.1`）的函数表。与 runtime 表分开：启动走 driver，
+/// 分配/拷贝走 runtime，两套句柄语义不同，混在一张表里容易把 `CUstream` 当 `cudaStream_t` 用。
+struct CudaApi {
+  int (*cuModuleLoadData)(void** module, const void* image) = nullptr;
+  int (*cuModuleGetFunction)(void** function, void* module, const char* name) = nullptr;
+  int (*cuLaunchKernel)(void* function, unsigned int gx, unsigned int gy, unsigned int gz,
+                        unsigned int bx, unsigned int by, unsigned int bz,
+                        unsigned int shared_mem_bytes, void* stream, void** params,
+                        void** extra) = nullptr;
+  int (*cuGetErrorString)(int code, const char** str) = nullptr;
+};
+
+CudaApi g_cuda;
+
+bool g_cuda_loaded = false;
+
+/// 一个已装载的内核：module + function + 实参类型串。
+///
+/// 为什么把 spec 存进句柄而不是每次传：启动是热路径，`std::string` 的比较/拷贝都要避免；
+/// 装载时算一次，之后每次 launch 只按字符走一遍。
+struct KernelEntry {
+  void* module = nullptr;
+  void* function = nullptr;
+  std::string spec;   ///< 逐字符：`p`=设备指针(int64) `f`=float `i`=int32 `I`=int64
+  std::string name;
+};
+
+std::mutex g_kernel_mutex;
+std::unordered_map<size_t, KernelEntry*> g_kernels;   ///< 内容哈希 → 内核
+std::string g_last_error;
+
+/// FNV-1a：只用来做「同一份 cubin + 同一个内核名 + 同一份 spec」的去重键。
+///
+/// 为什么不用 std::string 当键：cubin 是几十 KB 的二进制，做键要反复比较整串；
+/// 内容哈希一次算完，碰撞概率对「一个进程里几十个内核」这个量级可以忽略。
+size_t fnv1a(const void* data, size_t size, size_t seed) {
+  const unsigned char* bytes = static_cast<const unsigned char*>(data);
+  size_t hash = seed;
+  for (size_t i = 0; i < size; ++i) {
+    hash ^= static_cast<size_t>(bytes[i]);
+    hash *= static_cast<size_t>(1099511628211ULL);
+  }
+  return hash;
+}
+
+/// 打开 libcuda 并绑定四个入口（前置条件：`g_mutex` 已持）。
+void load_cuda_api_locked() {
+  if (g_cuda_loaded) {
+    return;
+  }
+  const char* env = std::getenv("COREX_HOME");
+  const std::string home =
+      (env != nullptr && env[0] != '\0') ? std::string(env) : std::string("/usr/local/corex");
+  const std::vector<std::string> candidates = {
+      home + "/lib64/libcuda.so.1", home + "/lib/libcuda.so.1",
+      home + "/lib64/libcuda.so",   home + "/lib/libcuda.so",
+      "libcuda.so.1",               "libcuda.so"};
+  std::string tried;
+  void* handle = nullptr;
+  for (const std::string& path : candidates) {
+    handle = ::dlopen(path.c_str(), RTLD_NOW | RTLD_GLOBAL);
+    if (handle != nullptr) {
+      tried += " [hit] " + path;
+      break;
+    }
+    tried += " [miss] " + path;
+  }
+  TORCH_CHECK(handle != nullptr, "corex_shim: 打不开 CUDA driver API（libcuda.so.1）。试过：",
+              tried);
+  g_cuda.cuModuleLoadData = bind_symbol<int (*)(void**, const void*)>(handle, "cuModuleLoadData");
+  g_cuda.cuModuleGetFunction =
+      bind_symbol<int (*)(void**, void*, const char*)>(handle, "cuModuleGetFunction");
+  g_cuda.cuLaunchKernel =
+      bind_symbol<int (*)(void*, unsigned int, unsigned int, unsigned int, unsigned int,
+                          unsigned int, unsigned int, unsigned int, void*, void**, void**)>(
+          handle, "cuLaunchKernel");
+  g_cuda.cuGetErrorString = bind_symbol<int (*)(int, const char**)>(handle, "cuGetErrorString");
+  g_cuda_loaded = true;
+}
+
+/// 取 driver 表；未加载先加载。
+const CudaApi& cuda_api() {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  load_cuda_api_locked();
+  return g_cuda;
+}
+
+/// 把 driver 返回码翻成带原文的异常，并记进 `g_last_error` 供 `last_error()` 取。
+void check_cu(const char* what, int code) {
+  if (code == 0) {
+    return;
+  }
+  const char* msg = nullptr;
+  if (g_cuda_loaded && g_cuda.cuGetErrorString != nullptr) {
+    g_cuda.cuGetErrorString(code, &msg);
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_last_error = std::string(what) + " 失败 rc=" + std::to_string(code) + " " +
+                   (msg != nullptr ? msg : "");
+  }
+  TORCH_CHECK(false, "corex_shim: ", what, " 失败 rc=", code, " ", msg != nullptr ? msg : "");
+}
+
+}  // namespace
+
+/// 装载一个 cubin 里的内核，返回句柄（按内容哈希缓存，重复调用零成本）。
+///
+/// 为什么要有这条：Triton 的 Python 启动路径每次调用要过 tuple 打包、`_pack_arg`、
+/// 一层层 Python 函数（真机实测纯启动 39.6 µs）。这里把「装模块 + 找函数」在装载期做完，
+/// 启动期只剩一次 `cuLaunchKernel`。
+///
+/// @param cubin cubin 的字节（Triton 的 `compiled.asm["cubin"]`）。
+/// @param kernel_name cubin 里的内核名（Triton 的 `compiled.name`）。
+/// @param spec 实参类型串：`p`=设备指针 `f`=float `i`=int32 `I`=int64，按内核形参顺序。
+/// @return 句柄（>0），传给 `launch`。
+int64_t load_kernel(const std::string& cubin, const std::string& kernel_name,
+                    const std::string& spec) {
+  TORCH_CHECK(!cubin.empty(), "corex_shim: load_kernel 收到空 cubin");
+  TORCH_CHECK(!kernel_name.empty(), "corex_shim: load_kernel 收到空内核名");
+  size_t key = fnv1a(cubin.data(), cubin.size(), static_cast<size_t>(1469598103934665603ULL));
+  key = fnv1a(kernel_name.data(), kernel_name.size(), key);
+  key = fnv1a(spec.data(), spec.size(), key);
+
+  std::lock_guard<std::mutex> lock(g_kernel_mutex);
+  auto found = g_kernels.find(key);
+  if (found != g_kernels.end()) {
+    return reinterpret_cast<int64_t>(found->second);
+  }
+  const CudaApi& api_ref = cuda_api();
+  auto* entry = new KernelEntry();
+  entry->spec = spec;
+  entry->name = kernel_name;
+  check_cu("cuModuleLoadData", api_ref.cuModuleLoadData(&entry->module, cubin.data()));
+  check_cu("cuModuleGetFunction",
+           api_ref.cuModuleGetFunction(&entry->function, entry->module, kernel_name.c_str()));
+  g_kernels[key] = entry;
+  return reinterpret_cast<int64_t>(entry);
+}
+
+/// 启动一个已装载的内核。**热路径**：不做字符串解析、不做 dict 查找、不分配每参数内存。
+///
+/// 实参按位置从三个并行数组里取，取哪个数组由 `spec` 的字符决定（Python 侧在编译期算好
+/// 一次、缓存）。这样 Python 侧每次调用只需要构造三四个 list，C++ 侧只往 `void* params[]`
+/// 里填指针——不再有 Triton 的 `_pack_arg` 与多层 Python 调用。
+///
+/// @param handle `load_kernel` 的返回值。
+/// @param grid 3 元组（不足的补 1）。
+/// @param block 3 元组。
+/// @param shared 动态共享内存字节数。
+/// @param stream `CUstream` 句柄（0 = legacy 默认流，与本平台 launch 的语义一致）。
+/// @param ptr_args `p` 类实参（设备指针，按调用顺序）。
+/// @param f32_args `f` 类实参（double 进、float 出）。
+/// @param i32_args `i` 类实参。
+/// @param i64_args `I` 类实参。
+void launch(int64_t handle, std::vector<int64_t> grid, std::vector<int64_t> block,
+            int64_t shared, int64_t stream, std::vector<int64_t> ptr_args,
+            std::vector<double> f32_args, std::vector<int64_t> i32_args,
+            std::vector<int64_t> i64_args) {
+  auto* entry = reinterpret_cast<KernelEntry*>(static_cast<intptr_t>(handle));
+  TORCH_CHECK(entry != nullptr && entry->function != nullptr,
+              "corex_shim: launch 收到无效句柄（先 load_kernel）");
+  TORCH_CHECK(grid.size() == 3 && block.size() == 3, "corex_shim: grid/block 必须是 3 元组");
+
+  const std::string& spec = entry->spec;
+  // 三个数组的量必须正好用完：多传/少传都是 Python 侧的类型串算错了，宁可当场报错。
+  size_t need_p = 0, need_f = 0, need_i = 0, need_I = 0;
+  for (char c : spec) {
+    switch (c) {
+      case 'p': ++need_p; break;
+      case 'f': ++need_f; break;
+      case 'i': ++need_i; break;
+      case 'I': ++need_I; break;
+      default: TORCH_CHECK(false, "corex_shim: spec 里有未知类型字符 '", c, "'");
+    }
+  }
+  TORCH_CHECK(need_p == ptr_args.size() && need_f == f32_args.size() &&
+                  need_i == i32_args.size() && need_I == i64_args.size(),
+              "corex_shim: 实参数与 spec 不符（spec=", spec, " 需要 p", need_p, " f", need_f,
+              " i", need_i, " I", need_I, "；收到 p", ptr_args.size(), " f",
+              f32_args.size(), " i", i32_args.size(), " I", i64_args.size(), "）");
+
+  // 存储体一次分配好：params 里存的是「指向这些槽位的指针」，vector 扩容会让指针失效，
+  // 所以按最终大小一次性 resize，之后只按下标写。
+  std::vector<void*> params(spec.size(), nullptr);
+  std::vector<int64_t> slots_p(need_p);
+  std::vector<float> slots_f(need_f);
+  std::vector<int32_t> slots_i(need_i);
+  std::vector<int64_t> slots_I(need_I);
+  size_t ip = 0, iff = 0, ii = 0, iI = 0;
+  for (size_t index = 0; index < spec.size(); ++index) {
+    switch (spec[index]) {
+      case 'p':
+        slots_p[ip] = ptr_args[ip];
+        params[index] = &slots_p[ip];
+        ++ip;
+        break;
+      case 'f':
+        slots_f[iff] = static_cast<float>(f32_args[iff]);
+        params[index] = &slots_f[iff];
+        ++iff;
+        break;
+      case 'i':
+        slots_i[ii] = static_cast<int32_t>(i32_args[ii]);
+        params[index] = &slots_i[ii];
+        ++ii;
+        break;
+      case 'I':
+        slots_I[iI] = i64_args[iI];
+        params[index] = &slots_I[iI];
+        ++iI;
+        break;
+      default: break;
+    }
+  }
+  check_cu("cuLaunchKernel",
+           cuda_api().cuLaunchKernel(entry->function, static_cast<unsigned int>(grid[0]),
+                                     static_cast<unsigned int>(grid[1]),
+                                     static_cast<unsigned int>(grid[2]),
+                                     static_cast<unsigned int>(block[0]),
+                                     static_cast<unsigned int>(block[1]),
+                                     static_cast<unsigned int>(block[2]),
+                                     static_cast<unsigned int>(shared),
+                                     reinterpret_cast<void*>(static_cast<intptr_t>(stream)),
+                                     params.data(), nullptr));
+}
+
+/// 上一次失败的原文（`launch`/`load_kernel` 失败后取一次即可）。
+std::string last_error() {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  return g_last_error;
+}
+
+/// 已装载的内核数（探针用来确认缓存命中）。
+int64_t kernel_count() {
+  std::lock_guard<std::mutex> lock(g_kernel_mutex);
+  return static_cast<int64_t>(g_kernels.size());
+}
+
 }  // namespace corex_shim
 
 // pybind 绑定代码必须写在全局作用域：PYBIND11_MODULE 展开出的是 `extern "C"` 的
@@ -793,6 +1038,10 @@ using corex_shim::from_blob;
 using corex_shim::init;
 using corex_shim::is_initialized;
 using corex_shim::as_strided;
+using corex_shim::kernel_count;
+using corex_shim::last_error;
+using corex_shim::launch;
+using corex_shim::load_kernel;
 using corex_shim::reserved_bytes;
 using corex_shim::slab_alignment;
 
@@ -817,4 +1066,14 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("allocated_bytes", &allocated_bytes, "已借出的字节数");
   m.def("empty_cache", &empty_cache, "把空闲的板/大块还给驱动");
   m.def("slab_alignment", &slab_alignment, "首次分配观测到的 slab 基址对齐（字节）");
+  m.def("load_kernel", &load_kernel, pybind11::arg("cubin"), pybind11::arg("kernel_name"),
+        pybind11::arg("spec"),
+        "装载 cubin 里的内核并返回句柄（内容哈希缓存）；spec 见 launch");
+  m.def("launch", &launch, pybind11::arg("handle"), pybind11::arg("grid"),
+        pybind11::arg("block"), pybind11::arg("shared"), pybind11::arg("stream"),
+        pybind11::arg("ptr_args"), pybind11::arg("f32_args"), pybind11::arg("i32_args"),
+        pybind11::arg("i64_args"),
+        "热路径启动：按 spec 展开实参，直接 cuLaunchKernel");
+  m.def("last_error", &last_error, "上一次 load_kernel/launch 失败的原文");
+  m.def("kernel_count", &kernel_count, "已装载（缓存）的内核数");
 }
