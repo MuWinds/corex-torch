@@ -184,12 +184,16 @@ def _copy_from_impl(src, dst, non_blocking: bool = False) -> Any:
     """
     if dst.shape != src.shape:
         raise NotImplementedError("corex 的 _copy_from 暂不支持形状变化（走 resize 的那条路）")
-    # 线性 memcpy 只对「两边都连续」成立。任何一边非连续时直接按字节扫过去会把行序读错，
-    # 而且结果看起来像「数值有点怪」而不是报错——所以必须挡在门口。
-    if not (src.is_contiguous() and dst.is_contiguous()):
+    # 线性 memcpy 只对「两侧都连续」成立：按字节扫一个转置视图会把**物理顺序**搬过去，
+    # 结果不报错、只是数值错（`probes/120` 里 `contiguous` 那行就是 max_abs_diff=2.0）。
+    # 处理办法：源非连续就先用 `contiguous()` 物化（它走 `copy_` 的按 stride 搬运），
+    # 目的非连续则直接报错——把数据写进「一个马上被丢掉的连续副本」比报错恶劣得多。
+    if not src.is_contiguous():
+        src = src.contiguous()
+    if not dst.is_contiguous():
         raise NotImplementedError(
-            "corex 的 _copy_from 暂不支持非连续张量（先 .contiguous() 的路径本身也缺）："
-            f"src.contiguous()={src.is_contiguous()} dst.contiguous()={dst.is_contiguous()}"
+            "corex 的 _copy_from 暂不支持非连续的目的张量（写进连续副本会丢数据）："
+            f"dst.stride()={tuple(dst.stride())}"
         )
     nbytes = int(dst.numel()) * int(dst.element_size())
     if nbytes == 0:
