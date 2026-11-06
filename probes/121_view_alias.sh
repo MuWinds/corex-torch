@@ -115,7 +115,12 @@ src = base.clone().t()                       # (4,3) 的转置视图，stride=(1
 print("  src stride =", tuple(src.stride()), "| contiguous =", src.is_contiguous())
 for label, fn in (("contiguous()", lambda t: t.contiguous()),
                   ("clone()", lambda t: t.clone())):
-    got = fn(src)
+    try:
+        got = fn(src)
+    except Exception as exc:                 # noqa: BLE001
+        print(f"  FAIL {label}: {type(exc).__name__}: {str(exc).splitlines()[0][:100]}")
+        ok = False
+        continue
     back = torch.empty(tuple(got.shape), dtype=torch.float32)
     _copy_from_impl(got, back)
     want = fn(base.cpu().t())

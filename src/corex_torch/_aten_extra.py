@@ -39,46 +39,53 @@ REGISTERED: list[str] = []
 #: 注册过程中发现的问题（可能算错 / 依赖别人修），``warnings()`` 原样返回。
 _WARNINGS: list[str] = []
 
-#: 本轮实测确认、但根因不在本模块（在 ``_device.py`` / 设备层）的三条，登记在这里让
-#: 上层能一眼看到。每条都带实测出处，改完应该把对应那条删掉。
+#: 本轮实测确认、但根因不在本模块（在 ``_device.py`` / 设备层）的条目，登记在这里让上层
+#: 一眼看到。每条都带实测出处；对应问题修掉后应该删掉这条。
 _STATIC_WARNINGS: list[str] = [
-    "`_device._out_binary` 把 alpha 无条件传给内核，而 ops.mul / ops.div 没有 alpha 形参："
-    "`a * b` / `a / b` 会报 TypeError: mul() got an unexpected keyword argument 'alpha'"
-    "（probes/120 基线，aten::mul.out / div.out）",
     "`_device._out_binary` 的标量路径未接：`t + 2.0` / `t - 2.0` 走 add.out / sub.out 时抛"
-    " NotImplementedError（probes/120、121 实测；本模块只能覆盖 aten 级 add_.Scalar）",
-    "`_device._copy_from_impl` 是线性 memcpy（只校验 shape 不校验 stride）：非连续源直接 .cpu()"
-    " 会拷错。本模块用 copy_.Tensor 兜住了 clone/contiguous 这类「先 empty_like 再 copy_」的路径，"
-    "但 _copy_from 本身仍需按 stride 实现（probes/120 的 contiguous 一行曾 max_abs_diff=2.0）",
+    " NotImplementedError（probes/120、121 实测）。本模块只能覆盖 aten 级 add_.Scalar，"
+    "Python 的 `t.add_(2.0)` 会直接落到 add.out 上，所以这条仍会咬到人",
+    "`_device._copy_from_impl` 是线性 memcpy（只校验 shape 不校验 stride）：对非连续源直接"
+    " `.cpu()` 会拷错。本模块的 copy_.Tensor 已兜住 clone/contiguous 这类「先 empty_like 再"
+    " copy_」的路径（probes/120 的 contiguous/clone_of_view 因此转绿），但 `_copy_from` 本身"
+    "仍需按 stride 实现",
+    "device module 没提供 manual_seed_all / _is_in_bad_fork：torch.manual_seed() 会**静默成功**"
+    "而不改任何状态，别人会误以为 corex 上的随机序列可复现。本阶段不做设备端 RNG（见 RNG_NOTE），"
+    "建议这两个函数显式抛 NotImplementedError",
 ]
 
 #: 已确认**在这个版本里必然缺**、但本模块没有实现的算子，以及为什么。
 #:
-#: 每一条都是 ``probes/120`` 实测出来的「下一跳」（报错原文点名了缺的是哪个重载），
-#: 不是照着 native_functions.yaml 猜的。
+#: 每一条都是实测出来的「下一跳」（报错原文点名了缺的是哪个重载），不是照
+#: native_functions.yaml 猜的。**已被别人覆盖的条目要删掉**，否则这张表会变成过期清单：
+#:   * ``sum.IntList_out`` / ``mean.out`` / ``_softmax.out`` / ``index_select`` 已由
+#:     ``_aten_kernels.py`` 接到 ``_ops_reduce`` / ``_ops_index`` 上（2026-11-07 01:09）；
+#:   * ``mul.out`` / ``div.out`` 的 alpha bug 已由 ``_device._out_binary`` 修掉。
 KNOWN_GAPS: list[str] = [
-    # --- 规约类：需要 reduce 内核（交给 _ops_reduce）---
-    "aten::sum.IntList_out",      # sum / sum.dim_IntList 的 composite 都落到这里；需要 dim-list 规约 + dtype 提升
-    "aten::mean.out",             # mean.dim 的下一跳
-    "aten::max.dim_max",          # max.dim 的下一跳，要同时出 values 与 indices
-    "aten::argmax.out",           # argmax 的下一跳，需要比较 + 下标
-    "aten::_softmax.out",         # softmax.int / _softmax 的下一跳，需要行内 max+exp+归一化
-    "aten::_log_softmax.out",     # log_softmax.int 的下一跳
-    "aten::var.correction",       # 自身缺失；要么两趟（mean 再平方差），要么一趟 Welford
-    # --- 逐元素/激活：需要内核（交给 _ops_elementwise 扩展）---
-    "aten::rsqrt.out",            # 需要 rsqrt 内核（1/sqrt）
-    "aten::relu",                 # 自身缺失；需要 max(x, 0)
-    "aten::relu_",                # 自身缺失；同上（in-place）
-    "aten::gelu.out",             # 需要 erf/tanh 版 gelu
-    "aten::masked_fill_.Scalar",  # 自身缺失；需要按 mask 选择写
-    # --- 索引/拼装：需要 gather 内核 ---
-    "aten::index_select",         # 自身缺失；embedding 的 composite 也落到它
-    # --- 已注册但本版本是错的（属于 _device.py 的 _out_binary）---
-    "aten::mul.out",              # _out_binary 无条件把 alpha 传给 ops.mul，而 mul 没有 alpha 形参 → TypeError
-    "aten::div.out",              # 同上（ops.div 也没有 alpha）
+    # --- 规约/扫描类：还缺内核 ---
+    "aten::max.dim_max",          # max.dim 的下一跳：要同时出 values 与 indices（_ops_reduce 只有 max_last 的 values）
+    "aten::argmax.out",           # 需要「比较 + 记下标」的扫描内核
+    "aten::var.correction",       # 自身缺失；两趟（mean → 平方差）或一趟 Welford
+    # --- 逐元素/激活：需要内核（_ops_elementwise 目前只有 add/sub/mul/div/标量/fill/silu/copy）---
+    "aten::rsqrt.out",            # 1/sqrt(x)
+    "aten::relu",                 # max(x, 0)
+    "aten::relu_",                # 同上（in-place）
+    "aten::gelu.out",             # erf / tanh 版 gelu
+    "aten::masked_fill_.Scalar",  # 按 mask 选择写
+    # --- 随机数：卡上没有 RNG（本阶段不做）---
+    "aten::normal_",              # torch.randn(..., device='corex') 的下一跳
+    "aten::uniform_",             # torch.rand / rand_like 一类
+    "aten::bernoulli_",           # dropout 一类
     # --- 语义上要单独处理，不在本批 ---
-    "aten::view.dtype",           # dtype 重解释：需要换 TypeMeta 建视图，shim 目前只按源 dtype 建
+    "aten::view.dtype",           # dtype 重解释：要换 TypeMeta 建视图，shim 只按源 dtype 建
 ]
+
+#: 随机数一类的处置口径（写进文档，避免有人以为「报错」是没实现好）。
+RNG_NOTE = (
+    "corex 上不提供设备端 RNG（KMD/兼容层没有可用的随机数通道，本阶段不做）。"
+    "需要随机数时先在 CPU 上生成再 .to('corex')；卡上调用 torch.randn / rand / bernoulli "
+    "会以 NotImplementedError 失败，这是预期行为，不是缺陷。"
+)
 
 #: 已经 import 过的模块引用（避免函数内反复 import 的开销与循环依赖问题）。
 _MODULES: dict[str, Any] = {}

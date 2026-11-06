@@ -129,6 +129,9 @@ _SCALAR_TYPE = {}
 #: 期望的元素字节数，用于校验上面那张表。
 _SCALAR_SIZE = {}
 
+#: 已经校验过的 dtype（校验只做一次，见 :func:`_scalar_type`）。
+_SCALAR_VALIDATED: set = set()
+
 
 def _scalar_type(dtype) -> int:
     """把 ``torch.dtype`` 翻成 ``c10::ScalarType`` 的整数编号。
@@ -155,11 +158,15 @@ def _scalar_type(dtype) -> int:
     code = _SCALAR_TYPE.get(dtype)
     if code is None:
         raise NotImplementedError(f"corex 设备还没覆盖 dtype={dtype}")
-    actual = torch.empty(0, dtype=dtype).element_size()
-    if actual != _SCALAR_SIZE[code]:
-        raise RuntimeError(
-            f"ScalarType 映射过期：{dtype} 期望 {_SCALAR_SIZE[code]} 字节，实际 {actual}"
-        )
+    # 校验只做一次：``torch.empty(0, dtype=...)`` 是一次真实的 CPU 分配 + 分发，
+    # 每次算子调用都做一遍会白吃掉几微秒，而 dtype→字节数是常量。
+    if dtype not in _SCALAR_VALIDATED:
+        actual = torch.empty(0, dtype=dtype).element_size()
+        if actual != _SCALAR_SIZE[code]:
+            raise RuntimeError(
+                f"ScalarType 映射过期：{dtype} 期望 {_SCALAR_SIZE[code]} 字节，实际 {actual}"
+            )
+        _SCALAR_VALIDATED.add(dtype)
     return code
 
 

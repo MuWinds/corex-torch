@@ -250,3 +250,21 @@ fp16 算子就是靠那次升级才通的（`docs/04-TRITON-BRIDGE.md` §6）。
    元素级算子那边实测是 21–36 µs/次（`docs/04-TRITON-BRIDGE.md` §6），mm 这一档为何到 160 µs
    量级还没定位（UNKNOWN）。要把这个差额压下去只能把参数打包与 `cuLaunchKernel` 挪进 C++ shim，
    接 coffin 的 decode 之前必须解决——那一步每 token 有六百多次发射。
+
+## 16. 每次发射的 host 开销归因（`probes/010_overhead.sh`）
+
+口径：mm 256³、指针现成、内核已编译、每段循环外只同步一次、单卡（沙箱 4935 逻辑 0 号）。
+
+| 段 | 单次耗时 |
+| --- | ---: |
+| 直接调 `_ops_matmul.mm`（内核 + 启动） | **206.1 µs**（首次 40.0 µs） |
+| mm 16³ 直接调（内核时间≈0，即**纯启动地板**） | **39.6 µs** |
+| `shim.empty_strided`（分配） | **1.76 µs** |
+| aten `a @ b`（分发 + 分配 + 内核） | **265.8 µs** |
+| 归因 | 内核 ≈166.5 µs；Python 启动 ≈39.6 µs；aten 再加 ≈59.7 µs |
+
+**含义**：每次算子调用的纯 host 开销约 **100 µs**（40 启动 + 60 aten），与内核本身同量级。
+coffin 的 decode 每 token 六百多次发射（`../../docs/corex_drive/GRAPH-REPLAY.md` §17.1），
+按这个数就是每步几十毫秒的白费。压缩的唯一现实路径是**把参数打包与 `cuLaunchKernel` 挪进 C++ shim**，
+并用 `TORCH_LIBRARY_IMPL` 把最热的算子（`aten::mm`、`aten::_softmax.out`）从 Python 分发里挪出去。
+分配（1.76 µs）不是问题——缓存池已经把它压到位了。
