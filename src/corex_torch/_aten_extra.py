@@ -320,16 +320,21 @@ def _cat_out(tensors, dim: int = 0, *, out=None):
         raise NotImplementedError(
             f"corex 的 cat.out 暂不支持 resize：out.shape={tuple(out.shape)} 期望 {tuple(expected)}"
         )
+    inner = _meta.prod(tuple(int(x) for x in expected[axis + 1:]))
     for index, tensor in enumerate(tensors):
         _check_corex(tensor, "cat.out")
         if tensor.dtype != out.dtype:
             raise NotImplementedError("corex 的 cat 要求所有输入与 out 同 dtype")
         _check_contiguous(tensor, "cat.out", f"inputs[{index}]")
-        if tensor.stride(axis) != _meta.prod(tuple(int(x) for x in tensor.shape[axis + 1:])):
-            # 要求「拼接维之后的各维是连续的」：这样每一行是一段连续内存，能整段 memcpy。
+        # 只要求「拼接维之后的各维连续」，**并且 size(axis)==1 时不约束 stride**。
+        # 为什么：torch 的连续性判定忽略长度为 1 的维——`[4, 1, 16]`、stride `(16, 64, 1)`
+        # 的 `is_contiguous()` 是 True，因为 size-1 维上取什么 stride 都等价；而这一维在
+        # 拼接里只贡献 1 个槽位，每行仍是连续的 16 个元素，能整段 memcpy。
+        # 之前这里写「每维 stride 必须等于尾积」，把一个完全合法的张量拒了（probes/022 撞到）。
+        if int(tensor.shape[axis]) > 1 and tensor.stride(axis) != inner:
             raise NotImplementedError(
                 f"corex 的 cat 要求 inputs[{index}] 在 dim={axis} 之后连续"
-                f"（stride={tuple(tensor.stride())}）"
+                f"（stride={tuple(tensor.stride())}，期望 stride({axis})={inner}）"
             )
     if out.numel() == 0:
         return out
@@ -339,7 +344,6 @@ def _cat_out(tensors, dim: int = 0, *, out=None):
     runtime.set_device(int(out.device.index or 0))
     item = int(out.element_size())
     outer = _meta.prod(tuple(int(x) for x in expected[:axis]))
-    inner = _meta.prod(tuple(int(x) for x in expected[axis + 1:]))
     out_row_bytes = int(expected[axis]) * inner * item
     dim_offset = 0                      # 沿拼接维已经积累的元素数
     for tensor in tensors:
@@ -425,24 +429,53 @@ def _copy_impl(self, src, non_blocking: bool = False):
     # 硬规则：raw memcpy 之前把当前设备绑到 self 所在的卡。
     runtime.set_device(int(self.device.index or 0))
     item = int(self.element_size())
+    # 快路径 1：两边都连续 → 一次 memcpy。这是最常见的情形（clone / .cpu() / 逐元素
+    # 算子的输出），必须只有一次 C 调用。
     if self.is_contiguous() and src.is_contiguous():
         runtime.memcpy(self.data_ptr(), src.data_ptr(), total * item,
                        runtime.MEMCPY_DEVICE_TO_DEVICE)
         return self
 
-    run, run_dims = _inner_run(self, src)
-    outer_dims = list(range(self.dim() - run_dims))
-    outer_shape = [int(self.shape[dim]) for dim in outer_dims]
-    move_bytes = run * item
+    # 把 stride / base / memcpy 都提到循环外：`self.stride()` 每次调用都要新建一个 tuple，
+    # 放在逐元素循环里就是「每个元素付一次 Python 对象分配」——这是之前慢的主因之一。
+    dst_stride = tuple(int(x) for x in self.stride())
+    src_stride = tuple(int(x) for x in src.stride())
+    sizes = tuple(int(x) for x in self.shape)
+    memcpy = runtime.memcpy
+    kind = runtime.MEMCPY_DEVICE_TO_DEVICE
+    dst_base = self.data_ptr()
+    src_base = src.data_ptr()
     import itertools
 
+    # 快路径 2：源是**广播视图**（存在 size>1 且 stride==0 的维），且这些维都在前导位置。
+    # 为什么必须单独处理：`_inner_run` 一遇到 stride==0 就 break，run 退化成 1，于是变成
+    # 「逐元素一次 memcpy」——`x.expand(...)` 这种每步出现好几次的形状，几千次 4 字节
+    # memcpy 就是毫秒级开销。广播的前导维彼此等价，只要对每个前导下标把同一块源搬一次。
+    zero_dims = [dim for dim in range(self.dim()) if src_stride[dim] == 0 and sizes[dim] > 1]
+    if zero_dims and self.is_contiguous() and zero_dims == list(range(len(zero_dims))):
+        block_elems = 1
+        for dim in range(len(zero_dims), self.dim()):
+            block_elems *= sizes[dim]
+        block_bytes = block_elems * item
+        for index in itertools.product(*[range(sizes[dim]) for dim in zero_dims]):
+            dst_off = sum(i * dst_stride[dim] for i, dim in zip(index, zero_dims)) * item
+            memcpy(dst_base + dst_off, src_base, block_bytes, kind)
+        return self
+
+    # 通用路径：把「末尾连续的一段」合成一次 memcpy，外层按 stride 走。
+    run, run_dims = _inner_run(self, src)
+    outer_dims = list(range(self.dim() - run_dims))
+    outer_shape = [sizes[dim] for dim in outer_dims]
+    move_bytes = run * item
+    dst_steps = [dst_stride[dim] for dim in outer_dims]
+    src_steps = [src_stride[dim] for dim in outer_dims]
     for index in itertools.product(*[range(length) for length in outer_shape]):
-        dst_offset = sum(int(i) * int(self.stride()[dim])
-                         for i, dim in zip(index, outer_dims)) * item
-        src_offset = sum(int(i) * int(src.stride()[dim])
-                         for i, dim in zip(index, outer_dims)) * item
-        runtime.memcpy(self.data_ptr() + dst_offset, src.data_ptr() + src_offset, move_bytes,
-                       runtime.MEMCPY_DEVICE_TO_DEVICE)
+        dst_offset = 0
+        src_offset = 0
+        for i, dst_step, src_step in zip(index, dst_steps, src_steps):
+            dst_offset += i * dst_step
+            src_offset += i * src_step
+        memcpy(dst_base + dst_offset * item, src_base + src_offset * item, move_bytes, kind)
     return self
 
 
