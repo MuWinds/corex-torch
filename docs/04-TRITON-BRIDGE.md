@@ -500,6 +500,8 @@ def install() -> None:
 | `153_shared_limit.sh` | 沙箱（卡） | 动态 shared 是 48 KiB 默认还是 128 KiB？要不要 opt-in | PASS，**默认 128 KiB**，132 KiB 才拒；`cuFuncSetAttribute` 只能收紧 |
 | `160_login_compile_no_torch.sh` | 登录节点 | import 链 + 编译到 biir + 第一次 import torch 在哪 | 链路 OK；探针对 dump 文件名/判据的假设错（见 §2.3），保留作证据 |
 | `161_login_biir.sh` | 登录节点 | 修正版：无 torch 编到 biir 并核对 bi IR | PASS |
+| `170_eltwise.sh` | 沙箱（卡） | 元素级算子 fp32：正确性 + 尾块 + 带宽（含 L2 口径对比） | PASS，45/45 逐字节相等，add 内核 295.5 GB/s（见 §6） |
+| `171_eltwise_dtype.sh` | 沙箱（卡） | 同上但 fp16 / bf16 | fp16 **33/33 逐字节相等**；bf16 6/33（`fp_round` 选不出来，见 §6.7） |
 
 载荷约定（两个沙箱探针都要）：
 
@@ -510,3 +512,172 @@ python tools/remote.py put tb_src.tgz /data/home/2024240384035/coffin-work/base/
 
 沙箱探针一律：`set -u` 开头、**继承 runner 的 `CUDA_VISIBLE_DEVICES`**（不覆盖）、
 开头先验卡（8×8 bf16 matmul）、坏卡 `exit 9`、每个 python 段套 `timeout --foreground -k 5`。
+
+---
+
+## 6. 元素级算子第一批（`src/corex_torch/_ops_elementwise.py`）
+
+阶段 4 的第一个交付：8 个元素级算子跑在卡上，与 CPU 参照**逐字节相等**，带宽追平文档基线。
+两个探针：`probes/170_eltwise.sh`（fp32 主表）、`probes/171_eltwise_dtype.sh`（fp16 / bf16）。
+
+### 6.1 接口契约（`_device.py` 按这套调用，位置参数不能改）
+
+```python
+add(a_ptr, b_ptr, out_ptr, n, dtype, alpha=1.0)      # out = a + alpha*b
+sub(a_ptr, b_ptr, out_ptr, n, dtype, alpha=1.0)      # out = a - alpha*b
+mul(a_ptr, b_ptr, out_ptr, n, dtype)                 # out = a*b
+div(a_ptr, b_ptr, out_ptr, n, dtype)                 # out = a/b
+add_scalar(a_ptr, out_ptr, n, dtype, scalar)         # 同理 sub_scalar/mul_scalar/div_scalar
+fill(out_ptr, n, dtype, value)
+silu(a_ptr, out_ptr, n, dtype)
+copy(src_ptr, dst_ptr, n, dtype)                     # 逐元素拷贝，只兜底 stride 非连续
+```
+
+- `ptr` 可以是 `int`（`tensor.data_ptr()`）、`ctypes.c_void_p`，或任何有 `data_ptr()` 的对象；
+- `dtype ∈ {fp32, fp16, bf16}`；不支持的取值或编不出来的内核 → **`NotImplementedError`**，
+  绝不静默降精度（fp32 编不出来才是真 bug，那种会抛 `RuntimeError`）；
+- 只有连续内存、1 维展平（`off = pid*BLOCK + arange(BLOCK)`，不算任何 stride）；
+- 每个函数内部按 `(内核种类, dtype, 算子, BLOCK, num_warps)` 缓存内核，**失败也缓存**
+  （否则 fp16/bf16 每次调用都要白等一次 0.4 s 的编译重试）；
+- 额外的 `block= / num_warps= / stream=` 都是 keyword-only，不影响上面的位置参数。
+
+### 6.2 为什么这一层刻意不 import torch
+
+`_device.py` 要把算子挂到 aten 上，但那要等 C++ shim（`docs/00-FACTS.md` §12：PrivateUse1
+的分配器只能从 C++ 注册，纯 Python 拿不到 Tensor 的存储）。如果算子只写成「吃 torch 张量」，
+shim 就位之前**一行都验证不了**。所以这一层的入参是设备指针 + 元素数 + dtype 字符串，
+出参写进调用方给的指针：现在就能在真机上跑出数，将来 `_device.py` 只需要把 `data_ptr()`
+转进来。`probes/170` 的每一段都打印 `torch_modules = 0`，证据在这。
+
+### 6.3 内核与缓存
+
+5 个内核覆盖 11 个 API：`binary`（constexpr `OP` 合并 add/sub/mul/div）、`scalar`、
+`fill`、`silu`、`copy`。用 constexpr 合并而不是写 4 个内核：运行期零分支，cubin 各自独立
+（`OP` 进缓存键），调试时 `COREX_DUMP_IR=...` 会把 kernel 名带进文件名。
+
+实测首次编 11 个内核之后，一次 `add` 调用 **0.081 ms**（`170` §「缓存」），说明命中缓存时
+不再编译。
+
+### 6.4 正确性（fp32）：45/45 逐字节相等
+
+口径：数据全部取 fp32/fp16/bf16 都能精确表示的值 —— `a ∈ [-12.0, 12.0]` 步长 0.25，
+`b ∈ {0.5, 1.0, 2.0, 4.0}`（**2 的幂**：这样 `div` 的商不会出现「fp32 再舍到 fp16/bf16」
+的二次舍入，除法也能按逐字节判定）。判定用 `struct.pack` 后的**字节串相等**，不是容差。
+
+n 取三档：`4096`（BLOCK 整数倍）、**`4097`**（尾块只多 1 个有效元素）、**`4000`**（尾块少 96 个）。
+
+| 用例 | n=4096 | n=4097 | n=4000 |
+| --- | --- | --- | --- |
+| `add` / `add(alpha=0.5)` / `add(alpha=2.5)` | 逐字节相等 | 逐字节相等 | 逐字节相等 |
+| `sub` / `sub(alpha=2)` | 逐字节相等 | 逐字节相等 | 逐字节相等 |
+| `mul` / `div` | 逐字节相等 | 逐字节相等 | 逐字节相等 |
+| `add_scalar(0.5)` / `sub_scalar(2.0)` / `mul_scalar(0.25)` / `div_scalar(4.0)` | 逐字节相等 | 逐字节相等 | 逐字节相等 |
+| `fill(0.5)` / `fill(-2.0)` | 逐字节相等 | 逐字节相等 | 逐字节相等 |
+| `copy` | 逐字节相等 | 逐字节相等 | 逐字节相等 |
+| `silu` | max_abs 9.537e-07 / max_rel 7.956e-07 | 同左 | 同左 |
+
+`silu` 是唯一不按逐字节判的算子：`tl.exp` 落成 `ex2.approx.f32`
+（`corex-triton/docs/00-FACTS.md` §11），近似值本身就与 CPU 的 `math.exp` 不同。
+**这是硬件的近似指令，不是我们的改写错**，所以给它单独一个 1e-6 的相对误差门槛，日志里
+两个数都打出来，不用「误差够小」糊过去。
+
+### 6.5 性能（1M fp32）：先纠正一个口径错误
+
+第一版探针直接在 1M fp32 上循环定时，报出 `add` **594 GB/s** —— 比同尺寸 D2D memcpy 还高，
+不可能是显存带宽。原因：3 个缓冲共 12 MiB，**全在 32 MiB 的 L2 里**，量到的是 L2 带宽。
+
+改成 `do_bench` 的口径之后才对：**每轮先用 256 MiB 的 fill 顶掉 L2，再用一对事件把内核包住**
+（事件在 GPU 时间轴上，Python 派发不算进去），取 20 轮的中位数。三个数一起看才有意义：
+
+| 算子 | 流量 | 内核本身（L2 刷） | 端到端墙钟（含派发） | L2 热（不刷） |
+| --- | --- | --- | --- | --- |
+| `add` | 12.00 MiB | **42.6 µs / 295.5 GB/s** | 58.0 µs / 216.9 GB/s（派发 35.8 µs） | 565.2 GB/s |
+| `sub` | 12.00 MiB | 42.4 µs / 296.6 GB/s | 49.9 µs（派发 27.7 µs） | 565.7 GB/s |
+| `mul` | 12.00 MiB | 42.6 µs / 295.2 GB/s | 50.3 µs（派发 28.2 µs） | 569.6 GB/s |
+| `div` | 12.00 MiB | 43.0 µs / 292.3 GB/s | 50.2 µs（派发 27.5 µs） | 553.9 GB/s |
+| `add_scalar` | 8.00 MiB | 30.5 µs / 275.3 GB/s | 46.0 µs（派发 25.5 µs） | 409.4 GB/s |
+| `fill` | 4.00 MiB | 21.1 µs / 199.1 GB/s | 40.4 µs（派发 21.1 µs） | 217.7 GB/s |
+| `silu` | 8.00 MiB | 30.8 µs / 272.2 GB/s | 42.6 µs（派发 22.0 µs） | 407.4 GB/s |
+| `copy` | 8.00 MiB | 30.3 µs / 276.9 GB/s | 42.1 µs（派发 21.9 µs） | 414.6 GB/s |
+| `memcpy D2D`（对照） | 8.00 MiB | 24.9 µs / 336.6 GB/s | — | 同左 |
+
+三个参照并列（同一口径：1M fp32、3 份流量、L2 冷）：
+
+| 实现 | GB/s | 与本表的关系 |
+| --- | --- | --- |
+| Triton 逐元素基线（`corex-triton/docs/00-FACTS.md` §14.3） | 295.0 | 我们 **295.5**，**1.00x**——这条基线被复现了 |
+| ATen `elementwise_kernel`（同尺寸本探针实测） | 375.0 | 我们 0.79x（文档里记的 402 是另一个尺寸，只当天花板） |
+| 厂商 torch `copy_`（DMA，`docs/00-FACTS.md` §9） | 471 | 与本表无关，但说明 `copy` 该走 memcpy |
+
+三条可抄的结论：
+
+1. **295 GB/s 就是这个尺寸的天花板**（同尺寸 DMA memcpy 只有 336.6，而我们比它慢 12%）。
+   42.6 µs 里有约 10 µs 是这张卡的启动地板（空 kernel 9.9 µs，`corex-triton/docs/00-FACTS.md`
+   §12），所以「295 GB/s」是**尺寸相关的**数，不是卡的上限。
+2. **Python 派发开销 21–36 µs/次**，比内核本身还长。`_device.py` 每个 aten 算子调一次这层，
+   小张量上派发会成为唯一瓶颈。要进一步压，只能把参数打包与 `cuLaunchKernel` 挪到 C++（shim
+   顺手就能做）。
+3. **BLOCK=1024/4 warps 是最优**（`170` §3.4 扫描：128→259.5、256→272.0、512→284.4、
+   **1024→297.8**、2048→243.7、4096/8→263.9 GB/s）。2048 掉得厉害，说明这块 SRAM/tile
+   的取整在 8 元素/线程之后反而变差。`DEFAULT_BLOCK=1024` 不是拍的。
+
+附带一条离群值记录：第一版曾在 `div` 上报 581 µs / 21.6 GB/s，同配置复测 **43.1 µs /
+292.0 GB/s**（本探针 `div 复测` 行），确认是测量噪声，不是「除法慢 26 倍」。
+
+### 6.6 fp16：全通，33/33 逐字节相等（依赖 corex-triton 的 16 位模板）
+
+| 项 | 结果 |
+| --- | --- |
+| fp16 全算子 × n=4096/4097/4000 | **33/33 逐字节相等** |
+| `fill(fp16, 0.5)` 的字节 | `0038003800380038` = 每个元素 `0x3800`（fp16 的 0.5，小端）✔ |
+| fp16 `silu` | max_rel **0.000e+00**（fp16 粒度把 `ex2.approx` 的误差吸收掉了） |
+| fp16 带宽（1M 元素，L2 刷） | `add` 28.4 µs / **221.3 GB/s**（复测 27.9 µs / 225.2）；`fill` 137.4；`silu` 189.5；`copy` 199.9；memcpy 232.8 |
+
+fp16 的 GB/s 比 fp32 低（221 vs 295）**不是变慢了**：流量减半（6.29 MB vs 12.58 MB），
+而 10 µs 的启动地板是不变的，所以同样的时间内搬的字节少了一半。看「耗时」就明白：
+fp32 42.6 µs vs fp16 28.4 µs。
+
+**一个必须记下来的依赖关系**：本层的 fp16 能力**绑定在 corex-triton 的改写表版本上**。
+第一次跑（payload 抓的是 00:30 的源码）fp16 编不过：
+
+```
+triton_corex.rewrite.PortError: 未登记的 PTX 操作数模板：
+    'mov.u16 $0, 0x0; @$2 ld.global.b16 { $0 }, [ $1 + 0 ];'
+```
+
+第二次跑（payload 抓的是 00:31:45 的 `rewrite.py`，44343 B，把 `b8|b16|b32|b64` 与 `mov.u16`
+前缀都认下来了）就全通了。**本层一行都没改**。所以：升级 corex-triton 时要重跑 `171`
+确认 16 位模板还在；本层不该自己维护一份访存改写表。
+
+### 6.7 bf16：6/33，根因是 `fp_round` 选不出来（按契约显式报不支持）
+
+| 项 | 结果 |
+| --- | --- |
+| bf16 能跑通的 | `mul`、`copy`（两个算子 × 三档 n = 6 项，全部逐字节相等） |
+| bf16 编不过的 | `add` / `sub` / `div` / `add_scalar` / `mul_scalar` / `fill` / `silu` |
+| 报错原文 | `llc -march=bi 失败：LLVM ERROR: Cannot select: 0x…: bf16 = fp_round 0x…, TargetConstant:i64<0>…` |
+
+根因很具体：这些内核把运算放在 **fp32** 里（`alpha` / `scalar` 都是 fp32 标量），最后
+`.to(tl.bfloat16)` 收窄 —— 这个 `fp32 → bf16` 的舍入在 bi 后端**没有可选的指令**。
+`mul` / `copy` 能过，是因为它们不需要那个转换（bf16 进、bf16 出）。
+
+旁证（`171` §B）：**无掩码、且不做显式转换**的 bf16 内核能编能跑（cubin 4056 B，n=4096
+逐字节相等）。所以 bf16 不是完全没路，但要走通得写一套「**全程 bf16、不出现 fp32 中间值**」
+的内核，标量也得换成 bf16 传（`_triton._pack_arg` 目前没有 bf16 标量打包）。
+
+按契约的处理：**显式 `NotImplementedError`**，消息里带 llc 的原文。绝不静默降精度 ——
+降精度的错在推理里表现为「结果慢慢变差」，比编不过难查得多。
+
+### 6.8 结论与下一步
+
+| # | 结论 |
+| --- | --- |
+| 1 | 8 个元素级算子（11 个 API）在真机上全通，fp32 **45/45 逐字节相等**（含 4097/4000 尾块） |
+| 2 | 带宽 **295.5 GB/s**，与 Triton 基线 1.00x；ATen 同尺寸 375.0 → 0.79x |
+| 3 | fp16 全通（33/33），前提是 corex-triton 的 16 位访存模板在位 |
+| 4 | bf16 明确不支持（`fp_round` 选不出来），按契约报 `NotImplementedError` |
+| 5 | **派发开销 21–36 µs/次** 是目前最大的非内核成本，要压只能进 C++ |
+
+下一步（按性价比）：① 把参数打包 + `cuLaunchKernel` 挪进 shim（顺手，收益直接）；
+② bf16 若要支持，写 bf16-native 内核（避免 `fp_round`）；③ 大 n 下的真实上限要单独量
+（本表是 1M 元素、L2 冷，启动地板占了 1/4）。

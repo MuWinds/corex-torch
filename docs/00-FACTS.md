@@ -144,3 +144,81 @@ kernel 名可以在 `corex_drive_re/perf/pulled/` 下的 `ixprof` 原始输出�
 | **Triton 适配层（`_triton`）在无 torch 进程里全通**：编译 424 ms → cubin 3464 B → 装载 → 启动 → 逐字节相等 | `probes/006_triton_adapter.sh`：`ADAPTER_VERDICT PASS`，n=4096 与 n=4000（尾块掩码）都 `max_abs_diff=0.000e+00` |
 | 我们这条链产出的 cubin 与 `probes/151`（独立写的另一条链）**字节数相同（3464 B）** | 两次独立测量，说明编译产物是确定的 |
 | `CompiledKernel.__getitem__` 的 runner **不补齐网格维度**（只传 `(16,)` 会 IndexError） | `_triton.launch()` 负责补成 3 元组 |
+
+## 11. 拷贝路径实测（`probes/007_copy_bandwidth.sh`）
+
+口径：单卡（沙箱 4935 逻辑 0 号 = 物理 6 号）、`cudaMemcpyAsync` + 自建流、`hostname=gpu-node-07`。
+
+| 路径 | 尺寸 | 平均耗时 | 带宽 |
+| --- | --- | ---: | ---: |
+| D2D（走 mem_handle，不 pin 页） | 1 MiB | 0.014 ms | 145.0 GB/s |
+| D2D | 16 MiB | 0.052 ms | **649.3 GB/s** |
+| D2D | 64 MiB | 0.236 ms | 568.5 GB/s |
+| D2D | 256 MiB | 0.901 ms | 595.6 GB/s |
+| H2D **pageable** | 1 / 16 / 64 MiB | 0.260 / 3.748 / 14.533 ms | **4.0 / 4.5 / 4.6 GB/s** |
+| H2D **pinned** | 1 / 16 / 64 MiB | 0.051 / 0.615 / 2.424 ms | **20.5 / 27.3 / 27.7 GB/s** |
+
+| 事实 | 数字 |
+| --- | --- |
+| 小拷贝的固定开销（H2D） | 1 KiB 约 7.3 µs；64 KiB 约 9.5 µs；1 MiB pinned 45 µs vs pageable 142 µs |
+| 流同步 / 设备同步 | 1.38 µs / 1.36 µs（都很便宜，「每步插几次同步」的预算很宽） |
+| **pageable 主机内存是 pinned 的 ~1/6 带宽**（64 MiB 时 4.6 vs 27.7 GB/s），且首次数 38.2 ms | 证实驱动审计 §B2：host 路径每次 `vmalloc` + `get_user_pages_fast` |
+
+**结论**：`copy_` / `_to_copy` 一律走 `cudaMemcpyAsync`，D2D 能到 595–649 GB/s（比厂商那条 471 GB/s 的量级还高一点，
+尺寸不同不可直接比）；凡是要经过主机内存的路径，必须走 pinned 暂存区，否则直接丢掉 5/6 的带宽。
+
+## 12. torch 2.8 的 PrivateUse1：分配器**只能**从 C++ 注册（`probes/101`–`108`）
+
+| 事实 | 证据 |
+| --- | --- |
+| `torch.empty(device="corex")` 取的是 `c10::GetAllocator(PrivateUse1)`，**默认返回 nullptr 且不报错** | `probes/102`：注册前 `OK -> 0`，注册后 `OK -> 107123696` |
+| Python 侧没有任何设置 PrivateUse1 分配器的入口（`torch._C` 上 privateuse 开头的只有 `_get_privateuse1_backend_name` / `_rename_privateuse1_backend`） | `probes/108`；三处（运行时 `dir`、`torch/_C/__init__.pyi`、源码 grep）都翻过 |
+| 算子可以用纯 Python 注册（`torch.library.Library("aten","IMPL").impl(...)` 实测成功），但**没法把自造指针包成 Tensor**——那个 ABI 只有 C++ 有 | `probes/101`、`102` |
+| 最小 shim 用 g++ 10.3.1 + torch 2.8 CPU wheel 的 headers **编得过（26.4 s）** | `probes/102` |
+| 2.8 相对 2.1 的两个坑：`c10::Allocator::allocate` **非 const**；`Allocator` 新增纯虚 `copy_data(void*, const void*, size_t) const` | 同上（照 2.1 写会报 `marked override, but does not override`） |
+| guard impl 宏的真名是 `C10_REGISTER_GUARD_IMPL`；`c10::SetAllocator` 从 `libc10.so` 导出 | `DeviceGuardImplInterface.h:349`、`Allocator.h:276` |
+| `torch.<dev>` 这个 device module 必须可导入（C++ lazy init 会 `import torch.corex`）；`torch.__path__.append(我们的目录)` 实测可行 | `probes/106` |
+| `torch.empty(4, device="corex")` 的三级失败梯度：只 rename → `ModuleNotFoundError: No module named 'torch.corex'`；再 `_register_device_module` → `NotImplementedError: Could not run 'aten::empty.memory_format' ...`；再补 C++ 分配器/guard/empty → 成功 | `probes/102` |
+| `rename_privateuse1_backend("corex")` 之后 `torch.cuda.is_available()` 仍为 **False**（没被污染） | `probes/108` |
+
+## 13. 设备端到端打通（2026-11-07 00:53，`probes/008_device_end_to_end.sh`）
+
+`DEVICE_VERDICT PASS`，rc=0，收尾 `CARD_STILL_HEALTHY`。这一条意味着**上游 torch 2.8 在这张卡上
+有了一张能用的设备**：分配、拷贝、逐元素算子、标量回读全部走通。
+
+```
+[OK] torch.zeros(4, device='corex')            corex:0 float32 Size([4]) data_ptr=0x304000002000000
+[OK] zeros 清零正确（.cpu() 读回）
+[OK] torch.ones(8, device='corex')
+[OK] CPU -> corex 往返逐字节相等                 往返 16 个元素完全相等
+[OK] corex 上的 a + b
+[OK] .item()                                   item = 1.0
+[OK] 非连续 strides（from_blob）                2x3 按 (1,2) 读，sum=6.0
+[OK] 大张量分配 + 填 + 读回（4 MiB）
+[OK] empty_cache
+```
+
+链路上踩到的三个坑（都不是平台问题，但每一个都会静默算错）：
+
+| 坑 | 现象 | 根因与修法 |
+| --- | --- | --- |
+| `aten::_copy_from` 的**参数顺序** | `t.cpu()` 读回一堆垃圾且 rc=0 | schema 是 `_copy_from(self, dst, non_blocking)`——第一个实参是**源**。按 `(dst, src)` 命名写，`t.cpu()` 会走进 H2D 分支把主机缓冲当地址写 |
+| `torch.dtype` 不能 `int()` | `TypeError: int() argument must be ... not 'torch.dtype'` | C++ shim 要 `at::ScalarType`；`_device._scalar_type()` 维护枚举表并用 `element_size` 交叉校验 |
+| 算子层找不到 corex-triton | `No module named 'triton_corex'`，且只在第一次编内核时暴露 | 它没打包安装，运行前要给 `COREX_TRITON_SRC`；`_triton.activate()` 会按仓库同级目录兜底 |
+
+另外两条环境前提：
+* `~/venvs/corex28` 里**必须装 triton 3.4**（torch 2.8 的官方配对），否则算子层的 `tl` 是 `None`，
+  报 `AttributeError: 'NoneType' object has no attribute 'float32'`；
+* `_corex_shim.so` 的 import 名是 **`_corex_shim`**（`PyInit_` 符号由文件名决定），且 import
+  之前必须先 `import torch`（否则 `libc10.so` 找不到）。
+
+## 14. `_triton` 改成薄适配（corex-triton 自己已经去掉 torch 依赖）
+
+`corex-triton` 提交 `cabf39a` 把 driver 的 torch 依赖去掉了（主 context 走
+`cuDevicePrimaryCtxRetain`、stream 用 legacy 默认流、显存 `cuMemAlloc_v2`、计时自己 `cuEvent`）。
+所以本仓库不再自己实现运行期，`_triton` 只留四件事：定位源码目录、`activate()`、`compile_kernel`、
+`launch`（补网格维度 + 把 `c_void_p` 换成 int）。实测 `probes/006` 仍然 `ADAPTER_VERDICT PASS`，
+编译 431 ms、cubin 3464 B、n=4096/4000 全 0 误差、全程 `torch_modules=0`。
+
+**后果**：`corex-triton` 一升级（比如 00:31 那次加了 16 位访存模板），我们这边不用改就能吃到——
+fp16 算子就是靠那次升级才通的（`docs/04-TRITON-BRIDGE.md` §6）。

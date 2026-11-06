@@ -86,6 +86,7 @@ def _lib() -> ctypes.CDLL:
                                     ctypes.c_size_t, ctypes.c_int, ctypes.c_void_p]
     lib.cudaMemGetInfo.argtypes = [ctypes.POINTER(ctypes.c_size_t),
                                    ctypes.POINTER(ctypes.c_size_t)]
+    lib.cudaMemset.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_size_t]
     lib.cudaStreamCreate.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
     lib.cudaStreamDestroy.argtypes = [ctypes.c_void_p]
     lib.cudaStreamSynchronize.argtypes = [ctypes.c_void_p]
@@ -117,7 +118,7 @@ def _lib() -> ctypes.CDLL:
                "cudaStreamQuery", "cudaEventCreate", "cudaEventDestroy",
                "cudaEventRecord", "cudaEventSynchronize", "cudaEventElapsedTime",
                "cudaDeviceGetAttribute", "cudaGetErrorString", "cudaHostAlloc",
-               "cudaFreeHost", "cudaRuntimeGetVersion"):
+               "cudaFreeHost", "cudaMemset", "cudaRuntimeGetVersion"):
         getattr(lib, fn).restype = ctypes.c_int
     _cudart = lib
     return lib
@@ -259,7 +260,7 @@ def _ptr(value) -> "ctypes.c_void_p":
 
 
 def memcpy(void_ptr, other_ptr, nbytes: int, kind: int,
-           stream: Optional["ctypes.c_void_p"] = None) -> None:
+           stream=None) -> None:
     """同步/异步拷贝。``stream`` 为 None 时走同步版本。
 
     Args:
@@ -267,17 +268,25 @@ def memcpy(void_ptr, other_ptr, nbytes: int, kind: int,
         other_ptr: 源地址。
         nbytes: 字节数。
         kind: ``MEMCPY_*`` 之一。
-        stream: 设备流；给 None 走同步 ``cudaMemcpy``。
+        stream: ``Stream`` 对象、流句柄或 None。给 None 走同步 ``cudaMemcpy``。
 
     Raises:
         CorexRuntimeError: 拷贝返回非 0。
+
+    Notes:
+        ``cudaMemcpyAsync`` 的流参数是裸 ``CUstream`` 句柄；直接传 ``Stream`` 对象时
+        ctypes 会报 ``ArgumentError: argument 5: TypeError: wrong type``（2026-11-07 踩过），
+        所以这里统一拆成句柄。
     """
     dst, src = _ptr(void_ptr), _ptr(other_ptr)
     if stream is None:
         _check("cudaMemcpy", _lib().cudaMemcpy(dst, src, int(nbytes), int(kind)))
         return
+    handle = stream.handle if hasattr(stream, "handle") else stream
+    if not isinstance(handle, ctypes.c_void_p):
+        handle = ctypes.c_void_p(int(handle))
     _check("cudaMemcpyAsync", _lib().cudaMemcpyAsync(dst, src, int(nbytes), int(kind),
-                                                     stream))
+                                                     handle))
 
 
 def malloc_host(nbytes: int) -> "ctypes.c_void_p":
@@ -300,6 +309,46 @@ def free_host(ptr) -> None:
     handle = _ptr(ptr)
     if handle and handle.value:
         _check("cudaFreeHost", _lib().cudaFreeHost(handle))
+
+
+def memset(ptr, value: int, nbytes: int) -> None:
+    """把设备内存的前 ``nbytes`` 字节写成 ``value`` 的低 8 位。"""
+    _check("cudaMemset", _lib().cudaMemset(_ptr(ptr), ctypes.c_int(int(value) & 0xFF),
+                                           int(nbytes)))
+
+
+#: 进程级 pinned 暂存区。为什么不每次现 pin：驱动对 host 路径的每次拷贝都会
+#: ``vmalloc`` + ``get_user_pages_fast`` 重新 pin 页（``docs/qwen4/COREX-DRIVER-FEATURES.md``
+#: §B2），而实测 pageable 只有 4.6 GB/s、pinned 27.7 GB/s（``probes/007``）。所以整块留着、
+#: 只增不减，拷贝复用它。
+_STAGING: dict = {"ptr": 0, "size": 0}
+
+
+def staging(nbytes: int) -> int:
+    """取一块不小于 ``nbytes`` 的 pinned 主机缓冲，返回它的地址。
+
+    只增不减：反复申请/释放会让每次拷贝都付一次 ``cudaHostAlloc``（毫秒级）。
+    进程退出时由驱动回收，不做显式 ``free_host``。
+
+    Args:
+        nbytes: 需要的字节数。
+
+    Returns:
+        主机侧可写地址（int）。调用方只借用，不要保存。
+    """
+    if nbytes > _STAGING["size"]:
+        # 一次要到 4 倍，避免同一个量级里反复扩容（每扩一次就要重新 pin 一次页）。
+        want = max(int(nbytes), 1 << 20) * 4
+        ptr = malloc_host(want)
+        old = _STAGING["ptr"]
+        _STAGING["ptr"] = int(ptr.value or 0)
+        _STAGING["size"] = want
+        if old:
+            try:
+                free_host(ctypes.c_void_p(old))
+            except CorexRuntimeError:
+                pass
+    return _STAGING["ptr"]
 
 
 class Stream:

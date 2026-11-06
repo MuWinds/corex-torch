@@ -41,11 +41,11 @@
 
 | 阶段 | 做什么 | 验收（只认这些） |
 | --- | --- | --- |
-| 0 | 摸清两端：CoreX 运行时能给什么、torch 2.8 要求什么 | **进行中**，见 `00-FACTS.md` §3、`03-TORCH28-API.md`、`04-TRITON-BRIDGE.md` |
-| 1 | torch 2.8 CPU 在 `~/venvs/corex28` 可用 | `import torch` 出 `2.8.0+cpu`，`torch.cuda.is_available() == False` |
-| 2 | **立起设备**：`rename_privateuse1_backend("corex")` + 分配器 + 设备属性 + 流/事件 | `torch.zeros(8, device="corex")` 成功；`.cpu()` 往返**逐字节相等**；`torch.corex.synchronize()` 不报错 |
-| 3 | **第一个算子**：元素级（`add`/`mul`/`copy_`）走 Triton | 与 CPU 参照**完全相等**（fp32 加乘无累加顺序问题），覆盖非整除尾块 |
-| 4 | **推理最小算子集**：`mm`/`bmm`/`softmax`/`rms_norm`/`silu`/`embedding`/`rope` | 每个算子与 CPU 参照的误差量级写在表里；`tl.dot` 仍走 FMA 展开（矩阵单元未接） |
+| 0 | 摸清两端：CoreX 运行时能给什么、torch 2.8 要求什么 | **已完成**，见 `00-FACTS.md` §3、`03-TORCH28-API.md`、`04-TRITON-BRIDGE.md` |
+| 1 | torch 2.8 CPU 在 `~/venvs/corex28` 可用 | **已完成**：`2.8.0+cpu`，`torch.cuda.is_available() == False`（`probes/100`） |
+| 2 | **立起设备**：`rename_privateuse1_backend("corex")` + 分配器 + 设备属性 + 流/事件 | **已完成**：`probes/008` `DEVICE_VERDICT PASS`——`torch.zeros(4, device="corex")`、`.cpu()` 往返逐字节相等、`.item()`、非连续 strides、4 MiB 填读回、`empty_cache` 全过 |
+| 3 | **元素级算子**（`add`/`sub`/`mul`/`div`/`fill`/`silu`/`copy`） | **已完成**：fp32 45/45、fp16 33/33 逐字节相等（`probes/170`、`171`）；add 295.5 GB/s = Triton 基线的 1.00x。**bf16 不支持**，根因是厂商 llc 选不出 `bf16 = fp_round(f32)`（`04-TRITON-BRIDGE.md` §6） |
+| 4 | **推理最小算子集**：规约（`sum`/`mean`）、`softmax`、`mm`/`bmm`、`rms_norm`、`embedding`、`view`/`transpose` | 进行中。每个算子与 CPU 参照的误差量级写进表；`tl.dot` 走 FMA（矩阵单元未接，约 1/15 算力） |
 | 5 | **集成**：coffin 的一条最小前向在 torch 2.8 + corex 上跑通 | 逐 token 与厂商 torch 2.1 的 logits 对齐（误差量级单独记） |
 
 阶段 2 之前不写任何算子代码：**设备层不通，算子层的一切数字都不可信**。
