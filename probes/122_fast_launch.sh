@@ -44,6 +44,9 @@ shim = corex_torch._device.shim()
 scalar_type = corex_torch._device._scalar_type
 DT = scalar_type(torch.float32)
 print("shim 导出数:", len([n for n in dir(shim) if not n.startswith("_")]))
+# 先看 `_aten_kernels.register()` 有没有在**注册期**就把 mm 内核登记进来（Lead 的链路）。
+# 期望至少看到 fp32=6；fp16=5 要等内核组把 fp16/b f16 内核接上。
+print("register() 之后已登记 mm 内核的 dtype:", shim.mm_kernel_dtypes())
 
 # --- 编译一份 mm 内核（与 _ops_matmul 用的完全同一份），取 cubin 与内核名 ---
 kernel = _ops_matmul._get_kernel("fp32", 16, 16, 16, False, 1, 1)
@@ -59,9 +62,14 @@ handle = shim.load_kernel(cubin, name, SPEC)
 handle2 = shim.load_kernel(cubin, name, SPEC)
 print(f"load_kernel 句柄={handle} 二次装载复用同一句柄={handle == handle2} "
       f"已缓存内核数={shim.kernel_count()}")
-# 把内核登记给 C++ 的 aten::mm（fp32 = c10::ScalarType 6），分块参数与编译时一致。
-shim.set_mm_kernel(6, handle, 16, 16, 16, 1)
-print("已登记 mm 内核的 dtype:", shim.mm_kernel_dtypes())
+# 登记给 C++ 的 aten::mm（fp32 = c10::ScalarType 6）。若 `_aten_kernels.register()` 已经登记过，
+# 这里就**不重复登记**——重复会把「Lead 的链路是否真的通」这件事盖住。
+if 6 in shim.mm_kernel_dtypes():
+    print("fp32 已由 _aten_kernels 在注册期登记，探针不重复登记")
+else:
+    shim.set_mm_kernel(6, handle, 16, 16, 16, 1)
+    print("fp32 **未**被注册期登记，探针自行补登记（说明 Lead 的链路未生效）")
+print("最终已登记 mm 内核的 dtype:", shim.mm_kernel_dtypes())
 
 
 def bench(label: str, fn, iters: int = 200):

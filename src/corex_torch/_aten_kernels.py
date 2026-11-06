@@ -20,6 +20,7 @@ Constraints:
 
 from __future__ import annotations
 
+import os
 from typing import Any, Optional, Sequence
 
 DEVICE_NAME = "corex"
@@ -205,6 +206,58 @@ def _index_select_impl(self, dim: int, index) -> Any:
     return out
 
 
+def _view_dtype_impl(self, dtype):
+    """``aten::view.dtype``：同一块存储按另一种 dtype 重新解释（不拷贝）。
+
+    只做**字节宽度兼容**的情况：同宽（如 fp32 ↔ i32）形状不变；窄宽互换只在**一维**上做
+    （torch 对多维的语义是「只改最后一维的元素数」，这个我们还没覆盖，宁可报错）。
+    实现用 ``from_blob`` 包同一块设备指针——它不接管所有权，所以基张量必须还活着。
+    """
+    import torch
+
+    if dtype == self.dtype:
+        return self
+    if self.device.type != DEVICE_NAME:
+        raise NotImplementedError(f"corex 的 view.dtype 要求张量在 corex 上，收到 {self.device}")
+    if not self.is_contiguous():
+        raise NotImplementedError("corex 的 view.dtype 暂不支持非连续张量")
+    src_itemsize = int(self.element_size())
+    dst_itemsize = int(torch.empty((), dtype=dtype).element_size())
+    nbytes = int(self.numel()) * src_itemsize
+    if src_itemsize == dst_itemsize:
+        shape = list(self.shape)
+    elif self.dim() == 1:
+        if nbytes % dst_itemsize:
+            raise RuntimeError(
+                f"view.dtype 要求字节数能被新 dtype 整除：{nbytes} B / {dst_itemsize} B")
+        shape = [nbytes // dst_itemsize]
+    else:
+        raise NotImplementedError(
+            f"corex 的 view.dtype 暂不支持「多维 + 改变元素宽度」（{self.dtype} → {dtype}，"
+            f"shape={tuple(self.shape)}）；请先 view(-1) 再转换")
+    from . import _device
+
+    strides = []
+    acc = 1
+    for dim in reversed(shape):
+        strides.append(acc)
+        acc *= int(dim)
+    return _device.shim().from_blob(self.data_ptr(), shape, list(reversed(strides)),
+                                    _device._scalar_type(dtype), _device._state["device"])
+
+
+#: 是否把 mm 交给 C++ 侧接管。
+#:
+#: **2026-11-07 02:00 起默认关闭**：`probes/009` 抓到 C++ 的 `aten::mm` 在**非方阵**上算错——
+#: `64×128 @ 128×256` 的 max_rel 是 2.4e+04，注意力小块直接全局相对误差 1.0。而 `256×256×256`
+#: 看起来「正常」（还更快：297.8 GFLOP/s）——因为方阵上 X/Y 维交换是**看不见**的。
+#: 最可能的原因是 grid 的 X/Y 与内核里 `pid_m`/`pid_n` 的映射反了，这只在非方阵上显形。
+#:
+#: 静默算错比慢严重得多，所以先退回 Python 实现（那是逐字节验过的），等 C++ 侧补上
+#: 「非方阵 + 逐字节比对」的用例再打开。打开方式：设环境变量 `COREX_FAST_MM=1`。
+ENABLE_FAST_MM = os.environ.get("COREX_FAST_MM", "0") == "1"
+
+
 def _register_fast_mm() -> None:
     """把编译好的 mm 内核句柄登记给 C++ 侧，让 ``aten::mm`` 全程不碰 Python。
 
@@ -255,7 +308,7 @@ def register(lib) -> None:
     """
     from . import _device
 
-    fast_mm = hasattr(_device.shim(), "set_mm_kernel")
+    fast_mm = ENABLE_FAST_MM and hasattr(_device.shim(), "set_mm_kernel")
     # 只有 C++ 没接管时才挂 Python 的 mm：两边都注册会让 torch 打
     # 「Overriding a previously registered kernel for the same operator」警告，
     # 而且谁最后注册谁生效——这种隐式顺序不该出现在后端里。
@@ -266,5 +319,6 @@ def register(lib) -> None:
     lib.impl("sum.IntList_out", _sum_intlist_out_impl, "PrivateUse1")
     lib.impl("mean.out", _mean_out_impl, "PrivateUse1")
     lib.impl("index_select", _index_select_impl, "PrivateUse1")
+    lib.impl("view.dtype", _view_dtype_impl, "PrivateUse1")
     # mm 可能已被 C++ 接管：上面的 impl 只作为「旧版 shim / 未接管」时的实现存在。
     _register_fast_mm()

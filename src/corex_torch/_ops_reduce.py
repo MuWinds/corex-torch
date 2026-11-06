@@ -36,6 +36,7 @@ from ._ops_elementwise import dtype_info, itemsize, traffic_bytes
 
 __all__ = [
     "sum_last", "mean_last", "max_last", "sum_all", "softmax_last",
+    "log_softmax_last", "max_dim", "argmax_last",
     "rms_norm", "layernorm", "cache_info", "clear_cache",
 ]
 
@@ -136,13 +137,19 @@ if triton is not None:
 
     @triton.jit
     def _softmax_kernel(x_ptr, out_ptr, rows, cols,
-                        BLOCK: tl.constexpr, OUT_DTYPE: tl.constexpr):
-        """逐行 softmax：三遍扫描（max → sum(exp) → 写 exp/denom）。
+                        BLOCK: tl.constexpr, OUT_DTYPE: tl.constexpr,
+                        LOG: tl.constexpr):
+        """逐行 softmax / log-softmax：三遍扫描（max → sum(exp) → 写回）。
 
         为什么是通用的三遍而不是「把整行留在寄存器里」：cols 运行期才知道、可能到 4097，
         寄存器放不下。行内三遍在 L1/L2 里命中（一行 4 KB 量级），DRAM 上仍只读一次，但
         **源码层面确实读了三次**，所以探针的 GB/s 口径按「读 1 写 1」算有效吞吐，同时把
         「实际发出 3× 读」写在注释里，不糊。
+
+        ``LOG`` 是 constexpr：``aten::_log_softmax`` 与 ``aten::_softmax`` 的差别只在
+        **最后一遍写什么**（``x - m - log(denom)`` vs ``exp(x-m)/denom``），前三遍
+        （求行最大值、求 exp 之和）完全相同。所以这里用一个分支而不是第二个内核——
+        两份内核会让「改一处忘一处」变成必然（比如以后换 online 算法就得改两次）。
 
         ``out_ptr`` 可以与 ``x_ptr`` 相同：第三遍对每个 lane 是「先读自己那个元素、再写回
         自己那个位置」，跨 lane 没有依赖，原地安全。
@@ -169,12 +176,55 @@ if triton is not None:
             v = tl.load(x_ptr + base + idx, mask=mask, other=0.0).to(tl.float32)
             ps += tl.where(mask, tl.exp(v - m), 0.0)
         denom = tl.sum(ps, axis=0)
-        # 第三遍：写回
+        # 第三遍：写回。log-softmax 省掉最后那次除法，改成减 log(denom)（与 aten 的
+        # `x - max - log(sum(exp(x-max)))` 逐项对应）。
+        log_denom = tl.log(denom)
         for c0 in range(0, cols, BLOCK):
             idx = c0 + offs
             mask = idx < cols
             v = tl.load(x_ptr + base + idx, mask=mask, other=0.0).to(tl.float32)
-            tl.store(out_ptr + base + idx, (tl.exp(v - m) / denom).to(OUT_DTYPE), mask=mask)
+            if LOG:
+                y = v - m - log_denom
+            else:
+                y = tl.exp(v - m) / denom
+            tl.store(out_ptr + base + idx, y.to(OUT_DTYPE), mask=mask)
+
+    @triton.jit
+    def _max_dim_kernel(a_ptr, val_ptr, idx_ptr, rows, cols,
+                        BLOCK: tl.constexpr, OUT_DTYPE: tl.constexpr,
+                        WRITE_VAL: tl.constexpr):
+        """逐行 ``max(dim=1)`` / ``argmax(dim=1)``：返回最大值与**第一个**最大值的下标。
+
+        一次扫描同时求值和小标，靠两个事实：
+        1. 行最大值只需要「当前最大值 + 它出现的**首个**下标」；
+        2. 块内「首个等于 cand 的下标」= ``tl.min(where(valid & (v == cand), idx, cols))``
+           —— 用一个**运行期**的哨兵 ``cols``（大于任何合法下标），而不是 ``-1`` 常量，
+           避免非零向量常量。
+        初始化取第 0 个**真实元素**（不是 ``-inf``）：非零向量常量在 bi 后端会打成
+        ``splat (float 0xFFF…)``，LLVM 16 解析不了（§7.2）。
+
+        ``WRITE_VAL=0`` 时只写下标（argmax 用），此时 ``val_ptr`` 可以是 0（不解引用）。
+        下标按 aten 语义写 **int64**、且取**第一个**最大值（不是最后一个）。
+        NaN 语义未覆盖：torch 的 max 传播 NaN、argmax 返回首个 NaN 下标，这里没做。
+        """
+        row = tl.program_id(0)
+        base = row * cols
+        offs = tl.arange(0, BLOCK)
+        # 初值用真实元素，best 初始 0（第 0 个元素就是「目前的第一个最大」）
+        m = tl.load(a_ptr + base).to(tl.float32)
+        best = 0
+        for c0 in range(0, cols, BLOCK):
+            idx = c0 + offs
+            valid = idx < cols
+            v = tl.load(a_ptr + base + tl.minimum(idx, cols - 1)).to(tl.float32)
+            bigger = valid & (v > m)
+            cand = tl.where(bigger, v, m)
+            i_first = tl.min(tl.where(valid & (v == cand), idx, cols), axis=0)
+            best = tl.where(cand > m, i_first, best)
+            m = cand
+        if WRITE_VAL:
+            tl.store(val_ptr + row, m.to(OUT_DTYPE))
+        tl.store(idx_ptr + row, best.to(tl.int64))
 
     @triton.jit
     def _rms_norm_kernel(x_ptr, w_ptr, out_ptr, rows, cols, eps,
@@ -327,9 +377,20 @@ def _build_kernel(name: str, dtype: Optional[str], op: Optional[int], block: int
     if name == "softmax":
         ptr_ty = dtype_info(dtype)[0]
         sig = {"x_ptr": ptr_ty, "out_ptr": ptr_ty, "rows": "i32", "cols": "i32",
-               "BLOCK": "constexpr", "OUT_DTYPE": "constexpr"}
-        cexpr = {"BLOCK": int(block), "OUT_DTYPE": out_dt}
-        return _compile(_softmax_kernel, sig, cexpr, dtype, num_warps, "softmax")
+               "BLOCK": "constexpr", "OUT_DTYPE": "constexpr", "LOG": "constexpr"}
+        # ``op`` 槽位借来区分 softmax(0) 与 log-softmax(1)：两者共用同一条内核，只有最后
+        # 一遍写回不同（见 `_softmax_kernel` 的 docstring）。
+        cexpr = {"BLOCK": int(block), "OUT_DTYPE": out_dt, "LOG": bool(op)}
+        return _compile(_softmax_kernel, sig, cexpr, dtype, num_warps,
+                        f"softmax(log={bool(op)})")
+    if name == "max_dim":
+        ptr_ty = dtype_info(dtype)[0]
+        sig = {"a_ptr": ptr_ty, "val_ptr": ptr_ty, "idx_ptr": "*i64",
+               "rows": "i32", "cols": "i32",
+               "BLOCK": "constexpr", "OUT_DTYPE": "constexpr", "WRITE_VAL": "constexpr"}
+        cexpr = {"BLOCK": int(block), "OUT_DTYPE": out_dt, "WRITE_VAL": bool(op)}
+        return _compile(_max_dim_kernel, sig, cexpr, dtype, num_warps,
+                        f"max_dim(write_val={bool(op)})")
     if name in ("rms_norm", "layernorm"):
         ptr_ty = dtype_info(dtype)[0]
         sig = {"x_ptr": ptr_ty, "w_ptr": ptr_ty, "out_ptr": ptr_ty,
@@ -426,14 +487,74 @@ def softmax_last(x_ptr, out_ptr, rows: int, cols: int, dtype: str, *,
     精度：``tl.exp`` 落成 ``ex2.approx.f32``，所以本算子**多一层近似**（与 silu 同源）。
     与 CPU 参照的误差由探针单列，不与「逐字节相等」混在一起。
     """
+    _softmax(0, x_ptr, out_ptr, rows, cols, dtype, block, num_warps, stream)
+
+
+def log_softmax_last(x_ptr, out_ptr, rows: int, cols: int, dtype: str, *,
+                     block: Optional[int] = None, num_warps: Optional[int] = None,
+                     stream: Optional[int] = None) -> None:
+    """逐行 log-softmax：``out = x - max_r - log(sum_c exp(x - max_r))``（aten 语义）。
+
+    与 ``softmax_last`` 共用同一条内核，只有最后一遍写回不同（``LOG`` constexpr）。
+    精度：``tl.log`` 走 libdevice ``__nv_logf``，``exp`` 仍是 ``ex2.approx.f32``；
+    误差由探针单列。**不是** ``log(softmax(x))``——那个会先下溢到 0 再取 log，
+    aten 的 ``_log_softmax`` 用的是「减最大值」的稳定形式，这里与之一致。
+    """
+    _softmax(1, x_ptr, out_ptr, rows, cols, dtype, block, num_warps, stream)
+
+
+def _softmax(log: int, x_ptr, out_ptr, rows: int, cols: int, dtype: str,
+             block: Optional[int], num_warps: Optional[int],
+             stream: Optional[int]) -> None:
     dtype_info(dtype)
     if rows < 0 or cols < 0:
         raise ValueError(f"rows/cols 不能为负：rows={rows} cols={cols}")
     if rows == 0 or cols == 0:
         return
     block = int(block or DEFAULT_BLOCK)
-    kernel = _get_kernel("softmax", dtype, None, block, int(num_warps or DEFAULT_NUM_WARPS))
+    kernel = _get_kernel("softmax", dtype, int(log), block,
+                         int(num_warps or DEFAULT_NUM_WARPS))
     _triton.launch(kernel, (rows,), x_ptr, out_ptr, int(rows), int(cols), stream=stream)
+
+
+def max_dim(a_ptr, val_ptr, idx_ptr, rows: int, cols: int, dtype: str, *,
+            block: Optional[int] = None, num_warps: Optional[int] = None,
+            stream: Optional[int] = None) -> None:
+    """``torch.max(x, dim=1)``：同时出**值**与**下标**（下标是 int64、取第一个最大值）。
+
+    Args:
+        a_ptr: 输入设备指针（rows×cols，行主序）。
+        val_ptr: 行最大值的输出指针（``rows`` 个元素，dtype 同输入）。
+        idx_ptr: 下标输出指针（``rows`` 个 **int64**，与 aten 的 ``max.dim`` 一致）。
+        rows/cols: 形状。
+        dtype: 输入/值的 dtype 字符串。
+    """
+    _max_dim(1, a_ptr, val_ptr, idx_ptr, rows, cols, dtype, block, num_warps, stream)
+
+
+def argmax_last(a_ptr, idx_ptr, rows: int, cols: int, dtype: str, *,
+                block: Optional[int] = None, num_warps: Optional[int] = None,
+                stream: Optional[int] = None) -> None:
+    """``torch.argmax(x, dim=1)``：只出下标（int64，第一个最大值）。
+
+    与 ``max_dim`` 共用内核（``WRITE_VAL=0`` 时不解引用 ``val_ptr``，传 0 即可）。
+    """
+    _max_dim(0, a_ptr, 0, idx_ptr, rows, cols, dtype, block, num_warps, stream)
+
+
+def _max_dim(write_val: int, a_ptr, val_ptr, idx_ptr, rows: int, cols: int, dtype: str,
+             block: Optional[int], num_warps: Optional[int],
+             stream: Optional[int]) -> None:
+    dtype_info(dtype)
+    if rows < 0 or cols < 0:
+        raise ValueError(f"rows/cols 不能为负：rows={rows} cols={cols}")
+    if rows == 0 or cols == 0:
+        return
+    block = int(block or DEFAULT_BLOCK)
+    kernel = _get_kernel("max_dim", dtype, int(write_val), block,
+                         int(num_warps or DEFAULT_NUM_WARPS))
+    _triton.launch(kernel, (rows,), a_ptr, val_ptr, idx_ptr, int(rows), int(cols),
+                   stream=stream)
 
 
 def _norm(name: str, x_ptr, w_ptr, out_ptr, rows: int, cols: int, eps: float,
