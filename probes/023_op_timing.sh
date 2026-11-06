@@ -31,7 +31,7 @@ corex_torch.register()
 torch.manual_seed(3)
 
 DIM, HEADS, HD, L, VOCAB = 64, 4, 16, 6, 32
-ITERS = 50
+ITERS = 500
 
 
 def dev(t):
@@ -39,17 +39,30 @@ def dev(t):
 
 
 def bench(name, fn, iters=ITERS):
-    """跑 iters 次，循环外同步一次；先热身两次把首次编译排除。"""
+    """逐次采样后报 **p50 / p90 / max + 停顿计数**，不报均值。
+
+    为什么不报均值：这张卡是多租户共享的（沙箱队列串行，但物理卡可能还有别的容器），
+    约 4% 的迭代会吃到 100 µs 以上的驱动抢占停顿，而停顿与工作量、形状**完全无关**。
+    50 次的均值里只要混进一次 ~120 ms 的停顿，就会把 13.5 µs 的算子报成 2.5 ms
+    （triton-bridge 的 `probes/198` 就是这么把我那份 `bmm` 数据证伪的）。
+    p50 对这种加性噪声免疫。
+    """
     fn()
     fn()
     torch.corex.synchronize()
-    t0 = time.perf_counter()
+    samples = []
     for _ in range(iters):
+        t0 = time.perf_counter_ns()
         fn()
+        samples.append((time.perf_counter_ns() - t0) / 1000.0)
     torch.corex.synchronize()
-    us = 1e6 * (time.perf_counter() - t0) / iters
-    print(f"  {name:46s} {us:9.1f} us")
-    return us
+    samples.sort()
+    p50 = samples[len(samples) // 2]
+    p90 = samples[min(len(samples) - 1, int(len(samples) * 0.9))]
+    stalls = sum(1 for s in samples if s > 100.0)
+    print(f"  {name:44s} p50={p50:8.1f}  p90={p90:8.1f}  max={samples[-1]:9.1f}  "
+          f"停顿={stalls:3d}/{iters}")
+    return p50
 
 
 x1 = dev(torch.randn(1, DIM))
@@ -76,7 +89,19 @@ def timed(name, fn, iters=ITERS):
         return None
 
 
-print("=== A. decode 里出现的算子（µs/次，含 Python 派发）===")
+print("=== 0. 对照组（任何「某算子特别慢」的结论都要先跟这两条比）===")
+_tmpfill = dev(torch.zeros(64))
+
+
+def _noop():
+    pass
+
+
+timed("纯 Python 空循环", _noop, 500)
+timed("只 synchronize()", lambda: torch.corex.synchronize(), 500)
+timed("fill 64 元素（最小的真内核）", lambda: _tmpfill.fill_(1.0), 500)
+
+print("=== A. decode 里出现的算子（p50，含 Python 派发）===")
 timed("empty(1,64) 分配", lambda: torch.empty(1, DIM, device="corex"))
 timed("embedding(1 id)", lambda: F.embedding(ids, emb))
 timed("rms_norm [1,64]", lambda: F.rms_norm(x1, (DIM,), weight=gamma))

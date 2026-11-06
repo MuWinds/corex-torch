@@ -97,6 +97,10 @@ struct CorexApi {
   int (*cudaMalloc)(void**, size_t) = nullptr;
   int (*cudaFree)(void*) = nullptr;
   int (*cudaMemcpy)(void*, const void*, size_t, int) = nullptr;
+  /// 2-D 拷贝：一次调用搬 `height` 行、每行 `width` 字节，行间按 pitch 走。
+  /// 为什么要它：同步 `cudaMemcpy` 在本平台实测每次 5–13 µs，**调用次数比字节数贵**；
+  /// 拼接/带行间隙的拷贝用一条 memcpy2D 替掉 N 条 memcpy，是这批性能问题的主解法。
+  int (*cudaMemcpy2D)(void*, size_t, const void*, size_t, size_t, size_t, int) = nullptr;
   int (*cudaDeviceSynchronize)() = nullptr;
   int (*cudaStreamSynchronize)(void*) = nullptr;
   /// `cudaGetErrorString` 返回 `const char*`，单独用正确签名的函数指针接。
@@ -166,6 +170,9 @@ void load_api_locked() {
   g_api.cudaMalloc = bind_symbol<int (*)(void**, size_t)>(handle, "cudaMalloc");
   g_api.cudaFree = bind_symbol<int (*)(void*)>(handle, "cudaFree");
   g_api.cudaMemcpy = bind_symbol<int (*)(void*, const void*, size_t, int)>(handle, "cudaMemcpy");
+  g_api.cudaMemcpy2D =
+      bind_symbol<int (*)(void*, size_t, const void*, size_t, size_t, size_t, int)>(handle,
+                                                                                "cudaMemcpy2D");
   g_api.cudaDeviceSynchronize = bind_symbol<int (*)()>(handle, "cudaDeviceSynchronize");
   g_api.cudaStreamSynchronize = bind_symbol<int (*)(void*)>(handle, "cudaStreamSynchronize");
   g_api.cudaGetErrorStringStr = bind_symbol<const char* (*)(int)>(handle, "cudaGetErrorString");
@@ -459,6 +466,29 @@ class CorexAllocator final : public c10::Allocator {
   /// 「指针 → 记账表」查的；torch 允许后端不要这个能力。
   c10::DeleterFnPtr raw_deleter() const override { return nullptr; }
 };
+
+/// `cudaMemcpy2D` 的 device-to-device：一次搬 `height` 行、每行 `width` 字节。
+///
+/// 为什么要它：同步 `cudaMemcpy` 在本平台实测每次 5–13 µs
+/// （`probes/124`），所以**调用次数比字节数贵**。拼接、带行间隙的拷贝、以及
+/// 「沿一维跳着取」的转置，都能用一条 memcpy2D 替掉 N 条 memcpy。
+///
+/// @param dest 目的首地址；@param dest_pitch 目的行间距（字节）
+/// @param src 源首地址；@param src_pitch 源行间距（字节）
+/// @param width 每行字节数；@param height 行数；@param device_index 目标卡
+void memcpy2d(int64_t dest, int64_t dest_pitch, int64_t src, int64_t src_pitch, int64_t width,
+              int64_t height, int64_t device_index) {
+  bind_runtime_device(device_index);
+  TORCH_CHECK(width >= 0 && height >= 0, "corex_shim: memcpy2d 的 width/height 不能为负");
+  if (width == 0 || height == 0) {
+    return;
+  }
+  check_rc("cudaMemcpy2D(D2D)",
+           api().cudaMemcpy2D(reinterpret_cast<void*>(dest), static_cast<size_t>(dest_pitch),
+                              reinterpret_cast<const void*>(src), static_cast<size_t>(src_pitch),
+                              static_cast<size_t>(width), static_cast<size_t>(height),
+                              /*kind=*/3));
+}
 
 /// 全局分配器实例（`SetAllocator` 要求静态生命周期）。
 CorexAllocator g_allocator;
@@ -1290,6 +1320,7 @@ using corex_shim::kernel_count;
 using corex_shim::last_error;
 using corex_shim::launch;
 using corex_shim::mm_kernel_dtypes;
+using corex_shim::memcpy2d;
 using corex_shim::mm_kernel_info;
 using corex_shim::load_kernel;
 using corex_shim::reserved_bytes;
@@ -1333,6 +1364,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         pybind11::arg("num_warps") = 1, pybind11::arg("shared") = -1,
         "登记 aten::mm 用的内核（按 dtype）；shared 传 metadata.shared（-1 = 用 load_kernel 记的）");
   m.def("mm_kernel_dtypes", &mm_kernel_dtypes, "已登记 mm 内核的 dtype 列表");
+  m.def("memcpy2d", &memcpy2d, pybind11::arg("dest"), pybind11::arg("dest_pitch"),
+        pybind11::arg("src"), pybind11::arg("src_pitch"), pybind11::arg("width"),
+        pybind11::arg("height"), pybind11::arg("device_index"),
+        "2-D D2D 拷贝：一次搬 height 行、每行 width 字节（行间按 pitch）");
   m.def("mm_kernel_info", &mm_kernel_info,
         "已登记 mm 内核明细 [[dtype, bm, bn, bk, warps, shared], ...]");
 }

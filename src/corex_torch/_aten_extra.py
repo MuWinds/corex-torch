@@ -340,21 +340,29 @@ def _cat_out(tensors, dim: int = 0, *, out=None):
         return out
 
     runtime = _mod("_runtime")
+    device_index = int(out.device.index or 0)
     # 硬规则：每次 raw memcpy 之前把当前设备绑到 out 所在的卡（跨设备指针会静默别名）。
-    runtime.set_device(int(out.device.index or 0))
+    runtime.set_device(device_index)
     item = int(out.element_size())
     outer = _meta.prod(tuple(int(x) for x in expected[:axis]))
     out_row_bytes = int(expected[axis]) * inner * item
+    memcpy2d = _shim().memcpy2d
+    out_base = out.data_ptr()
     dim_offset = 0                      # 沿拼接维已经积累的元素数
     for tensor in tensors:
         length = int(tensor.shape[axis])
         if length == 0:
             continue
         row_bytes = length * inner * item
-        for outer_index in range(outer):
-            dst = out.data_ptr() + outer_index * out_row_bytes + dim_offset * inner * item
-            src = tensor.data_ptr() + outer_index * row_bytes
-            runtime.memcpy(dst, src, row_bytes, runtime.MEMCPY_DEVICE_TO_DEVICE)
+        if outer > 1:
+            # 一条 memcpy2D 搬完这个输入的 outer 行：同步 cudaMemcpy 在本平台每次 5–13 µs
+            # （probes/124 实测），所以**调用次数**比字节数贵。把 outer 条合成 1 条是这批
+            # 性能问题的主解法：KV cache 的 [4,L,16] 拼接从 8 条降到 2 条。
+            memcpy2d(out_base + dim_offset * inner * item, out_row_bytes,
+                     tensor.data_ptr(), row_bytes, row_bytes, outer, device_index)
+        else:
+            runtime.memcpy(out_base + dim_offset * inner * item, tensor.data_ptr(), row_bytes,
+                           runtime.MEMCPY_DEVICE_TO_DEVICE)
         dim_offset += length
     return out
 
@@ -442,6 +450,7 @@ def _copy_impl(self, src, non_blocking: bool = False):
     src_stride = tuple(int(x) for x in src.stride())
     sizes = tuple(int(x) for x in self.shape)
     memcpy = runtime.memcpy
+    memcpy2d = _shim().memcpy2d
     kind = runtime.MEMCPY_DEVICE_TO_DEVICE
     dst_base = self.data_ptr()
     src_base = src.data_ptr()
@@ -462,8 +471,42 @@ def _copy_impl(self, src, non_blocking: bool = False):
             memcpy(dst_base + dst_off, src_base, block_bytes, kind)
         return self
 
-    # 通用路径：把「末尾连续的一段」合成一次 memcpy，外层按 stride 走。
+    # 快路径 3：外层各维在母侧都「彼此紧挨」时，整个拷贝就是一条 memcpy2D
+    # （行数 = 外层元素个数，行宽 = run 个元素）。同步 cudaMemcpy 每次 5–13 µs，
+    # 这条把「N 条 memcpy」压成 1 条，`slice+contiguous` 这类走的就是它。
     run, run_dims = _inner_run(self, src)
+    if run_dims > 0 and run_dims < self.dim():
+        outer_dims = list(range(self.dim() - run_dims))
+        packed = True
+        for left, right in zip(outer_dims, outer_dims[1:]):
+            if (dst_stride[left] != sizes[right] * dst_stride[right]
+                    or src_stride[left] != sizes[right] * src_stride[right]):
+                packed = False
+                break
+        if packed:
+            height = 1
+            for dim in outer_dims:
+                height *= sizes[dim]
+            memcpy2d(dst_base, dst_stride[outer_dims[0]] * item,
+                     src_base, src_stride[outer_dims[0]] * item,
+                     run * item, height, int(self.device.index or 0))
+            return self
+
+    # 快路径 4：二维转置（解码路径里 ``k_.t().contiguous()`` 每步都出现）。
+    # 这种情形源沿最后一维「跳着取」，一次 memcpy 只能搬 1 个元素；一条 memcpy2D
+    # 能搬一整行（width=1 个元素、height=该维长度、src_pitch=源行距），
+    # 调用数从 numel 降到「目的行数」。**根治还是需要一条 gather 内核**（一次发射即可），
+    # 这条只是把「几千次同步 memcpy」压成「几十次」。
+    if (self.dim() == 2 and self.is_contiguous() and sizes[1] > 1
+            and src_stride[1] != 1 and src_stride[0] < src_stride[1]):
+        device_index = int(self.device.index or 0)
+        row_bytes = sizes[1] * item
+        for row in range(sizes[0]):
+            memcpy2d(dst_base + row * row_bytes, item,
+                     src_base + row * src_stride[0] * item, src_stride[1] * item,
+                     item, sizes[1], device_index)
+        return self
+    # 通用路径：把「末尾连续的一段」合成一次 memcpy，外层按 stride 走。
     outer_dims = list(range(self.dim() - run_dims))
     outer_shape = [sizes[dim] for dim in outer_dims]
     move_bytes = run * item

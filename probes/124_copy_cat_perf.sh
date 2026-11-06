@@ -146,18 +146,29 @@ def main():
             lambda: torch.cat((k, kv), dim=1, out=out1), 2 * nbytes,
             torch.cat((k_cpu, kv_cpu), dim=1), 4 * 2)
 
+    # --- 解码路径的真实形状：k_.t().contiguous()（[16,64] 转置） ---
+    print("\n=== 解码形态：[16,64].t().contiguous()（注意力块每步 1 次）===")
+    k_cpu = torch.arange(16 * 64, dtype=torch.float32).reshape(16, 64)
+    k = k_cpu.to("corex")
+    results[(("decode"), "transpose_16x64")] = report(
+        "t([16,64]).contiguous()", lambda: k.t().contiguous(), 2 * 16 * 64 * 4,
+        k_cpu.t().contiguous(), 64)
     # --- 复验 probes/022 报的那个 stride：(16, 64, 1) 的 [4, 1, 16] ---
     print("\n=== 回归：probes/022 里被旧检查拒掉的 [4,1,16] stride=(16,64,1) ===")
-    base_cpu = torch.arange(4 * 4 * 16, dtype=torch.float32).reshape(4, 4, 16)
-    base = base_cpu.to("corex")
-    sliced = base[:, 0:1, :]                            # 形状 [4,1,16]，size-1 维 stride 任意
+    # 精确复现 Lead 报的那个张量：形状 [4,1,16]、stride (16,64,1)。
+    # 用 as_strided 直接造（切片造不出这个 stride 组合）：torch 的连续性判定忽略 size-1 维，
+    # 所以它 is_contiguous() == True，而旧检查按「每维 stride == 尾积」会把它拒掉。
+    flat = torch.arange(64, dtype=torch.float32)
+    ref_cpu = torch.as_strided(flat, (4, 1, 16), (16, 64, 1))
+    base = flat.to("corex")
+    sliced = torch.as_strided(base, (4, 1, 16), (16, 64, 1))
     print(f"  输入 is_contiguous()={sliced.is_contiguous()} stride={tuple(sliced.stride())}")
     tail_cpu = torch.arange(4 * 3 * 16, dtype=torch.float32).reshape(4, 3, 16) + 1.0
     tail = tail_cpu.to("corex")
     out = torch.empty(4, 4, 16, device="corex")
     try:
         got = torch.cat((sliced, tail), dim=1, out=out)
-        ok = torch.equal(readback(got), torch.cat((base_cpu[:, 0:1, :], tail_cpu), dim=1))
+        ok = torch.equal(readback(got), torch.cat((ref_cpu, tail_cpu), dim=1))
         print(f"  {'OK  ' if ok else 'FAIL'} cat([4,1,16] + [4,3,16], dim=1) 数值一致={ok}")
         cat_size1_ok = ok
     except Exception as exc:                            # noqa: BLE001
