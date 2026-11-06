@@ -433,6 +433,44 @@ def _out_binary_into(name: str, self, other, out, alpha) -> Any:
     return out
 
 
+def _cpp_owned_schemas() -> set:
+    """查 C++ 侧已经接管的 aten schema（目前是逐元素算子那一批）。
+
+    为什么要问：**torch 的注册是「后注册者赢」**，我们在 Python 侧再注册一次就会盖掉 C++ 的
+    快路径。而症状是「一切都对，只是慢」——`probes/125` 里 `.out` 一直停在 42–78 µs 就是这个原因，
+    查了一轮才定位到。
+
+    Returns:
+        schema 名字集合；C++ 侧没有这个接口（旧 shim）时返回空集合。
+    """
+    try:
+        shim = _state.get("shim")
+        if shim is None or not hasattr(shim, "elementwise_op_names"):
+            return set()
+        return {str(name) for name in shim.elementwise_op_names()}
+    except Exception:                                   # noqa: BLE001
+        return set()
+
+
+def _cpp_supports_broadcast() -> bool:
+    """C++ 的逐元素快路径是否支持广播/0 维标量实参。
+
+    为什么要单独问：C++ 只要「同形、连续、同 dtype」，而模型里大量是广播
+    （`x1 * cos[:, None, :]`）与 0 维标量（`view.add_(2.5)`）。能力不够就让位，
+    否则会把「能算但慢」变成「不能算」——`probes/023` 里 `x1 * 2.0` 抛「只支持同形」就是这么来的。
+
+    Returns:
+        真表示 C++ 已能处理广播与 0 维实参，Python 侧可以完全不注册这些 `.out`。
+    """
+    try:
+        shim = _state.get("shim")
+        if shim is None or not hasattr(shim, "elementwise_supports_broadcast"):
+            return False
+        return bool(shim.elementwise_supports_broadcast())
+    except Exception:                                   # noqa: BLE001
+        return False
+
+
 def _register_ops() -> None:
     """把第一批 aten 算子挂到 PrivateUse1 上。
 
@@ -451,7 +489,20 @@ def _register_ops() -> None:
     lib.impl("zero_", _zero_impl, "PrivateUse1")
     lib.impl("fill_.Scalar", _fill_scalar_impl, "PrivateUse1")
     lib.impl("_local_scalar_dense", _local_scalar_dense_impl, "PrivateUse1")
+    # 逐元素二元算子的 `.out`：**C++ 已经接管的就不要重复注册**。
+    # 重复注册的后果不是「覆盖成我们的」，而是「我们的盖住了 C++ 的」——`probes/125` 里那条
+    # `Overriding ... aten::add.out ... previous kernel: RegisterCPU_0.cpp` 就是它，
+    # 于是 `.out` 一直停在 42–78 µs，而 C++ 的 inplace 路径只要 **1.96 µs**（差 20–40 倍）。
+    # 这条和 mm 那条是同一个坑：**后注册者赢**，所以「谁快谁注册」必须显式判断。
+    #
+    # 但只有在 C++ **能力足够**时才让位：C++ 的快路径目前只做「同形、连续、同 dtype」，
+    # 而真实前向里到处是广播（`x1 * cos[:, None, :]`）。让位过早的后果是
+    # `probes/023` 里 `x1 * 2.0` 直接抛「只支持同形」——把「能算但慢」变成「不能算」。
+    # 所以用 `elementwise_supports_broadcast()` 显式询问，C++ 侧补齐后自动切换。
+    owned = _cpp_owned_schemas() if _cpp_supports_broadcast() else set()
     for op in ("add", "sub", "mul", "div"):
+        if f"{op}.out" in owned:
+            continue
         lib.impl(f"{op}.out", _out_binary(op), "PrivateUse1")
     # 第二批 aten（元数据类、规约、拼装）单独一个模块：它们要么靠 composite 自动成立、
     # 要么需要逐个判断「为什么不交给 composite」，混在这个文件里会让注册表变成一锅粥。

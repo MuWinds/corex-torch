@@ -694,3 +694,34 @@ argmax 6/6、KV cache 逐字节稳定）；`probes/018` 整段前向 56.2 ms 不
 抽查两个（`probes/025` §3）：`add/tensor/fp32` → `n_ptrs=3 n_i32=1 n_f32=1
 alpha_effective=True block=1024 warps=4 stages=1 cubin=7168B`；
 `mul/tensor/bf16` → 同形但 `alpha_effective=False`、`cubin=7008B`。
+
+## 34. C++ 逐元素快路径落地：`add` 78.8 → 12.3 µs（`probes/023`、`probes/125`）
+
+`_register_fast_ops()` 把 24 个内核（4 op × 2 variant × 3 dtype）的句柄交给 C++ 之后：
+
+| 路径 | p50 | 说明 |
+| --- | --- | --- |
+| `add_.Tensor`（inplace，C++） | **1.96 µs** | 三档 dtype 1.93–1.98，逐字节一致 |
+| `aten add`（`x1 + x1`，Tensor-Tensor） | **12.3 µs**（原 78.8） | 达到门槛（≤12，实测 12.3） |
+| 我们的实现体（绕开 aten 直调） | 36.7 µs | 说明剩下的差距确实在 C++/aten 那一层 |
+| 纯分发（把 `add.out` 换成空实现） | 11.8 µs | 约等于「aten 回调 + Python 空函数」的地板 |
+| `mul.out` 带 0 维/广播实参 | **报错** | 见下：C++ 目前只做同形，待补 |
+| decode 热跑 | 17.1 → **8.8 ms/步** | 正确性不变（逐 token 6.62e-06、argmax 6/6） |
+
+**两条注册纪律**（都是踩出来的）：
+
+1. **后注册者赢**。C++ 在 `.so` 加载时注册、我们在 `register()` 里注册，所以 Python 再注册一次就
+   盖掉 C++ 快路径——症状是「一切都对，只是慢」（`.out` 停在 42–78 µs）。现在先问
+   `shim.elementwise_op_names()` 再决定要不要注册。
+2. **让位之前必须先问能力**。C++ 当前只支持「同形、连续、同 dtype」，而模型里大量是广播
+   （`x1 * cos[:, None, :]`）与 0 维标量（`view.add_(2.5)`）。第一次让位让 `x1 * 2.0` 直接抛
+   「只支持同形」——把「能算但慢」变成「不能算」。所以加了 `elementwise_supports_broadcast()`
+   这道能力探测：C++ 补齐广播/0 维之后返回真，Python 侧自动让位。
+
+**待 C++ 侧补的两件**（已把口径发过去）：广播实参要物化到 out 形状而不是报错；0 维张量实参
+（`add_.Tensor` 收到 0 维张量而不是 float）要读值后走标量内核，且**只在这一种情况**付 D2H 的同步代价，
+Python 传来的 float 标量不该有同步。
+
+**异常不能再静默吞**：`_register_fast_ops()` 里原来的 `except: continue` 让「cubin 里读不出函数符号」
+变成「注册表空着、上层只看到没登记」，白查一轮。现在每个 (op, dtype, variant) 警告一次，并写明
+「该算子回落 Python、每次多约 50 µs」。

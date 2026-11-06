@@ -1072,3 +1072,48 @@ Lead 用 **p50 + 500 次**把范围锁到 `_copy_impl` 的**非连续源**：
 | `021_axis_reduce` | `PASS` |
 | `022_decode_loop` | `PASS`（9.2 ms/步） |
 | `124_copy_cat_perf` | `PASS` 13/13 用例 |
+
+---
+
+## 16. 逐元素算子的 C++ 接管（`load_fast_op`，2026-11-07 03:25）
+
+照 `aten::mm` 的模式，把 `add/sub/mul/div` 的 out / inplace / scalar 三条路径挪进 C++。
+
+### 16.1 接口（由 Lead 定稿）
+
+```python
+shim.load_fast_op(op, variant, dtype, cubin, num_warps, num_stages,
+                  n_ptrs, n_i32, n_f32, alpha_effective, block, name="", shared=0)
+```
+`name`/`shared` 是可选尾参（默认空/0）。实参表由内核组从签名**数出来**
+（`_ops_elementwise.get_launch_meta()`），C++ 侧不抄默认值——抄的那份会漂移，
+而漂移的表现是「跑完了但全错」。
+
+### 16.2 三个必须记下来的坑
+
+| 坑 | 现象 | 修法 |
+| --- | --- | --- |
+| **out 变体的 kernel 签名里 `out` 在最后** | `.so` 加载期直接 `terminate`（`Mismatch in kernel C++ signatures`） | `Tensor& impl(const Tensor& self, const Tensor& other, const Scalar& alpha, Tensor& out)`；不是 ATen native 那种 out-first |
+| **cubin 里读不出函数符号** | `load_fast_op` 报「在 cubin 的 .symtab 里找不到函数符号」，而 Python 侧 `except: continue` 把它吞掉了 → 注册表空、C++ 实现报「还没登记内核」 | 改成候选名探测：调用方给的 `name` → `_binary_kernel`/`_scalar_kernel` → ELF 符号表。实测 `_binary_kernel` 就够（`probes/126` 第 3.5 节） |
+| **Python 注册会覆盖 C++ 注册** | `aten add.out` 仍是 42 µs（`_device._out_binary` 的 Python 实现把 C++ 盖住了，那条 `Overriding ... previous kernel` 警告就是它） | `shim.elementwise_op_names()` 给 Python 侧一份「C++ 已接管」清单，Python 侧必须据此跳过 |
+
+### 16.3 实测（`probes/125`，p50 / 500 次，逐字节比对）
+
+| 路径 | fp32 | fp16 | bf16 | 判据 |
+| --- | --- | --- | --- | --- |
+| `add_.Tensor`（C++） | **1.96 µs** | **1.98 µs** | **1.94 µs** | ≤12 ✓（Python 基线 78.8） |
+| `sub_.Tensor` / `mul_.Tensor`（C++） | 2.07 / 1.97 µs | 2.09 / 1.95 µs | 2.05 / 1.93 µs | ✓ |
+| `add.out` / `sub.out` / `mul.out` / `div.out` | 42–44 µs | 42–43 µs | 42–44 µs | ✗ 仍是 Python（被 `_device` 覆盖） |
+
+`probes/126` 用同一份 meta 手动登记后量 `add_.Tensor`：**10.9 / 10.7 / 10.6 µs**
+（含探针自己的 `copy_from`），逐字节一致——C++ 路径本身是对的。
+
+### 16.4 仍卡住的两点（等 Lead 决定）
+
+1. **out 变体被 `_device._out_binary` 覆盖**：Python 后注册、后生效，C++ 拿不到。
+   需要在 `_device._register_ops()` 里用 `shim.elementwise_op_names()` 跳过这 8 个 schema。
+2. **标量变体走不到**：`view.add_(2.5)` 实测最终派发到 `aten::add_.Tensor`，`other` 是
+   **0-dim 张量**，形状与 self 不同 → C++ 的「同形」快路径拒绝。两条路可选：
+   - (a) C++ 支持 0-dim 张量：要把它读成标量，得做一次 4 字节 D2H（约 10 µs），收益打折；
+   - (b) 标量这 4 个 schema 留给 Python 实现（`_aten_extra` 已经能处理），
+         即从 `elementwise_op_names()` 里去掉 `*.Scalar`。

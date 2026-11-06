@@ -1325,6 +1325,54 @@ using ElemKey = std::tuple<int, int, int>;   ///< (op_code, variant, dtype_code)
 std::mutex g_elem_mutex;
 std::map<ElemKey, ElemKernel> g_elem_kernels;
 
+/// 按候选名列表装载内核：装一次 module，逐个试 `cuModuleGetFunction`，第一个成功的算数。
+///
+/// 为什么要「候选名」：`cuModuleGetFunction` 只认名字，而 `load_fast_op` 的入参只有
+/// cubin 字节。实测这些 cubin 的 `.symtab` 里读不出可用的函数符号（`probes/126`：
+/// ELF 解析拿不到名字），所以按优先级试：
+///   1. 调用方显式给的名字（Python 侧 `meta["name"]` 就有，最可靠）；
+///   2. Triton 两个变体固定的函数名（`_binary_kernel` / `_scalar_kernel`）；
+///   3. 从 ELF 符号表猜出来的那个（有就用）。
+int64_t load_kernel_any_name(const std::string& cubin, const std::vector<std::string>& names,
+                             const std::string& spec, int64_t shared_bytes) {
+  TORCH_CHECK(!cubin.empty(), "corex_shim: 收到空 cubin");
+  TORCH_CHECK(!names.empty(), "corex_shim: 候选内核名列表为空");
+  size_t key = fnv1a(cubin.data(), cubin.size(), static_cast<size_t>(1469598103934665603ULL));
+  for (const std::string& name : names) {
+    key = fnv1a(name.data(), name.size(), key);
+  }
+  key = fnv1a(spec.data(), spec.size(), key);
+  key = fnv1a(&shared_bytes, sizeof(shared_bytes), key);
+
+  std::lock_guard<std::mutex> lock(g_kernel_mutex);
+  const auto found = g_kernels.find(key);
+  if (found != g_kernels.end()) {
+    return reinterpret_cast<int64_t>(found->second);
+  }
+  const CudaApi& api_ref = cuda_api();
+  ensure_context();
+  auto* entry = new KernelEntry();
+  entry->spec = spec;
+  entry->shared = shared_bytes;
+  check_cu("cuModuleLoadData", api_ref.cuModuleLoadData(&entry->module, cubin.data()));
+  int last_rc = 0;
+  for (const std::string& name : names) {
+    void* function = nullptr;
+    last_rc = api_ref.cuModuleGetFunction(&function, entry->module, name.c_str());
+    if (last_rc == 0 && function != nullptr) {
+      entry->function = function;
+      entry->name = name;
+      break;
+    }
+  }
+  if (entry->function == nullptr) {
+    delete entry;
+    TORCH_CHECK(false, "corex_shim: cubin 里找不到候选内核（试过 ", names.size(),
+                " 个名字，最后一个 rc=", last_rc, "）");
+  }
+  g_kernels[key] = entry;
+  return reinterpret_cast<int64_t>(entry);
+}
 /// 从 cubin（ELF64 可重定位对象）里找出内核符号名。
 ///
 /// 为什么需要：`cuModuleGetFunction` 只认名字，而 `load_fast_op` 的入参只有 cubin 字节；
@@ -1467,7 +1515,7 @@ ElemKernel elem_kernel_for(int op_code, ElemVariant variant, const at::Tensor& a
 void load_fast_op(const std::string& op, const std::string& variant, const std::string& dtype,
                   const std::string& cubin, int64_t num_warps, int64_t num_stages, int64_t n_ptrs,
                   int64_t n_i32, int64_t n_f32, bool alpha_effective, int64_t block,
-                  int64_t shared) {
+                  const std::string& name, int64_t shared) {
   (void)num_stages;                       // 只在需要复现编译配置时才有意义
   const int op_code = op_code_from_name(op);
   const int dtype_code = dtype_code_from_name(dtype);
@@ -1489,8 +1537,23 @@ void load_fast_op(const std::string& op, const std::string& variant, const std::
   spec.append(static_cast<size_t>(n_f32), 'f');
   spec.push_back('p');
 
-  const std::string name = kernel_name_from_cubin(cubin);
-  const int64_t handle = load_kernel(cubin, name, spec, shared);
+  // 候选名顺序：调用方给的 → Triton 变体固定名 → ELF 猜出来的（拿不到就算了）。
+  std::vector<std::string> names;
+  if (!name.empty()) {
+    names.push_back(name);
+  }
+  names.push_back(variant_kind == ElemVariant::Tensor ? "_binary_kernel" : "_scalar_kernel");
+  names.push_back("_binary_kernel");
+  names.push_back("_scalar_kernel");
+  try {
+    const std::string from_elf = kernel_name_from_cubin(cubin);
+    if (!from_elf.empty()) {
+      names.push_back(from_elf);
+    }
+  } catch (const std::exception&) {
+    // 解析不出来不算错：候选名里已经有可用的了。
+  }
+  const int64_t handle = load_kernel_any_name(cubin, names, spec, shared);
 
   std::lock_guard<std::mutex> lock(g_elem_mutex);
   ElemKernel kernel;
@@ -1528,9 +1591,57 @@ std::vector<std::string> elementwise_op_names() {
 
 namespace {
 
+/// 把一个 0 维 / 单元素张量读成 host 标量（**一次** `cudaMemcpy` D2H，4 或 8 字节）。
+///
+/// 三条纪律（Lead 定的口径）：
+///   1. 按 `t.scalar_type()` 解释字节，**不能按 self 的 dtype 硬读**——`add_(2.5)` 常见是
+///      0 维 fp32 配 fp16 self，硬读会读到垃圾；读出来统一转 double，再交给吃 f32 的内核。
+///   2. 只有 `dim()==0 && numel()==1` 才允许走这里，其它形状不匹配一律报错。
+///   3. D2H 会打断流水，所以它只出现在这一个分支里，不给其它路径加同步。
+double read_scalar_from_device(const at::Tensor& t) {
+  TORCH_CHECK(t.device().is_privateuseone(), "corex: 0 维张量不在 corex 上（", t.device(), "）");
+  TORCH_CHECK(t.is_contiguous(), "corex: 0 维张量不连续");
+  bind_runtime_device(t.device().index());
+  const size_t nbytes = static_cast<size_t>(t.element_size());
+  alignas(8) unsigned char buffer[16] = {0};
+  TORCH_CHECK(nbytes <= sizeof(buffer), "corex: 0 维张量的元素大小异常（", nbytes, " 字节）");
+  check_rc("cudaMemcpy(D2H 标量)",
+           api().cudaMemcpy(buffer, t.const_data_ptr(), nbytes, /*kind=*/2));
+  switch (t.scalar_type()) {
+    case at::kHalf:
+      return static_cast<float>(*reinterpret_cast<const c10::Half*>(buffer));
+    case at::kBFloat16:
+      return static_cast<float>(*reinterpret_cast<const c10::BFloat16*>(buffer));
+    case at::kFloat: {
+      float value = 0.0F;
+      std::memcpy(&value, buffer, sizeof(value));
+      return static_cast<double>(value);
+    }
+    case at::kDouble: {
+      double value = 0.0;
+      std::memcpy(&value, buffer, sizeof(value));
+      return value;
+    }
+    case at::kInt: {
+      int32_t value = 0;
+      std::memcpy(&value, buffer, sizeof(value));
+      return static_cast<double>(value);
+    }
+    case at::kLong: {
+      int64_t value = 0;
+      std::memcpy(&value, buffer, sizeof(value));
+      return static_cast<double>(value);
+    }
+    default:
+      TORCH_CHECK(false, "corex: 不支持把 dtype ", t.scalar_type(), " 的 0 维张量读成标量");
+  }
+}
 /// 公共实现：同形 + 连续 + 同设备 + 同 dtype 才走快路径；否则**明确报错**。
 at::Tensor& elementwise_run(int op_code, ElemVariant variant, const char* op_name,
                             at::Tensor& out, const at::Tensor& a, const at::Tensor& b,
+                            double alpha, double scalar_value);
+
+at::Tensor& elementwise_run(int op_code, ElemVariant variant, const char* op_name,                            at::Tensor& out, const at::Tensor& a, const at::Tensor& b,
                             double alpha, double scalar_value) {
   TORCH_CHECK(out.device().is_privateuseone() && a.device().is_privateuseone(),
               "corex 的 ", op_name, " 要求张量都在 corex 上");
@@ -1539,9 +1650,22 @@ at::Tensor& elementwise_run(int op_code, ElemVariant variant, const char* op_nam
   TORCH_CHECK(a.is_contiguous() && out.is_contiguous(),
               "corex 的 ", op_name, " 的 C++ 快路径只支持连续张量（先 .contiguous()）");
   if (variant == ElemVariant::Tensor) {
+    if (b.sizes() != a.sizes()) {
+      // 形态 3：0 维张量。`view.add_(2.5)` 在 torch 里最终派发到 `aten::add_.Tensor`，
+      // 而 `other` 是 0 维张量——只有这一种情形付一次 D2H 的代价，读成标量后走 scalar 内核。
+      TORCH_CHECK(b.dim() == 0 && b.numel() == 1,
+                  "corex 的 ", op_name, " 的 C++ 快路径只支持同形或 0 维标量（不做广播）：",
+                  a.sizes(), " vs ", b.sizes());
+      TORCH_CHECK(b.device().is_privateuseone(), "corex 的 ", op_name,
+                  " 的 0 维张量必须在 corex 上（", b.device(), "）");
+      const double value = read_scalar_from_device(b);
+      // add/sub 的语义是 `self ± alpha * other`，alpha 折进标量；mul/div 没有 alpha。
+      const double folded = (op_code == 0 || op_code == 1) ? alpha * value : value;
+      return elementwise_run(op_code, ElemVariant::Scalar, op_name, out, a, a, 1.0, folded);
+    }
     TORCH_CHECK(b.device().is_privateuseone() && b.scalar_type() == a.scalar_type() &&
-                    b.sizes() == a.sizes() && b.is_contiguous(),
-                "corex 的 ", op_name, " 的 C++ 快路径只支持同形、连续、同 dtype（不做广播）");
+                    b.is_contiguous(),
+                "corex 的 ", op_name, " 的 C++ 快路径要求 other 在 corex、连续、同 dtype");
   }
   TORCH_CHECK(a.sizes() == out.sizes(), "corex 的 ", op_name, " 要求 out 与 self 同形");
 
@@ -1739,7 +1863,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         pybind11::arg("dtype"), pybind11::arg("cubin"), pybind11::arg("num_warps"),
         pybind11::arg("num_stages"), pybind11::arg("n_ptrs"), pybind11::arg("n_i32"),
         pybind11::arg("n_f32"), pybind11::arg("alpha_effective"), pybind11::arg("block"),
-        pybind11::arg("shared") = 0,
+        pybind11::arg("name") = "", pybind11::arg("shared") = 0,
         "装载并登记一个逐元素内核（实参表由 Python 按签名数出来）");
   m.def("elementwise_kernel_info", &elementwise_kernel_info,
         "已登记逐元素内核 [[op, dtype, block, warps, has_alpha], ...]");

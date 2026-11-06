@@ -569,6 +569,13 @@ def _copy_impl(self, src, non_blocking: bool = False):
 # ---------------------------------------------------------------------------
 
 
+#: C++ 已经接管的 schema 名。注册时必须**跳过**它们——Python 注册会覆盖 C++ 注册
+#: （`torch.library.Library.impl` 是后注册者生效），于是静默退回 Python 实现，
+#: 性能数据全废。这个坑在 `aten::mm` 上踩过一次（那条 `Overriding ... previous kernel`
+#: 警告就是它）。能力探测：老 .so 没有 `elementwise_op_names` 时这个集合为空。
+_CPP_OWNED: set[str] = set()
+
+
 def _safe_impl(lib, op: str, fn: Callable[..., Any]) -> None:
     """注册一条实现；失败只记一条 warning，不打断整批。
 
@@ -576,6 +583,8 @@ def _safe_impl(lib, op: str, fn: Callable[..., Any]) -> None:
     的下一跳），但「某一条重复注册」这种错误不该把后面的全废掉。重复注册的典型来源是
     ``_device.py`` 里已经挂过的算子，这里如实报告而不是抛出去。
     """
+    if op in _CPP_OWNED:
+        return                                          # C++ 已接管，不能覆盖
     try:
         lib.impl(op, fn, "PrivateUse1")
     except Exception as exc:                            # noqa: BLE001 - 注册失败要能让整批继续
@@ -593,6 +602,12 @@ def register(lib) -> None:
     """
     if REGISTERED:
         return
+
+    # C++ 接管的 schema：问 shim 要清单（能力探测，老 .so 上拿不到就照旧全注册）。
+    try:
+        _CPP_OWNED.update(_shim().elementwise_op_names())
+    except Exception:                                   # noqa: BLE001 - 老 .so 没有这个入口
+        pass
 
     # 1) 视图类：一个 as_strided 解锁 13 个算子，view/_reshape_alias 是它们各自的终点。
     _safe_impl(lib, "as_strided", _as_strided_impl)

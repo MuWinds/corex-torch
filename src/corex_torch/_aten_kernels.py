@@ -694,10 +694,31 @@ def _register_fast_ops() -> None:
                                   int(meta["num_warps"]), int(meta["num_stages"]),
                                   int(meta["n_ptrs"]), int(meta["n_i32"]), int(meta["n_f32"]),
                                   bool(meta["alpha_effective"]), int(meta["block"]))
-            except Exception:                           # noqa: BLE001
-                # 某个 (op, dtype) 编不出来（工具链缺指令等）：让它回落到 Python 实现，
-                # 注册期不该因为一个 dtype 把整个设备搞挂。
+            except Exception as exc:                    # noqa: BLE001
+                # 某个 (op, dtype) 登记不上：回落到 Python 实现，但**要留痕**。
+                # 静默 `continue` 的代价是「注册表空着、上层只看到『还没登记内核』」，
+                # 2026-11-07 就因为 cubin 里读不出函数符号，查了一整轮（`probes/126`）。
+                _warn_fast_op_once(op, dtype, variant, exc)
                 continue
+
+
+_WARNED_FAST_OPS: set = set()
+
+
+def _warn_fast_op_once(op: str, dtype: str, variant: str, exc: BaseException) -> None:
+    """同一条失败只警告一次：24 个组合逐个刷屏会把日志淹掉。"""
+    key = (op, dtype, variant)
+    if key in _WARNED_FAST_OPS:
+        return
+    _WARNED_FAST_OPS.add(key)
+    import warnings
+
+    warnings.warn(
+        f"corex: {op}/{dtype}/{variant} 的热路径内核没能登记给 C++"
+        f"（{type(exc).__name__}: {str(exc).splitlines()[0][:120]}）。"
+        "该算子会回落到 Python 实现（正确，但每次多约 50 µs）。",
+        stacklevel=2,
+    )
 
 
 def _register_fast_mm() -> None:
