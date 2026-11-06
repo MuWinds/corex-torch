@@ -503,6 +503,150 @@ def _layer_norm_impl(self, normalized_shape, weight=None, bias=None, eps: float 
     return out
 
 
+def _axis_layout(self, dim: int, op: str):
+    """连续张量上「单维归约」的 (outer, red, inner)。
+
+    torch 的连续张量里，``x.sum(dim=d)`` 等价于逻辑形状 ``(outer, red, inner)`` 沿中间那一维求和：
+    ``outer = prod(shape[:d])``、``red = shape[d]``、``inner = prod(shape[d+1:])``。
+    内核按「每个 lane 固定一个 inner 位置、跨 red 累加」走，访存是跨 inner 步进的连续段，
+    天然合并——比 `permute + contiguous + 归约`（多一遍全量 DRAM 往返）省。
+    """
+    _need(self, op, "self")
+    ndim = self.dim()
+    if ndim == 0:
+        raise NotImplementedError(f"corex 的 {op} 不接受 0 维张量")
+    d = int(dim) % ndim
+    shape = [int(v) for v in self.shape]
+    return (_prod(shape[:d]), shape[d], _prod(shape[d + 1:])), d
+
+
+def _norm_dims(dim, ndim: int) -> list:
+    """把 ``dim``（可能是 None / int / int[1]）归一成「非负、去重、升序」的维列表。
+
+    ``dim=None`` 与 ``dim=[]`` 都表示**全归约**——`x.sum()` / `x.mean()` 派发下来的就是空列表，
+    不单独处理会掉进「多维组合」的报错分支（`probes/021` 第一版就是这么错的）。
+    另外 ``var.correction`` 的 schema 是 ``int[1]? dim``（哪怕只给一个 int，进到实现里也是 list），
+    所以这里统一收口，不要在每个实现里各写一遍。
+    """
+    if dim is None:
+        return []
+    dims = list(dim) if isinstance(dim, (list, tuple)) else [dim]
+    return sorted({int(d) % ndim for d in dims})
+
+
+def _single_dim(dim, ndim: int, op: str) -> int:
+    """从 ``int`` 或 ``int[1]`` 里取出唯一的那个维。"""
+    dims = _norm_dims(dim, ndim)
+    if len(dims) != 1:
+        raise NotImplementedError(f"corex 的 {op} 暂不支持 dim={dim}（只支持单一维）")
+    return dims[0]
+
+
+def _sum_dim_impl(self, dim, keepdim: bool = False, *, dtype=None):
+    """``aten::sum.dim_IntList``：全归约 / 最后一维 / **单中间维**三种走不同内核。"""
+    _need(self, "sum.dim", "self")
+    if dtype is not None and dtype != self.dtype:
+        raise NotImplementedError(f"corex 的 sum 暂不支持累加 dtype 提升（要求 {dtype}）")
+    ndim = self.dim()
+    norm = _norm_dims(dim, ndim)
+    shape = [int(v) for v in self.shape]
+    dt = _dtype_name(self.dtype)
+    ops = _mod("_ops_reduce")
+
+    if not norm or len(norm) == ndim:            # 全归约
+        out = _empty([1] * ndim if keepdim else [], self.dtype, self.device)
+        ops.sum_all(self.data_ptr(), out.data_ptr(), int(self.numel()), dt)
+        return out
+    if norm == [ndim - 1]:                      # 最后一维
+        rows, cols = _rows_cols(self, "sum.dim")
+        out_shape = shape[:-1] + ([1] if keepdim else [])
+        out = _empty(out_shape, self.dtype, self.device)
+        ops.sum_last(self.data_ptr(), out.data_ptr(), rows, cols, dt)
+        return out
+    if len(norm) == 1:                          # 单中间维
+        (outer, red, inner), d = _axis_layout(self, norm[0], "sum.dim")
+        out_shape = shape[:d] + ([1] if keepdim else []) + shape[d + 1:]
+        out = _empty(out_shape, self.dtype, self.device)
+        ops.sum_axis(self.data_ptr(), out.data_ptr(), outer, red, inner, dt)
+        return out
+    raise NotImplementedError(f"corex 的 sum 暂不支持多维组合 dim={list(dim)}，请逐维调用")
+
+
+def _mean_dim_impl(self, dim, keepdim: bool = False, *, dtype=None):
+    """``aten::mean.dim``：与 sum 同一套分派，内核侧用 ``mean_axis``（省一次除法）。"""
+    _need(self, "mean.dim", "self")
+    if dtype is not None and dtype != self.dtype:
+        raise NotImplementedError(f"corex 的 mean 暂不支持 dtype 提升（要求 {dtype}）")
+    ndim = self.dim()
+    norm = _norm_dims(dim, ndim)
+    shape = [int(v) for v in self.shape]
+    dt = _dtype_name(self.dtype)
+    ops = _mod("_ops_reduce")
+
+    if not norm or len(norm) == ndim:
+        out = _empty([1] * ndim if keepdim else [], self.dtype, self.device)
+        # 没有 mean_all：把整个张量当成「1 行 numel 列」交给 mean_last，省一次额外除法内核。
+        ops.mean_last(self.data_ptr(), out.data_ptr(), 1, int(self.numel()), dt)
+        return out
+    if norm == [ndim - 1]:
+        rows, cols = _rows_cols(self, "mean.dim")
+        out_shape = shape[:-1] + ([1] if keepdim else [])
+        out = _empty(out_shape, self.dtype, self.device)
+        ops.mean_last(self.data_ptr(), out.data_ptr(), rows, cols, dt)
+        return out
+    if len(norm) == 1:
+        (outer, red, inner), d = _axis_layout(self, norm[0], "mean.dim")
+        out_shape = shape[:d] + ([1] if keepdim else []) + shape[d + 1:]
+        out = _empty(out_shape, self.dtype, self.device)
+        ops.mean_axis(self.data_ptr(), out.data_ptr(), outer, red, inner, dt)
+        return out
+    raise NotImplementedError(f"corex 的 mean 暂不支持多维组合 dim={list(dim)}，请逐维调用")
+
+
+def _var_correction_impl(self, dim, *, correction=1, keepdim: bool = False):
+    """``aten::var.correction``（dim 的 schema 是 ``int[1]?``，所以可能是 list）。"""
+    _need(self, "var", "self")
+    ndim = self.dim()
+    if ndim == 0 or _single_dim(dim, ndim, "var") != ndim - 1:
+        raise NotImplementedError(f"corex 的 var 只支持最后一维，收到 dim={dim}")
+    rows, cols = _rows_cols(self, "var")
+    out_shape = list(self.shape[:-1]) + ([1] if keepdim else [])
+    out = _empty(out_shape, self.dtype, self.device)
+    _mod("_ops_reduce").row_var(self.data_ptr(), out.data_ptr(), rows, cols,
+                                _dtype_name(self.dtype), float(correction))
+    return out
+
+
+def _var_dim_impl(self, dim, *, correction=1, keepdim: bool = False):
+    """``aten::var.dim``（dim 是 int[1]，可能带 None）。"""
+    dims = list(dim) if isinstance(dim, (list, tuple)) else [dim]
+    if len(dims) != 1:
+        raise NotImplementedError(f"corex 的 var 暂不支持多维组合 dim={dims}")
+    return _var_correction_impl(self, dims[0], correction=correction, keepdim=keepdim)
+
+
+def _std_correction_impl(self, dim, *, correction=1, keepdim: bool = False):
+    """``aten::std.correction``：与 var 共用内核（``SQRT_OUT`` 分支）。"""
+    _need(self, "std", "self")
+    ndim = self.dim()
+    if ndim == 0 or _single_dim(dim, ndim, "std") != ndim - 1:
+        raise NotImplementedError(f"corex 的 std 只支持最后一维，收到 dim={dim}")
+    rows, cols = _rows_cols(self, "std")
+    out_shape = list(self.shape[:-1]) + ([1] if keepdim else [])
+    out = _empty(out_shape, self.dtype, self.device)
+    _mod("_ops_reduce").row_std(self.data_ptr(), out.data_ptr(), rows, cols,
+                                _dtype_name(self.dtype), float(correction))
+    return out
+
+
+def _std_dim_impl(self, dim, *, correction=1, keepdim: bool = False):
+    """``aten::std.dim``。"""
+    dims = list(dim) if isinstance(dim, (list, tuple)) else [dim]
+    if len(dims) != 1:
+        raise NotImplementedError(f"corex 的 std 暂不支持多维组合 dim={dims}")
+    return _std_correction_impl(self, dims[0], correction=correction, keepdim=keepdim)
+
+
 def _register_fast_mm() -> None:
     """把编译好的 mm 内核句柄登记给 C++ 侧，让 ``aten::mm`` 全程不碰 Python。
 
@@ -585,5 +729,10 @@ def register(lib) -> None:
     for key in ("PrivateUse1", "AutogradPrivateUse1"):
         lib.impl("rms_norm", _rms_norm_impl, key)
         lib.impl("layer_norm", _layer_norm_impl, key)
+    # 归约：functional 与 out 两种 schema 是分开注册的，缺一个就报「算子未实现」。
+    lib.impl("sum.dim_IntList", _sum_dim_impl, "PrivateUse1")
+    lib.impl("mean.dim", _mean_dim_impl, "PrivateUse1")
+    lib.impl("var.correction", _var_correction_impl, "PrivateUse1")
+    lib.impl("std.correction", _std_correction_impl, "PrivateUse1")
     # mm 可能已被 C++ 接管：上面的 impl 只作为「旧版 shim / 未接管」时的实现存在。
     _register_fast_mm()

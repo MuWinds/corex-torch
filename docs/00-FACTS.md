@@ -479,3 +479,36 @@ rms_norm → MLP(mm+silu+mm) → 残差 → rms_norm → head`，`VOCAB=32 DIM=6
 1. `F.rms_norm` 是 composite，会分解出我们没实现的 `aten::pow` → 必须**直接接管** `aten::rms_norm`
    （且要同时挂 `AutogradPrivateUse1`，只挂 `PrivateUse1` 会停在 `Autogradcorex` 层报算子不存在）；
 2. 广播操作数与切片视图（见 §25）。
+
+## 27. 归约补齐：中间维 + 方差/标准差（`probes/021`，13/13 PASS）
+
+内核侧由 triton-bridge 的 `probes/197` 交付（`sum_axis`/`mean_axis`/`row_var`/`row_std`），
+分发侧这一轮接上，`probes/021` 全绿：
+
+| 用例 | 结果 |
+| --- | --- |
+| `sum(dim=中间维)`，shape `(4,8,16)`/`(2,3,4,5)`/`(4,1000)` | **全部 max_abs = 0.000e+00** |
+| `sum(dim=1)` dyadic 数据 | **逐字节相等** |
+| `sum(dim=1, keepdim=True)` | **逐字节相等** |
+| `mean(dim=中间维)` / `mean(dim=-1)` / `mean()` 全归约 | 5.96e-08 / 5.96e-08 / 3.73e-09 |
+| `var(dim=-1, correction=1/0)` | 4.77e-07（全局相对 1.1e-07） |
+| `std(dim=-1, correction=1/0)` | 2.38e-07（全局相对 1.1e-07） |
+
+两个 schema 坑（都在 `probes/021` 第一版踩到）：
+
+* **`x.sum()` / `x.mean()` 派发下来的 `dim` 是空列表**，不是 `None`。空列表必须当「全归约」，
+  否则会掉进「多维组合」的报错分支。统一收口在 `_norm_dims()`，别在每个实现里各写一遍。
+* **`var.correction` / `std.correction` 的 schema 是 `int[1]? dim`**——哪怕调用时给的是 `-1`，
+  进到实现里也是 `[-1]`。按 `int` 用会得到 `TypeError: int() argument must be ... not 'list'`。
+
+为什么 `row_var` 用两趟而不是一趟公式（triton-bridge 实测，数据是「均值 1e6、标准差 0.4」，
+待求量只有 0.156）：
+
+| cols | 两趟 max_abs | 一趟公式（双精度） | 一趟公式（fp32 顺序累加） |
+| --- | --- | --- | --- |
+| 1000 | 7.458e-11 | 1.101e-02 | **6.986e+06** |
+| 512 | 2.149e-06 | 2.150e-06 | **3.283e+06** |
+| 4097 | 3.352e-08 | 9.308e-04 | **1.901e+07** |
+
+**即使把一趟公式放到双精度里算，它也比我们的 fp32 两趟差**——所以问题不是精度不够，是公式相消。
+`sum(x²) − n·mean²` 这条路在内核里不该出现。
