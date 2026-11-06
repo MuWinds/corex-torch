@@ -512,3 +512,28 @@ rms_norm → MLP(mm+silu+mm) → 残差 → rms_norm → head`，`VOCAB=32 DIM=6
 
 **即使把一趟公式放到双精度里算，它也比我们的 fp32 两趟差**——所以问题不是精度不够，是公式相消。
 `sum(x²) − n·mean²` 这条路在内核里不该出现。
+
+## 28. 逐步 decode（KV cache）跑通：最接近 coffin 实际用法的形态（`probes/022`）
+
+`probes/018` 是无 cache 的整段前向，它证明不了三件事：单 token 时注意力在
+`[HEADS,1,HD] @ [HEADS,HD,L]` 这种**非方阵**上对不对、KV cache 增长后历史位置是否仍正确、
+逐 token logits 会不会随步数漂移。`probes/022` 把这三件都测了：
+
+| 项 | 结果 |
+| --- | --- |
+| 逐 token logits 全局相对（6 步） | 2.10e-06 / 2.41e-06 / 6.62e-06 / 4.87e-06 / 5.69e-06 / 3.81e-06 |
+| 每步 argmax 与 CPU 一致 | **6/6** |
+| 两次独立 decode 的 KV cache | **逐字节相同** |
+| 热跑 | 102.5 ms / 6 步 = **17.1 ms/步**（`VOCAB=32 DIM=64 HEADS=4 LAYERS=2`） |
+
+误差不随步数增长（第 6 步反而比第 3 步小），说明 KV cache 这条路上没有累积放大。
+
+**踩到一个 stride 语义坑**：`[1,HEADS,HD] -> permute(1,0,2).contiguous()` 想得到 `[HEADS,1,HD]`
+的连续视图，但 torch 的连续性判定**忽略长度为 1 的维**，所以 `.contiguous()` 是**空操作**，
+stride 仍是 `(16, 64, 1)`。我们 `cat` 的检查按「dim 之后每维 stride = 尾积」判定，于是拒收。
+改用 `squeeze(0).unsqueeze(1)`（stride 变成 `(16, 16, 1)`）两边都认。
+教训：**「.contiguous() 之后一定连续」是错的**——size 为 1 的维会骗过判定。
+
+**性能观察（不是正确性问题）**：17.1 ms/步，按每步约 31 个算子算就是 ~550 µs/算子，
+远高于 10.8 µs 的发射地板。怀疑点是 `cat` 与 `expand().contiguous()` 走的是 Python 级
+分段搬（`_aten_extra` 的 strided walk），不是单次 DMA。这条留给性能阶段，先记在这里。
