@@ -36,6 +36,9 @@ SHIM_MODULE = "corex_torch._corex_shim"
 
 _state: dict[str, Any] = {"registered": False, "device": 0, "library": None, "shim": None}
 
+#: ``manual_seed`` 的警告只打一次（否则每个调用点都会刷一行，日志被淹）。
+_SEED_WARNED = False
+
 
 def shim():
     """取已编译的 C++ shim 模块。
@@ -184,23 +187,39 @@ def _copy_from_impl(src, dst, non_blocking: bool = False) -> Any:
     """
     if dst.shape != src.shape:
         raise NotImplementedError("corex 的 _copy_from 暂不支持形状变化（走 resize 的那条路）")
-    # 线性 memcpy 只对「两侧都连续」成立：按字节扫一个转置视图会把**物理顺序**搬过去，
-    # 结果不报错、只是数值错（`probes/120` 里 `contiguous` 那行就是 max_abs_diff=2.0）。
-    # 处理办法：源非连续就先用 `contiguous()` 物化（它走 `copy_` 的按 stride 搬运），
-    # 目的非连续则直接报错——把数据写进「一个马上被丢掉的连续副本」比报错恶劣得多。
-    if not src.is_contiguous():
-        src = src.contiguous()
-    if not dst.is_contiguous():
-        raise NotImplementedError(
-            "corex 的 _copy_from 暂不支持非连续的目的张量（写进连续副本会丢数据）："
-            f"dst.stride()={tuple(dst.stride())}"
-        )
+    dst_dev = dst.device.type == DEVICE_NAME
+    src_dev = src.device.type == DEVICE_NAME
+
+    # 非连续怎么处理（线性 memcpy 只对「两侧都连续」成立；按字节扫转置视图不报错但数值错）：
+    #   1) 两侧都在卡上 → 交给 `_aten_extra._copy_impl` 的按 stride 分段搬（它已经实现过一遍，
+    #      再写一份只会两边不一致）。`clone()` 在本版本走 `at::_copy_from` 而不是 `copy_`，
+    #      所以这条路必须在这里接住，否则 `clone`/`contiguous` 直接报错；
+    #   2) 卡 → 主机且卡侧非连续 → 先搬进一块连续暂存，再线性 D2H（同样用 1 的分段搬）；
+    #   3) 主机 → 卡且主机侧非连续 → 主机上 `.contiguous()` 是原生实现，直接物化；
+    #   4) 目的非连续 → 明确报错：写进「一个马上被丢弃的连续副本」比报错恶劣得多。
+    if not (src.is_contiguous() and dst.is_contiguous()):
+        if dst_dev and src_dev:
+            from . import _aten_extra
+
+            return _aten_extra._copy_impl(dst, src)
+        if src_dev and not dst_dev and not src.is_contiguous():
+            from . import _aten_extra
+
+            stage = _empty_impl(list(src.shape), dtype=src.dtype, device=src.device)
+            _aten_extra._copy_impl(stage, src)
+            src = stage
+        elif not src_dev and not src.is_contiguous():
+            src = src.contiguous()
+        if not dst.is_contiguous():
+            raise NotImplementedError(
+                "corex 的 _copy_from 暂不支持非连续的目的张量（写进连续副本会丢数据）："
+                f"dst.stride()={tuple(dst.stride())}"
+            )
+
     nbytes = int(dst.numel()) * int(dst.element_size())
     if nbytes == 0:
         return dst
 
-    dst_dev = dst.device.type == DEVICE_NAME
-    src_dev = src.device.type == DEVICE_NAME
     # **每条原始拷贝前都必须把当前设备绑到「指针所属的那张卡」**：这张卡的 cudaMemcpy
     # 在当前 runtime 设备与指针设备不一致时**不报错、rc=0、静默别名**——两张卡低地址相同的
     # 偏移会被当成同一块内存，数据悄悄写错地方，事后无从排查。反面实验见 probes/112 §1.4b。
@@ -311,6 +330,33 @@ def _dtype_name(dtype) -> str:
     return table[dtype]
 
 
+def _scalar_out(name: str, self, other, alpha, out) -> Any:
+    """``self <op> 标量`` 那条分支（``t / 2``、``t + 1`` 这类）。
+
+    为什么要单独处理：``div.out`` 的 ``other`` 可以是 Python 数值，而 composite 不会替我们
+    包成 0 维张量——实测 ``scores / math.sqrt(H)`` 直接带着 float 进来（`probes/009` 的
+    注意力小块就是撞在这里）。标量走内核的 ``*_scalar`` 入口，比造一个 0 维张量再走广播省一次分配。
+
+    ``alpha`` 的语义：``add``/``sub`` 的 schema 是 ``self ± alpha*other``，把 ``alpha*other``
+    先算成一个标量再传下去，语义与 aten 一致。
+    """
+    if tuple(out.shape) != tuple(self.shape):
+        raise NotImplementedError(
+            f"corex 的 {name}.out(标量) 暂不支持 resize：out.shape={tuple(out.shape)} "
+            f"期望 {tuple(self.shape)}")
+    for label, t in (("self", self), ("out", out)):
+        if t.device.type != DEVICE_NAME:
+            raise NotImplementedError(f"corex 的 {name}.out 要求 {label} 在 corex 上，收到 {t.device}")
+        if not t.is_contiguous():
+            raise NotImplementedError(f"corex 的 {name}.out 暂不支持非连续 {label}")
+    from . import _ops_elementwise as ops
+
+    value = float(other) * float(alpha) if name in ("add", "sub") else float(other)
+    getattr(ops, f"{name}_scalar")(self.data_ptr(), out.data_ptr(), int(out.numel()),
+                                   _dtype_name(out.dtype), value)
+    return out
+
+
 def _out_binary(name: str):
     """生成一个二元逐元素算子的 ``*.out`` 实现。
 
@@ -333,7 +379,7 @@ def _out_binary(name: str):
         if out is None:
             raise NotImplementedError(f"corex 的 {name}.out 要求显式 out")
         if not isinstance(other, torch.Tensor):
-            raise NotImplementedError(f"corex 的 {name}.out 在标量路径上还没接（composite 应已包装成 0 维张量）")
+            return _scalar_out(name, self, other, alpha, out)
         shape = tuple(torch.broadcast_shapes(self.shape, other.shape))
         if tuple(out.shape) != shape:
             raise NotImplementedError(
@@ -449,16 +495,27 @@ def _make_device_module() -> types.ModuleType:
         return _runtime.Stream.default()
 
     def manual_seed(seed: int) -> None:
-        """卡上没有 RNG，这里**只吞掉种子**。
+        """卡上没有 RNG，这里只提醒一次，不抛异常。
 
-        为什么要提供：``torch.manual_seed`` 会检查 device module 里有没有这几个函数，
-        缺了会打 ``UserWarning: Set seed for corex device does not take effect``。
-        我们没有实现任何随机算子（``aten::normal_`` 会显式报未实现），所以「种子不生效」
-        在这个后端上是事实而不是疏漏；等哪天接了 RNG 再让它真的起作用。
+        为什么不抛：``torch.manual_seed`` 是**全局**入口（同时 seed CPU），在我们的 device
+        module 里抛会让下游任何一句 ``torch.manual_seed(0)`` 直接炸掉，惩罚过重且指向不明。
+        但也不能完全静默——「静默成功」会让人以为随机序列可复现。所以第一次调用时警告一次；
+        真正想用随机算子的人会撞上 ``aten::normal_`` 的显式 ``NotImplementedError``。
         """
+        global _SEED_WARNED
+        if not _SEED_WARNED:
+            _SEED_WARNED = True
+            import warnings
+
+            warnings.warn(
+                "corex 设备没有 RNG 通道：种子不生效，卡上的随机算子会显式报 NotImplementedError。"
+                "需要随机数请先在 CPU 生成再 .to('corex')。",
+                stacklevel=2,
+            )
 
     def manual_seed_all(seed: int) -> None:
         """同 :func:`manual_seed`，多卡版本。"""
+        manual_seed(seed)
 
     def _is_in_bad_fork() -> bool:
         """torch 的 fork 安全检查用；本后端没有 fork 语义，恒 False。"""

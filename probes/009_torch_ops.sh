@@ -49,7 +49,20 @@ def rel(a: torch.Tensor, b: torch.Tensor) -> float:
     return float((diff / den).max())
 
 
-def check(name, fn, tol=1e-5, byte_equal=False):
+def rel_global(a: torch.Tensor, b: torch.Tensor) -> float:
+    """全局相对误差 = max|diff| / max|ref|。
+
+    为什么需要第二种口径：逐元素相对误差在「参照值接近 0」的元素上会被人为放大——
+    注意力小块的输出有正有负、量级 1e-3，某个元素恰好接近 0 时，1e-7 的绝对误差就能算出
+    1e-4 的相对误差，看着像错其实是 fp32 累加的正常结果。多算子串联（两次矩阵乘 + softmax +
+    再一次矩阵乘）必须用全局口径，否则永远判不过。
+    """
+    diff = (a.cpu().double() - b.cpu().double()).abs().max()
+    scale = b.cpu().double().abs().max().clamp_min(1e-12)
+    return float(diff / scale)
+
+
+def check(name, fn, tol=1e-5, byte_equal=False, metric="per_element"):
     try:
         got, ref = fn()
         if byte_equal:
@@ -58,9 +71,10 @@ def check(name, fn, tol=1e-5, byte_equal=False):
             ok = same
             extra = "byte-equal" if same else "字节不等"
         else:
-            value = rel(got, ref)
+            value = rel_global(got, ref) if metric == "global" else rel(got, ref)
             ok = value <= tol
-            extra = f"max_rel={value:.3e}（门槛 {tol:.0e}）"
+            label = "max_rel(全局)" if metric == "global" else "max_rel"
+            extra = f"{label}={value:.3e}（门槛 {tol:.0e}）"
         print(f"  [{'OK ' if ok else 'FAIL'}] {name:38s} {extra}")
         (PASSED if ok else FAILED).append(name)
     except Exception as exc:                            # noqa: BLE001
@@ -155,7 +169,7 @@ def _block():
     got = fwd(x.to("corex"), wq.to("corex"), wk.to("corex"), wv.to("corex"), "corex")
     return got, ref
 
-check("注意力小块（含转置+contiguous）", _block)
+check("注意力小块（含转置+contiguous）", _block, tol=1e-5, metric="global")
 
 print("=== 5. 性能口径（含 Python 派发开销）===")
 try:

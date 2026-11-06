@@ -276,7 +276,9 @@ def _compile(kernel_fn, signature: Dict[str, str], constexprs: Dict[str, Any],
     except Exception as exc:                            # noqa: BLE001
         detail = f"{dtype} 的 {what} 内核编译失败：{exc}"
         is_port_error = type(exc).__name__.endswith("PortError") or "未登记" in str(exc)
-        if is_port_error or dtype == "bf16":
+        # bf16 不再走「已知不支持」这条：``_bf16.rewrite_bf16_conversions`` 已经在 biir 里把
+        # fpext/fptrunc 换成 bi 的 intrinsic，所以 bf16 编不过是**真 bug**，要原样抛出来。
+        if is_port_error:
             raise NotImplementedError(detail) from exc
         raise RuntimeError(detail) from exc
 

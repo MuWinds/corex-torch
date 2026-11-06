@@ -120,7 +120,9 @@ def _compile_checked(sig: Dict[str, str], cexpr: Dict[str, Any], dtype: str, num
     except Exception as exc:                            # noqa: BLE001
         detail = f"{dtype} 的 mm 内核编译失败：{exc}"
         is_port_error = type(exc).__name__.endswith("PortError") or "未登记" in str(exc)
-        if is_port_error or dtype == "bf16":
+        # bf16 现在是正常支持的 dtype（转换指令由 ``_bf16.rewrite_bf16_conversions`` 兜住），
+        # 所以 bf16 编不动就是真 bug，原样抛出来。
+        if is_port_error:
             raise NotImplementedError(detail) from exc
         raise RuntimeError(detail) from exc
 

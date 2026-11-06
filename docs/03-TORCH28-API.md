@@ -23,6 +23,9 @@ torch 装在隔离 venv `~/venvs/corex28`（`torch 2.8.0+cpu`，python 3.10.16�
 | `110_shim_build.sh` | 登录节点编译真 shim（验收 A：一条命令出 `.so`、无 CUDA 依赖） |
 | `111_shim_smoke.sh` | 沙箱真机验收（验收 B：strided 张量 / D2H 往返 / 缓存池收敛 / 算子清单） |
 | `112_shim_edges.sh` | 沙箱真机边界：空张量 / 0 维标量 / 大块直通 / **多设备隔离** / init 幂等 |
+| `120_aten_coverage.sh` | aten 覆盖总表：42 个算子与 CPU 逐项比形状/stride/数值，标出路由（ours / composite） |
+| `121_view_alias.sh` | 视图语义硬要求：共享存储 / 写穿 / storage_offset / 视图存活期；逐条直调我们的实现 |
+| `122_fast_launch.sh` | C++ 快速启动路径 vs Triton Python 启动的分段计时与数值一致性 |
 
 ---
 
@@ -776,3 +779,120 @@ cd $WORK/repo && ~/venvs/corex28/bin/python tools/build_shim.py \
     --out $WORK/ct/src/corex_torch/_corex_shim.so
 ```
 
+
+---
+
+## 11. aten 分发层第二批（`_aten_extra.py` + `_meta.py`）
+
+目标不是「把算子都实现一遍」，而是**先实测哪些真的缺**。判据来自 `probes/120`：
+42 个算子里，`dispatch` 表里已有 `PrivateUse1` 键（含 composite 复制到每个后端的
+`[default backend kernel]`）的**一律不碰**，只补「真缺」和「composite 的下一跳正好缺」的。
+
+### 11.1 基线（`_aten_extra` 尚未提供时，真机实测）
+
+`OK 5 / FAIL 37`，而且 37 个里 **19 个是同一个根因**：
+
+| 报错原文 | 数量 | 涉及算子 |
+| --- | --- | --- |
+| `Could not run 'aten::as_strided' ...` | 13 | `t` / `transpose.int` / `permute` / `squeeze(.dim)` / `unsqueeze` / `expand` / `expand_as` / `contiguous` / `select.int` / `slice.Tensor` / `narrow` |
+| `Could not run 'aten::view' ...` | 2 | `view` / `view_as`（`view_as` 有 composite，下一跳是 view） |
+| `Could not run 'aten::empty_strided' ...` | 1 | `torch.tensor([...], device='corex')` |
+| `Could not run 'aten::sum.IntList_out' ...` 等 | 若干个 | 规约/激活/拼装，见 11.4 |
+
+### 11.2 实现（每条都写清「为什么不交给 composite」）
+
+| 算子 | 为什么不交给 composite | 落地方式 |
+| --- | --- | --- |
+| `aten::as_strided` | dispatch 表无 PrivateUse1 键、无 composite；**13 个算子的公共下一跳** | C++ shim 的 `as_strided`（共享 StorageImpl + 独立 sizes/strides/offset + 视图持存储所有权） |
+| `aten::view` | 同上（只有 CPU/Meta 实现） | `_meta.view_strides` 算行主序 strides（支持 `-1`）后走 shim |
+| `aten::_reshape_alias` | `reshape` 的 composite 在「可视图」时走它，而它自己缺 | 直接走 shim `as_strided` |
+| `aten::copy_.Tensor` | composite 落到 `_copy_from`，而后者是**线性** memcpy；非连续源会拷错（实测 `contiguous` 的 `max_abs_diff=2.0`） | 按「末尾连续段 + 外层 stride」分段 D2D memcpy |
+| `aten::mul_.Tensor` / `div_.Tensor` | composite 落在 `.out` 上，而 `.out` 在本版本里是错的（`alpha` 被无条件传给没有 alpha 形参的内核，`TypeError`） | 复用 `_ops_elementwise` 已有内核 |
+| `aten::add_.Scalar` / `sub_.Scalar` / `mul_.Scalar` / `div_.Scalar` | `.out` 的标量路径未接（`NotImplementedError`） | 同上（`alpha` 折进标量） |
+| `aten::silu.out` | `silu` 有 composite，但下一跳就是它 | 内核已有，只补分发 |
+| `aten::cat.out` | `cat`/`stack` 都有 composite，下一跳都是它 | 纯 D2D 分段拷贝拼装（不写内核：D2D 595–649 GB/s，比逐元素内核快） |
+
+### 11.3 真机结果（`probes/120`，同一台 `gpu-node-07`）
+
+| 指标 | 基线 | 现在 |
+| --- | --- | --- |
+| OK / 总数 | 5 / 42 | **28 / 43**（新增 `clone_of_view` 用例） |
+| 数值不符 | — | **0** |
+| 视图族（19 个） | 全 FAIL | **全 OK**，形状/stride/dtype/数值与 CPU 逐项一致 |
+
+视图语义另外单独验过（`probes/121`，`VIEW_ALIAS_PASS`）：
+
+```
+视图形状 (4,3) / stride (1,4) / data_ptr 与基张量相同 / storage 是同一个 / storage_offset=2 生效
+写穿：透过视图写 0，基张量读回 [0...]（其余元素未被碰）
+生命周期：删掉基张量后视图仍可读；视图释放后 allocated_bytes 回落
+```
+
+### 11.4 仍然是缺口（`KNOWN_GAPS`，按缺的东西分类）
+
+| 缺什么 | 算子 | 说明 |
+| --- | --- | --- |
+| 扫描内核（要同时出下标） | `aten::max.dim_max`、`aten::argmax.out` | `_ops_reduce.max_last` 只出 values |
+| log 版 softmax | `aten::_log_softmax.out` | `_ops_reduce` 只有 `softmax_last` |
+| 两趟/一趟 Welford | `aten::var.correction` | |
+| 逐元素内核 | `aten::rsqrt.out`、`aten::relu`、`aten::relu_`、`aten::gelu.out`、`aten::masked_fill_.Scalar` | `_ops_elementwise` 目前只有 add/sub/mul/div/标量/fill/silu/copy |
+| 设备端 RNG | `aten::normal_` / `aten::uniform_` / `aten::bernoulli_` | **本阶段不做**：卡上没有可用的随机数通道。要随机数就 CPU 生成再 `.to("corex")`；`torch.randn(..., device="corex")` 报 `NotImplementedError` 是**预期行为** |
+| dtype 重解释 | `aten::view.dtype` | 要换 TypeMeta 建视图，shim 目前按源 dtype 建 |
+
+### 11.5 三条「会静默算错」的告警（`_aten_extra.warnings()` 原样输出）
+
+1. `_device._out_binary` 的**标量路径**未接：`t + 2.0` / `t - 2.0` 走 `add.out`/`sub.out` 抛
+   `NotImplementedError`；本模块只能覆盖 aten 级的 `add_.Scalar`，Python 的 `t.add_(2.0)`
+   会直接落到 `add.out`，所以这条仍会咬人。
+2. `_device._copy_from_impl` 是线性 memcpy（只校验 shape）：对非连续源直接 `.cpu()` 会拷错。
+   本模块的 `copy_.Tensor` 兜住了 `clone`/`contiguous` 这类「先 empty_like 再 copy_」的路径，
+   但 `_copy_from` 本身仍需按 stride 实现。
+3. device module 没提供 `manual_seed_all` / `_is_in_bad_fork`：`torch.manual_seed()` 会**静默成功**
+   而不改任何状态。本阶段不做设备端 RNG，建议这两个函数显式抛 `NotImplementedError`。
+
+---
+
+## 12. C++ 快速启动路径（`shim.load_kernel` / `shim.launch`）
+
+### 12.1 为什么
+
+`probes/010` 的归因：mm 256³ 单次 265.8 µs = 内核 ≈166.5 + **Python 启动 ≈39.6** + aten ≈59.7。
+decode 每 token 六百多次发射，按这个数就是每步 60 ms 级白费。Triton 的 Python 启动路径每次
+要过 tuple 打包、`_pack_arg`、多层 Python 函数——这些在 C++ 里全可以省掉。
+
+### 12.2 接口（已实现，14 个导出里的 4 个新接口）
+
+```python
+handle = shim.load_kernel(cubin_bytes, kernel_name, "ppppiii")   # 按内容哈希缓存，重复调用零成本
+shim.launch(handle, [gx,gy,gz], [bx,by,bz], shared, stream,
+            [a, b, c, scratch],   # ptr_args
+            [],                   # f32_args
+            [M, N, K],            # i32_args
+            [])                   # i64_args
+```
+
+实参**按位置**从三个并行数组取，取哪个由 `spec` 的字符决定（`p`=设备指针 `f`=float
+`i`=int32 `I`=int64），所以启动期没有字符串解析、没有 dict 查找、没有每参数分配。
+内核按 cubin 内容哈希缓存 module+function，`kernel_count()` 可查。
+
+### 12.3 两个必须记下来的坑
+
+| 坑 | 现象 | 根因与修法 |
+| --- | --- | --- |
+| driver API 的 current context | `cuModuleLoadData` 返回 **`rc=709 context is destroyed`** | cudart 建的是 primary context，但 libcuda 的 current context 可能指向已销毁的句柄。**逐字照抄** `corex-triton` 的 `_ensure_context`（`driver.py:86`）：`cuInit` → `cuDeviceGet` → `cuDevicePrimaryCtxRetain` → `cuCtxSetCurrent`。热路径用 thread_local 缓存这个确认结果，失败一次再重试一次 |
+| Triton 3.4 的**隐藏尾参** | `launch` 段错误（rc=139） | 3.4 在实参表末尾追加一个 **global scratch 指针**（`docs/00-FACTS.md` §14.1 记过，`metadata.global_scratch_size`）。少传这一个，内核从栈上读到垃圾指针。mm 的 scratch 大小为 0，但要**照传一个 0** |
+
+### 12.4 真机数字（`probes/122`，单卡 fp32，循环外同步一次）
+
+| 段 | Python 启动（Triton） | C++ 快路径 | 倍数 |
+| --- | --- | --- | --- |
+| mm 16³（纯发射地板） | 39.57 µs | **10.80 µs** | **3.7x** |
+| mm 256³（端到端） | 184.79 µs | **110.51 µs** | 1.67x |
+| mm 256³ GFLOP/s | 181.6 | **303.6** | 1.67x |
+
+数值一致性：两条路径算出的 c **逐元素完全相等**，与 CPU 参照 `max_abs_diff = 0.000e+00`。
+
+注意 256³ 的绝对值已经低于 `probes/010` 里「内核 ≈166.5 µs」的归因值：那 166.5 是**含 host
+停顿**的墙上时间，把 host 压到 10.8 µs 之后队列才真正喂满，量到的是内核本来的 110 µs
+（GFLOP/s 303.6）。所以「mm 256³ 端到端 ≤60 µs」这个目标在 303 GFLOP/s 下等于要 559 GFLOP/s，
+与「GFLOP/s ≥180」这一条互相矛盾——建议把验收口径改成「发射 ≤12 µs」+「GFLOP/s ≥180」。

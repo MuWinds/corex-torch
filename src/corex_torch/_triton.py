@@ -72,17 +72,41 @@ def activate():
     它按后端表顺序挑第一个 ``is_active()`` 为真的后端，而 NVIDIA 那个在这张卡上同样为真
     （libcuda 存在），于是会拿到 ptxas 那套 launcher 并失败。
 
+    另外这里**换了编译器类**：``CorexTorchBackend`` 在 biir 进 ``llc`` 之前把 Triton 发的
+    ``fpext``/``fptrunc``（bfloat）改写成厂商的 ``llvm.bi.bfloat2float`` / ``llvm.bi.float2bfloat``。
+    不做这步，任何 bf16 内核都会死在 ``Cannot select: fp_extend`` / ``fp_round``（见
+    ``_bf16`` 与 ``probes/011``、``probes/012``）。
+
     Returns:
         被激活的 driver 实例。
     """
     global _ACTIVATED
     _ensure_importable()
+    from triton.backends import Backend, backends
     from triton.runtime.driver import driver as _driver_config
 
     import triton_corex  # noqa: F401  - 导入即把 backend 注册进 triton.backends.backends
+    from triton_corex.compiler import CorexBackend
     from triton_corex.driver import CorexDriver
 
+    from . import _bf16
+
+    class CorexTorchBackend(CorexBackend):
+        """corex-triton 的编译器 + 一层 bf16 转换改写（不改上游仓库，只在这里包一层）。"""
+
+        @staticmethod
+        def make_cubin(src, metadata, options) -> bytes:
+            """biir → cubin。进 ``llc`` 之前先做 bf16 转换的 intrinsic 替换。"""
+            rewritten, hits = _bf16.rewrite_bf16_conversions(src)
+            if hits:
+                # 命中数进 metadata：编译脚本据此确认改写真的发生了（为 0 说明上游换 lowering 了）。
+                counts = dict(metadata.get("corex_rewrite_counts") or {})
+                counts["bf16_conversions"] = hits
+                metadata["corex_rewrite_counts"] = counts
+            return CorexBackend.make_cubin(rewritten, metadata, options)
+
     if not _ACTIVATED:
+        backends["corex"] = Backend(CorexTorchBackend, CorexDriver)
         _driver_config.set_active(CorexDriver())
         _ACTIVATED = True
     return _driver_config.active

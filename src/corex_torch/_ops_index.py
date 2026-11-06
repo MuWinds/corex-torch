@@ -74,7 +74,9 @@ def _compile_checked(sig: Dict[str, str], cexpr: Dict[str, Any], dtype: str, num
     except Exception as exc:                            # noqa: BLE001
         detail = f"{dtype} 的 gather_rows 内核编译失败：{exc}"
         is_port_error = type(exc).__name__.endswith("PortError") or "未登记" in str(exc)
-        if is_port_error or dtype == "bf16":
+        # bf16 现在是正常支持的 dtype（``_bf16.rewrite_bf16_conversions`` 负责转换指令），
+        # 编不过是真 bug，原样抛。
+        if is_port_error:
             raise NotImplementedError(detail) from exc
         raise RuntimeError(detail) from exc
 

@@ -268,3 +268,40 @@ coffin 的 decode 每 token 六百多次发射（`../../docs/corex_drive/GRAPH-R
 按这个数就是每步几十毫秒的白费。压缩的唯一现实路径是**把参数打包与 `cuLaunchKernel` 挪进 C++ shim**，
 并用 `TORCH_LIBRARY_IMPL` 把最热的算子（`aten::mm`、`aten::_softmax.out`）从 Python 分发里挪出去。
 分配（1.76 µs）不是问题——缓存池已经把它压到位了。
+
+## 17. bf16：厂商用的是 intrinsic，不是位运算（`probes/011`–`015`）
+
+这一条推翻了我最初的设计（「用整数位运算自己造转换」）。**先看厂商怎么做，比自己发明省事且更准。**
+
+| 事实 | 证据 |
+| --- | --- |
+| 厂商 clang 定义的宏：**`__CUDA_ARCH__ = 300`、`__ILUVATAR__ = 1`** | `probes/011` §2：`clang++ --cuda-device-only -dM -E` |
+| 于是 `c10/util/BFloat16-inl.h` 里 `(__CUDA_ARCH__ >= 800 || defined(__ILUVATAR__))` 为真，bf16 转换走 `__float2bfloat16` / `__bfloat162float`（不是 `round_to_nearest_even` 那条纯位运算 fallback） | 同上，读 `torch/include/c10/util/BFloat16-inl.h:26-56` |
+| 这两个函数在 `cuda_bf16.hpp`（427 / 543 行）里落到 **两条 LLVM intrinsic**：`llvm.bi.bfloat2float(bfloat) -> float`、`llvm.bi.float2bfloat(float) -> bfloat` | `probes/012` §1 |
+| 厂商 clang 编出来的设备 IR 里 **`fpext`/`fptrunc` 命中 0 次**，只有上面两条 intrinsic，llc 编得出来 | `probes/012` §2 |
+| **ATen 的 bf16 算术本质是 fp32 算术**：`operator+(BFloat16 a, b) { return static_cast<float>(a) + static_cast<float>(b); }` | `BFloat16-inl.h:110` |
+| `llvm.bi.*` **不支持向量重载**：`call <8 x bfloat> @llvm.bi.float2bfloat(<8 x float>)` 报 `input module cannot be verified` | `probes/015` V2 / W1 |
+| 向量转换的正确形态是**整数位运算**：展宽 `bitcast→zext→shl 16→bitcast`、收窄 `bitcast→+0x7FFF+lsb→lshr 16→trunc→bitcast`，两者 llc 都过 | `probes/015` V3/V4/W2 全部 `llc OK` |
+| 真实内核里矩阵乘的失败点就是一条向量指令：`%n = fptrunc <8 x float> %x to <8 x bfloat>` | `probes/014`（从真编译的 biir 里抓出来的唯一一条） |
+| 改写实现后 **bf16 矩阵乘编得过且结果逐字节相等（4096/4096）**，改写命中 17 处 | `probes/013`：`BF16_INTRINSIC_VERDICT PASS` |
+
+实现落在 `src/corex_torch/_bf16.py`：标量 → intrinsic（与厂商语义完全一致）、向量 → 位运算
+（intrinsic 没有向量重载）。挂在 `_triton.activate()` 注册的后端子类 `CorexTorchBackend.make_cubin`
+上，**corex-triton 一个字节没改**。
+
+两条必须记住的坑：
+
+* **新生成的 SSA 名字不能拿原值名加后缀**：Triton 的值是编号值 `%257`，而 `%257.i` 不是合法标识符，llc 报
+  `expected '=' after instruction id`。命名必须以字母开头（见 `_bf16._NameGen`）。
+* **向量常量不能写成 `splat (i32 16)`**：那是 LLVM 20 语法，厂商 llc 是 16（triton-bridge 在 `probes/190` 踩过）。
+  必须展开成 `<i32 16, i32 16, …>`。
+
+## 18. torch 层算子验收转全绿（`probes/009`）
+
+`TORCH_OPS_VERDICT PASS`，9/9。新增的两条修复：
+
+* `div.out`/`mul.out` 的**标量右操作数**（`scores / sqrt(H)` 走的这条）之前直接报未实现，现在走内核的
+  `*_scalar` 入口，`alpha` 先乘进标量。
+* 多算子串联（两次矩阵乘 + softmax + 再一次矩阵乘）的判据换成**全局相对误差** `max|diff|/max|ref|`：
+  逐元素相对误差在「参照值接近 0」的元素上会被放大到 1e-4 量级，看着像错其实是 fp32 累加的正常结果。
+  换口径后注意力小块是 **1.62e-07**。

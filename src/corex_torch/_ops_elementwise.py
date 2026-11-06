@@ -69,10 +69,15 @@ DTYPES: Dict[str, Tuple[str, int, str]] = {
     "bf16": ("*bf16", 2, "bfloat16"),
 }
 
-#: 「已知编不过」的 dtype。它编不过时按 ``NotImplementedError`` 报（契约要求），而不是当成 bug
-#: 抛 ``RuntimeError``。``probes/171_eltwise_dtype.sh``：bf16 只有 mul/copy 能过，其余卡在
-#: 厂商 llc 的 ``Cannot select: bf16 = fp_round``（fp32→bf16 的收窄没有可选指令）。
-_TENTATIVE_DTYPES = frozenset({"bf16"})
+#: 「已知编不过」的 dtype 集合。命中时按 ``NotImplementedError`` 报（契约要求），而不是当成
+#: bug 抛 ``RuntimeError``。
+#:
+#: **bf16 已经从这里移除了**：它之前编不过是因为 Triton 发 ``fpext``/``fptrunc`` 而 bi 后端只认
+#: ``llvm.bi.bfloat2float``/``llvm.bi.float2bfloat``（``Cannot select: f32 = fp_extend`` /
+#: ``bf16 = fp_round``）。现在由 ``_bf16.rewrite_bf16_conversions`` 在 biir 进 llc 之前把这两条
+#: 指令换掉（挂在 ``_triton.CorexTorchBackend.make_cubin`` 上），所以自然写法直接可用。
+#: 见 ``probes/192_bf16_ops.sh`` 与 ``docs/04-TRITON-BRIDGE.md`` §8。
+_TENTATIVE_DTYPES: frozenset = frozenset()
 
 #: 每块的元素数。选 1024 而不是 128：这张卡上 Triton 一条都不会向量化
 #: （``corex-triton/docs/00-FACTS.md`` §15.1），带宽已经贴着平台天花板，而更大的 BLOCK

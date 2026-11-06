@@ -65,6 +65,7 @@ KNOWN_GAPS: list[str] = [
     # --- 规约/扫描类：还缺内核 ---
     "aten::max.dim_max",          # max.dim 的下一跳：要同时出 values 与 indices（_ops_reduce 只有 max_last 的 values）
     "aten::argmax.out",           # 需要「比较 + 记下标」的扫描内核
+    "aten::_log_softmax.out",     # log_softmax.int 的下一跳；_ops_reduce 只有 softmax_last，没有 log 版
     "aten::var.correction",       # 自身缺失；两趟（mean → 平方差）或一趟 Welford
     # --- 逐元素/激活：需要内核（_ops_elementwise 目前只有 add/sub/mul/div/标量/fill/silu/copy）---
     "aten::rsqrt.out",            # 1/sqrt(x)

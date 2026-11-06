@@ -797,6 +797,15 @@ struct CudaApi {
                         unsigned int shared_mem_bytes, void* stream, void** params,
                         void** extra) = nullptr;
   int (*cuGetErrorString)(int code, const char** str) = nullptr;
+  // context 管理：driver API 只认 libcuda 的「当前 context」，而本进程的 primary context
+  // 是 cudart 建的；别的线程/别的层切换过之后，这里可能拿到一个已销毁的 handle。
+  int (*cuInit)(unsigned int flags) = nullptr;
+  int (*cuDeviceGet)(int* device, int ordinal) = nullptr;
+  int (*cuCtxGetCurrent)(void** ctx) = nullptr;
+  int (*cuCtxSetCurrent)(void* ctx) = nullptr;
+  int (*cuCtxGetDevice)(int* device) = nullptr;
+  int (*cuDevicePrimaryCtxRetain)(void** ctx, int device) = nullptr;
+  int (*cudaGetDeviceLite)(int* device) = nullptr;
 };
 
 CudaApi g_cuda;
@@ -832,6 +841,9 @@ size_t fnv1a(const void* data, size_t size, size_t seed) {
   return hash;
 }
 
+/// 前置声明：`ensure_context_locked` 要用它，而它的定义在下面（带 libcuda 错误串）。
+void check_cu(const char* what, int code);
+
 /// 打开 libcuda 并绑定四个入口（前置条件：`g_mutex` 已持）。
 void load_cuda_api_locked() {
   if (g_cuda_loaded) {
@@ -864,7 +876,72 @@ void load_cuda_api_locked() {
                           unsigned int, unsigned int, unsigned int, void*, void**, void**)>(
           handle, "cuLaunchKernel");
   g_cuda.cuGetErrorString = bind_symbol<int (*)(int, const char**)>(handle, "cuGetErrorString");
+  g_cuda.cuInit = bind_symbol<int (*)(unsigned int)>(handle, "cuInit");
+  g_cuda.cuDeviceGet = bind_symbol<int (*)(int*, int)>(handle, "cuDeviceGet");
+  g_cuda.cuCtxGetCurrent = bind_symbol<int (*)(void**)>(handle, "cuCtxGetCurrent");
+  g_cuda.cuCtxSetCurrent = bind_symbol<int (*)(void*)>(handle, "cuCtxSetCurrent");
+  g_cuda.cuCtxGetDevice = bind_symbol<int (*)(int*)>(handle, "cuCtxGetDevice");
+  g_cuda.cuDevicePrimaryCtxRetain =
+      bind_symbol<int (*)(void**, int)>(handle, "cuDevicePrimaryCtxRetain");
+  // `cudaGetDevice` 在 runtime 表里没留（分配器不需要它），这里单独从同一个 libcudart 取；
+  // `dlopen` 同一路径返回同一句柄，拿到的函数与 cudart 侧完全一致。
+  for (const std::string& path : cudart_candidates()) {
+    void* rt = ::dlopen(path.c_str(), RTLD_NOW | RTLD_GLOBAL);
+    if (rt != nullptr) {
+      g_cuda.cudaGetDeviceLite = bind_symbol<int (*)(int*)>(rt, "cudaGetDevice");
+      break;
+    }
+  }
   g_cuda_loaded = true;
+}
+
+/// 保证当前线程上有一个**有效**的 libcuda current context。
+///
+/// 为什么需要：`cuModuleLoadData` / `cuLaunchKernel` 只认 libcuda 的 current context，
+/// 而本进程的 primary context 是 cudart 建的。实测踩过：直接调 `cuModuleLoadData` 返回
+/// `rc=709 context is destroyed`（探针 122 第一次跑就是）。
+///
+/// 顺序**逐字照抄** corex-triton 的 `_ensure_context`（`driver.py:86`）：
+/// `cuInit` → `cuDeviceGet` → `cuDevicePrimaryCtxRetain` → `cuCtxSetCurrent`。
+/// 为什么不用 `cuCtxGetCurrent` 先看一眼：厂商库上「拿得到的非空句柄」不一定可用，
+/// 而 retain 出来的是 primary context，与 cudart / corex-triton 看到的是同一个，重复 set 无害。
+void ensure_context_locked() {
+  load_cuda_api_locked();
+  check_cu("cuInit", g_cuda.cuInit(0));
+  int device = 0;
+  if (g_cuda.cudaGetDeviceLite != nullptr) {
+    g_cuda.cudaGetDeviceLite(&device);
+  }
+  int cuda_device = 0;
+  check_cu("cuDeviceGet", g_cuda.cuDeviceGet(&cuda_device, device));
+  void* primary = nullptr;
+  check_cu("cuDevicePrimaryCtxRetain", g_cuda.cuDevicePrimaryCtxRetain(&primary, cuda_device));
+  check_cu("cuCtxSetCurrent", g_cuda.cuCtxSetCurrent(primary));
+}
+
+/// 对外：让当前线程的 context 就位（`launch`/`load_kernel` 内部也会做，幂等且很便宜）。
+void ensure_context() {
+  std::lock_guard<std::mutex> lock(g_mutex);
+  ensure_context_locked();
+}
+
+/// 本线程是否已经确认过 context 有效。
+///
+/// 为什么用 thread_local 缓存：一次完整检查要过 `g_mutex` + 两个 driver 调用，量级 1 µs，
+/// 而热路径的目标是 10 µs 级——每次都查会把收益吃掉。缓存的失效条件是「launch 返回非 0」，
+/// 那时清标志并重试一次（见 `launch`），既省又不会卡在失效状态上。
+thread_local bool tls_context_ready = false;
+
+/// 轻量版：只在还没确认过时才真的去查一次。
+void ensure_context_cached() {
+  if (tls_context_ready) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_mutex);
+  if (!tls_context_ready) {
+    ensure_context_locked();
+    tls_context_ready = true;
+  }
 }
 
 /// 取 driver 表；未加载先加载。
@@ -917,6 +994,8 @@ int64_t load_kernel(const std::string& cubin, const std::string& kernel_name,
     return reinterpret_cast<int64_t>(found->second);
   }
   const CudaApi& api_ref = cuda_api();
+  // 装载前必须有一个有效的 current context（否则 rc=709 context is destroyed）。
+  ensure_context();
   auto* entry = new KernelEntry();
   entry->spec = spec;
   entry->name = kernel_name;
@@ -1002,16 +1081,27 @@ void launch(int64_t handle, std::vector<int64_t> grid, std::vector<int64_t> bloc
       default: break;
     }
   }
-  check_cu("cuLaunchKernel",
-           cuda_api().cuLaunchKernel(entry->function, static_cast<unsigned int>(grid[0]),
-                                     static_cast<unsigned int>(grid[1]),
-                                     static_cast<unsigned int>(grid[2]),
-                                     static_cast<unsigned int>(block[0]),
-                                     static_cast<unsigned int>(block[1]),
-                                     static_cast<unsigned int>(block[2]),
-                                     static_cast<unsigned int>(shared),
-                                     reinterpret_cast<void*>(static_cast<intptr_t>(stream)),
-                                     params.data(), nullptr));
+  // 热路径：context 用 thread_local 缓存，正常情况下这里是一次判断。
+  ensure_context_cached();
+  int rc = cuda_api().cuLaunchKernel(
+      entry->function, static_cast<unsigned int>(grid[0]), static_cast<unsigned int>(grid[1]),
+      static_cast<unsigned int>(grid[2]), static_cast<unsigned int>(block[0]),
+      static_cast<unsigned int>(block[1]), static_cast<unsigned int>(block[2]),
+      static_cast<unsigned int>(shared),
+      reinterpret_cast<void*>(static_cast<intptr_t>(stream)), params.data(), nullptr);
+  if (rc != 0) {
+    // 失败一次就把 context 重新确认一遍再试一次：典型原因是别的层换过 context，
+    // 直接报错会让上层以为内核/参数有问题，查错成本远高于一次重试。
+    tls_context_ready = false;
+    ensure_context_cached();
+    rc = cuda_api().cuLaunchKernel(
+        entry->function, static_cast<unsigned int>(grid[0]), static_cast<unsigned int>(grid[1]),
+        static_cast<unsigned int>(grid[2]), static_cast<unsigned int>(block[0]),
+        static_cast<unsigned int>(block[1]), static_cast<unsigned int>(block[2]),
+        static_cast<unsigned int>(shared),
+        reinterpret_cast<void*>(static_cast<intptr_t>(stream)), params.data(), nullptr);
+  }
+  check_cu("cuLaunchKernel", rc);
 }
 
 /// 上一次失败的原文（`launch`/`load_kernel` 失败后取一次即可）。
@@ -1026,7 +1116,124 @@ int64_t kernel_count() {
   return static_cast<int64_t>(g_kernels.size());
 }
 
+// ---------------------------------------------------------------------------
+// aten::mm 的 C++ 实现：绕掉 Python 分发与 _empty_impl（probes/010 里 D 段那 59.7 µs）
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/// 一套登记给 `aten::mm` 用的内核。
+///
+/// 为什么按 dtype 分别登记：fp32/fp16/bf16 的最优分块不一定相同，而且内核本身是按
+/// (dtype, BLOCK_M, BLOCK_N, BLOCK_K, warps) 编出来的不同 cubin——一张表只装一套会让
+/// 第二种 dtype 静默用错内核。
+struct MmKernel {
+  int64_t handle = 0;     ///< `load_kernel` 的句柄。
+  int64_t block_m = 0;    ///< 分块行数。
+  int64_t block_n = 0;    ///< 分块列数。
+  int64_t block_k = 0;    ///< 分块归约深度。
+  int64_t num_warps = 1;  ///< 每块 warp 数（blockDim = warps*32）。
+};
+
+std::mutex g_mm_mutex;
+std::unordered_map<int, MmKernel> g_mm_kernels;   ///< c10::ScalarType → 内核
+
+}  // namespace
+
+/// 登记一套 `aten::mm` 用的内核（Python 侧首次编译完成后调一次）。
+///
+/// @param dtype_code `c10::ScalarType` 的整数值（fp32=6 / fp16=5 / bf16=15）。
+/// @param handle `load_kernel` 返回的句柄。
+/// @param block_m/block_n/block_k 分块参数，必须与编译内核时用的 constexpr 一致。
+/// @param num_warps 每块 warp 数；`blockDim = num_warps * 32`。
+void set_mm_kernel(int64_t dtype_code, int64_t handle, int64_t block_m, int64_t block_n,
+                   int64_t block_k, int64_t num_warps) {
+  TORCH_CHECK(handle != 0, "corex_shim: set_mm_kernel 收到 0 句柄（先 load_kernel）");
+  TORCH_CHECK(block_m > 0 && block_n > 0 && block_k > 0 && num_warps > 0,
+              "corex_shim: set_mm_kernel 的分块参数必须为正");
+  std::lock_guard<std::mutex> lock(g_mm_mutex);
+  MmKernel kernel;
+  kernel.handle = handle;
+  kernel.block_m = block_m;
+  kernel.block_n = block_n;
+  kernel.block_k = block_k;
+  kernel.num_warps = num_warps;
+  g_mm_kernels[static_cast<int>(dtype_code)] = kernel;
+}
+
+/// 已登记的 dtype 列表（探针与错误信息用）。
+std::vector<int64_t> mm_kernel_dtypes() {
+  std::lock_guard<std::mutex> lock(g_mm_mutex);
+  std::vector<int64_t> out;
+  for (const auto& entry : g_mm_kernels) {
+    out.push_back(static_cast<int64_t>(entry.first));
+  }
+  std::sort(out.begin(), out.end());
+  return out;
+}
+
+/// `aten::mm` 的 PrivateUse1 实现：`c = a @ b`（a: M×K，b: K×N，行主序连续）。
+///
+/// **为什么不回落**：没登记内核时直接报错，不退回 Python 实现。理由（Lead 定的口径）：
+/// 回落会让「走了快路径」和「没走」两种状态在性能数据里分不清——而这一层的全部意义就是
+/// 省掉那 100 µs 的 host 开销。
+at::Tensor mm_impl(const at::Tensor& a, const at::Tensor& b) {
+  TORCH_CHECK(a.device().is_privateuseone() && b.device().is_privateuseone(),
+              "corex 的 mm 要求两个张量都在 corex 上，收到 ", a.device(), " / ", b.device());
+  TORCH_CHECK(a.dim() == 2 && b.dim() == 2, "corex 的 mm 只支持 2 维：收到 ", a.dim(), " / ",
+              b.dim());
+  TORCH_CHECK(a.scalar_type() == b.scalar_type(),
+              "corex 的 mm 要求两边 dtype 相同：", a.scalar_type(), " vs ", b.scalar_type());
+  TORCH_CHECK(a.is_contiguous() && b.is_contiguous(),
+              "corex 的 mm 暂不支持非连续张量（先 .contiguous()）");
+
+  const int64_t M = a.size(0);
+  const int64_t K = a.size(1);
+  const int64_t N = b.size(1);
+  TORCH_CHECK(b.size(0) == K, "corex 的 mm 归约维不一致：a 的列数 ", K, "，b 的行数 ",
+              b.size(0));
+
+  MmKernel kernel;
+  {
+    std::lock_guard<std::mutex> lock(g_mm_mutex);
+    const auto found = g_mm_kernels.find(static_cast<int>(a.scalar_type()));
+    TORCH_CHECK(found != g_mm_kernels.end(),
+                "corex 的 aten::mm 还没登记内核（dtype=", static_cast<int>(a.scalar_type()),
+                "）。先在 Python 侧编译并登记：\\n"
+                "  k = _ops_matmul._get_kernel(...)\\n"
+                "  h = shim.load_kernel(k.asm['cubin'], k.name, 'ppppiii')\\n"
+                "  shim.set_mm_kernel(dtype_code, h, block_m, block_n, block_k, num_warps)");
+    kernel = found->second;
+  }
+
+  std::vector<int64_t> sizes{M, N};
+  std::vector<int64_t> strides{N, 1};
+  at::Tensor out = empty_strided(sizes, strides, static_cast<int64_t>(a.scalar_type()),
+                                 a.device().index());
+  if (M <= 0 || N <= 0 || K <= 0) {
+    return out;                       // 空矩阵：分配即可，不启动内核（与 aten 语义一致）
+  }
+  const int64_t grid_x = (M + kernel.block_m - 1) / kernel.block_m;
+  const int64_t grid_y = (N + kernel.block_n - 1) / kernel.block_n;
+  std::vector<int64_t> ptr_args{
+      reinterpret_cast<int64_t>(a.data_ptr()),
+      reinterpret_cast<int64_t>(b.data_ptr()),
+      reinterpret_cast<int64_t>(out.data_ptr()),
+      0,                              // global scratch 指针（mm 不需要，但要占位）
+  };
+  launch(kernel.handle, {grid_x, grid_y, 1}, {kernel.num_warps * 32, 1, 1}, 0, 0, ptr_args, {},
+         {M, N, K}, {});
+  return out;
+}
+
 }  // namespace corex_shim
+
+// aten 的分发键注册必须在全局作用域做（`TORCH_LIBRARY_IMPL` 展开出的是一个静态注册对象）。
+// 注意：**一旦加载本 .so，`aten::mm` 就由 C++ 接手**；没登记内核时它明确报错、不回落 Python
+// （刻意设计，见 mm_impl 注释）。
+TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
+  m.impl("mm", TORCH_FN(corex_shim::mm_impl));
+}
 
 // pybind 绑定代码必须写在全局作用域：PYBIND11_MODULE 展开出的是 `extern "C"` 的
 // `PyInit_<name>`，放在 namespace 里会变成某个命名空间的成员，import 时找不到入口。
@@ -1041,8 +1248,10 @@ using corex_shim::as_strided;
 using corex_shim::kernel_count;
 using corex_shim::last_error;
 using corex_shim::launch;
+using corex_shim::mm_kernel_dtypes;
 using corex_shim::load_kernel;
 using corex_shim::reserved_bytes;
+using corex_shim::set_mm_kernel;
 using corex_shim::slab_alignment;
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -1076,4 +1285,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         "热路径启动：按 spec 展开实参，直接 cuLaunchKernel");
   m.def("last_error", &last_error, "上一次 load_kernel/launch 失败的原文");
   m.def("kernel_count", &kernel_count, "已装载（缓存）的内核数");
+  m.def("set_mm_kernel", &set_mm_kernel, pybind11::arg("dtype_code"), pybind11::arg("handle"),
+        pybind11::arg("block_m"), pybind11::arg("block_n"), pybind11::arg("block_k"),
+        pybind11::arg("num_warps") = 1,
+        "登记 aten::mm 用的内核（按 dtype）；未登记时 aten::mm 会明确报错");
+  m.def("mm_kernel_dtypes", &mm_kernel_dtypes, "已登记 mm 内核的 dtype 列表");
 }
