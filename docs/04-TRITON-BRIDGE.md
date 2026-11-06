@@ -512,6 +512,7 @@ def install() -> None:
 | `194_bf16_vector_ir.sh` | 沙箱（卡） | 向量 intrinsic 有哪些拼写可用（**只看 llc，结论已被 195 更正**） | ⚠ 误判「`.v8bf16` 可用」，保留作证据 |
 | `195_bf16_link_verdict.sh` | 沙箱（卡） | **链接判据**（llc + `lld --no-undefined`）三级对照 | V1 `llc=FAIL` / V2 `llc=OK lld=FAIL` / V3 标量化 `llc=OK lld=OK`（见 §8.2） |
 | `196_new_ops.sh` | 沙箱（卡） | **第 5 批算子**：relu/rsqrt/gelu/masked_fill/max.dim+argmax/log_softmax × 3 dtype × 尾块 | **PASS**，63/63 + 36/36，bf16 命中 130（见 §9） |
+| `197_var_axis.sh` | 沙箱（卡） | **最后一批**：`row_var`/`row_std`（两趟 vs 一趟公式对照）、中间维 `sum_axis`/`mean_axis` | **PASS**，27/27 + 18/18，bf16 命中 17（见 §10） |
 
 载荷约定（两个沙箱探针都要）：
 
@@ -1143,3 +1144,108 @@ bf16 在这批算子上**全部真支持**（没有一条走 `NotImplementedErro
 | 3 | 「不能逐字节就说清为什么」：`gelu` 的两种形式各自对各自的公式比（精确版 max_abs 5.96e-08；tanh 版的近似误差 4.4e-04 单列，不混进实现误差） |
 | 4 | 两个工具链坑：`tl.math.rsqrt` → 未登记的 `nvvm.rsqrt.approx.ftz.f`；`tl.math` 里**没有** `tanh`。两者都绕开了，但都值得回填 corex-triton/FACTS |
 | 5 | `_log_softmax` 与 `_softmax` **共用一条内核**（`LOG` constexpr），`max.dim`/`argmax` 也共用一条（`WRITE_VAL` constexpr）——batch 越大越不该复制内核 |
+
+---
+
+## 10. 最后一批内核：`row_var` / `row_std` / `sum_axis` / `mean_axis`
+
+`probes/197_var_axis.sh` **PASS**：§1 **27/27**、§2 **18/18**、bf16 改写命中 **17**、改写后可疑语法 **0**。
+
+### 10.1 接口
+
+```python
+row_var(a_ptr, out_ptr, rows, cols, dtype, correction)   # correction: 1.0 样本 / 0.0 总体
+row_std(a_ptr, out_ptr, rows, cols, dtype, correction)   # 与 row_var 共用内核（SQRT_OUT）
+sum_axis(a_ptr, out_ptr, outer, red, inner, dtype)       # 单个中间维，输出 (outer, inner)
+mean_axis(a_ptr, out_ptr, outer, red, inner, dtype)      # 与 sum_axis 共用内核（MEAN）
+```
+
+### 10.2 `row_var` 为什么必须两趟（附三组对照数字）
+
+一趟恒等式 `var = (Σx² − n·mean²) / (n − c)` 代数上没错，但 `Σx²` 与 `n·mean²` 是两个
+**量级相近的大数**，相减把有效位整段抵掉。`probes/197` 用「均值 1e6、标准差 0.4」的行实测：
+
+| cols | 我们的两趟（max_abs） | 一趟公式（双精度，只剩公式误差） | 一趟公式（fp32 顺序累加，真实内核会拿到的数） | 两趟好多少 |
+| --- | --- | --- | --- | --- |
+| 1000 | **7.458e-11** | 1.101e-02 | **6.986e+06** | **9.4e16 倍** |
+| 512 | **2.149e-06** | 2.150e-06 | **3.283e+06** | **1.5e12 倍** |
+| 4097 | **3.352e-08** | 9.308e-04 | **1.901e+07** | **5.7e14 倍** |
+
+注意第二列：**即使把一趟公式放到双精度里算，它也比我们的 fp32 两趟差**（512 那档两者持平）。
+也就是说这不是"fp32 精度不够"，是**公式本身相消**——所以内核里不能图省那一次读。
+
+为什么不是 Welford：Welford 要把 `(mean, M2, count)` 三元组做**跨 lane 的树形合并**（Triton 里得
+给 `tl.reduce` 塞自定义 combine），而两趟已经把误差压到「输出舍入」这一档（fp32 的 7.5e-11 就是
+`var≈0.156` 的 fp32 ulp 量级）。**等真出现「行大到装不进 L1/L2、第二趟要走 DRAM」时，换 Welford
+才有收益**——那时两趟要多付一遍 DRAM 读，Welford 不用。这是有明确触发条件的升级路径，不是不做。
+
+`row_std` 与 `row_var` 共用内核（`SQRT_OUT` constexpr），fp32 实测 max_rel 2.5e-08 ~ 1.1e-07。
+
+### 10.3 `sum_axis` 为什么是 strided 内核而不是「permute 到最后一维」
+
+归约中间维时，另一种做法是先把那一维 permute 到末尾、`contiguous()` 一次，再复用「最后一维
+归约」。但那次 `contiguous` 对激活就是**多一遍全量 DRAM 往返**（读 + 写 + 再读）；这条内核让数据
+**原地读一遍就出结果**：每个 lane 固定一个 `inner` 位置、跨 `red` 累加，访存是「跨 `inner` 长度
+步进的连续段」，天然合并。
+
+形状按 `(outer, red, inner)` 给：`inner` 是最内层连续维（torch 连续张量里 `x.sum(dim=-2)` 正好
+是这个形状）。**多维组合（同时归约两个以上非相邻维）继续显式报错**——那需要通用步长向量，
+是另一个量级的工作量，而模型里几乎用不到。
+
+实测：`sum_axis` 在 dyadic 数据上 **逐字节相等**（3 dtype × 3 形状 = 9/9 全过），`mean_axis` 的
+max_abs ≤ 2.2e-09（fp32）/ 2.9e-05（fp16）/ 1.4e-04（bf16），都是输出舍入量级。
+
+### 10.4 同一族的第三个坑：`trunc nuw nsw`（这次用「指针行走」绕开）
+
+`sum_axis` 第一版直接写 `r * inner + i`（`r` 是步长 1 的运行期循环变量），llc 报：
+
+```
+error: expected type（第 52 行：%44 = trunc nuw nsw i64 %indvars.iv to i32）
+```
+
+成因与 §7.2 的 `trunc nsw`、§8.4 的 `trunc nuw` **完全同族**：LLVM 的 `indvars` 把归纳变量加宽到
+i64，再在每个用到它的地方截回 i32，而 `nuw`/`nsw` 是 LLVM 17 才加到 `trunc` 上的标记。
+
+修法不是加补丁，而是**让 IR 里干脆没有归纳变量**：
+
+```python
+off = o.to(tl.int64) * red.to(tl.int64) * inner.to(tl.int64) + i
+stride = inner.to(tl.int64)
+for _ in range(0, red):
+    v = tl.load(a_ptr + off, ...)
+    acc += v
+    off += stride          # ← 循环携带的 i64 向量自己往前挪
+```
+
+代价是每次迭代多一次向量加法，收益是**不再依赖「LLVM 不会加宽 IV」这种运气**。这条应写进
+`corex-triton` 的写法约定：**运行期循环里避免 `r * stride` 形式的地址计算，改成指针行走。**
+
+### 10.5 bf16 体检（本轮新增内核）
+
+```
+('row_var','bf16',0)   cubin= 9768  bf16_conversions=3  改写后可疑语法={}
+('row_var','bf16',1)   cubin= 9776  bf16_conversions=3  改写后可疑语法={}   ← std
+('sum_axis','bf16',0)  cubin= 7416  bf16_conversions=2  改写后可疑语法={}
+('sum_axis','bf16',1)  cubin= 7640  bf16_conversions=9  改写后可疑语法={}   ← mean
+合计 bf16_conversions=17，改写后可疑语法 0
+```
+
+bf16 全部真支持：`sum_axis` 逐字节、`mean_axis` 1.4e-04、`row_var` 相对误差 3.7e-04（都是输出
+舍入量级，不是算法误差）。
+
+### 10.6 未做：`masked_fill` 的广播 mask（优先级最低）
+
+当前 `masked_fill` 要求 **mask 已经是全尺寸物化好的**（`*i8`，每元素 1 字节）。广播形状
+（如 `(1, cols)` 广播到 `(rows, cols)`）需要内核知道广播的步长映射，那是另一条内核
+（`mask_bcast`）。在此之前上层可以用 `mask.expand(shape).contiguous()` 兜住——代价是一次掩码
+大小的拷贝，而掩码是 1 字节/元素，通常是特征图大小的 1/4~1/2。
+
+### 10.7 结论
+
+| # | 结论 |
+| --- | --- |
+| 1 | `row_var`/`row_std`/`sum_axis`/`mean_axis` 全部跑通，`probes/197` PASS（27/27 + 18/18），3 dtype × cols 1000/512/4097 |
+| 2 | **方差必须两趟**：一趟公式在 fp32 下误差达 **1e6~1e7**（比待求量 0.156 大 7 个数量级），两趟好 **1e12~1e16 倍**；且一趟公式**即使在双精度下**也比我们的 fp32 两趟差（512 档持平）——问题是公式相消，不是精度不够 |
+| 3 | Welford 的升级触发条件写清了：**行装不进 L1/L2、第二趟要走 DRAM** 时才值得换 |
+| 4 | 中间维归约用 strided 内核、不做 permute+contiguous：后者对激活多一遍全量 DRAM 往返 |
+| 5 | `trunc nuw nsw` 是同一族的第三次出现，修法是**指针行走**（消掉归纳变量），应写进 corex-triton 的写法约定 |

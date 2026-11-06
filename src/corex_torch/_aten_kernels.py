@@ -434,6 +434,75 @@ def torch_int64():
     return torch.int64
 
 
+def _prod(values) -> int:
+    out = 1
+    for v in values:
+        out *= int(v)
+    return out
+
+
+def _ones(cols: int, dtype, device):
+    """``weight=None`` 时用的全 1 权重（归一化里 weight 是最后的乘子，1 即「无权重」）。"""
+    import torch
+
+    return torch.ones([cols], dtype=dtype, device=device)
+
+
+def _rms_norm_impl(self, normalized_shape, weight=None, eps=None):
+    """``aten::rms_norm``：直接落到底座内核，不走 `pow → mean → rsqrt → mul` 的分解。
+
+    为什么必须直接注册：`F.rms_norm` 在本版 torch 里是 composite，会分解成
+    `aten::pow.Tensor_Scalar_out` 等一串算子——而 `pow` 我们没实现，于是整条前向在第一个
+    RMSNorm 上就炸（`probes/018` 的 mini decoder 就是这么撞出来的）。分解出的四个算子合起来
+    也不如一个内核快。
+    """
+    _need(self, "rms_norm", "input")
+    cols = _prod(normalized_shape)
+    if cols <= 0 or int(self.numel()) % cols:
+        raise NotImplementedError(
+            f"corex 的 rms_norm 要求元素数能被 normalized_shape 的乘积整除："
+            f"numel={self.numel()} prod={cols}")
+    rows = int(self.numel()) // cols
+    out = _empty(list(self.shape), self.dtype, self.device)
+    if weight is None:
+        w_ptr = _ones(cols, self.dtype, self.device).data_ptr()
+    else:
+        _need(weight, "rms_norm", "weight")
+        if int(weight.numel()) != cols:
+            raise NotImplementedError(
+                f"corex 的 rms_norm 要求 weight 元素数等于 {cols}，收到 {weight.numel()}")
+        w_ptr = weight.data_ptr()
+    _mod("_ops_reduce").rms_norm(self.data_ptr(), w_ptr, out.data_ptr(), rows, cols,
+                                 float(eps if eps is not None else 1e-6),
+                                 _dtype_name(self.dtype))
+    return out
+
+
+def _layer_norm_impl(self, normalized_shape, weight=None, bias=None, eps: float = 1e-5,
+                     cudnn_enable: bool = True):
+    """``aten::layer_norm``：同上，直接落到底座内核。
+
+    内核只接受 weight，所以带 bias 时先按 weight 算完再把 bias 加上去（bias 形状是
+    ``normalized_shape``，需要广播到整个输入）。
+    """
+    _need(self, "layer_norm", "input")
+    cols = _prod(normalized_shape)
+    if cols <= 0 or int(self.numel()) % cols:
+        raise NotImplementedError(
+            f"corex 的 layer_norm 要求元素数能被 normalized_shape 的乘积整除："
+            f"numel={self.numel()} prod={cols}")
+    rows = int(self.numel()) // cols
+    out = _empty(list(self.shape), self.dtype, self.device)
+    w_ptr = (_ones(cols, self.dtype, self.device).data_ptr()
+             if weight is None else weight.data_ptr())
+    _mod("_ops_reduce").layernorm(self.data_ptr(), w_ptr, out.data_ptr(), rows, cols,
+                                  float(eps), _dtype_name(self.dtype))
+    if bias is not None:
+        _need(bias, "layer_norm", "bias")
+        out = out + bias.reshape([1] * (out.dim() - bias.dim()) + list(bias.shape)).expand_as(out)
+    return out
+
+
 def _register_fast_mm() -> None:
     """把编译好的 mm 内核句柄登记给 C++ 侧，让 ``aten::mm`` 全程不碰 Python。
 
@@ -509,5 +578,12 @@ def register(lib) -> None:
     lib.impl("_log_softmax.out", _log_softmax_out_impl, "PrivateUse1")
     lib.impl("max.dim_max", _max_dim_impl, "PrivateUse1")
     lib.impl("argmax", _argmax_impl, "PrivateUse1")
+    # 归一化：必须直接接管，否则 composite 会分解出我们没实现的 pow/mean 组合（probes/018 撞出来的）。
+    # 还要同时挂 AutogradPrivateUse1：这两个算子在 ATen 里是 CompositeImplicitAutograd，
+    # 只挂 PrivateUse1 时 `F.rms_norm` 会停在 `Autogradcorex` 那层报「算子不存在」
+    # （报错列表里能看到 AutogradPrivateUse1 可选、而 PrivateUse1 不在其中）。
+    for key in ("PrivateUse1", "AutogradPrivateUse1"):
+        lib.impl("rms_norm", _rms_norm_impl, key)
+        lib.impl("layer_norm", _layer_norm_impl, key)
     # mm 可能已被 C++ 接管：上面的 impl 只作为「旧版 shim / 未接管」时的实现存在。
     _register_fast_mm()

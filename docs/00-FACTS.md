@@ -423,3 +423,59 @@ aten 路径 1.38x 主要来自「替掉 Python 实现」。验收门槛据此改
   （对比：`add`/`mul` 那些是 composite，会自动拆到 out 变体。）
 * **探针里 got/ref 必须用同一份输入**。第一版 017 写成两次独立 `torch.randn`，量出来的是「两次采样之差」
   （rsqrt 报 0.59、gelu 报 4.0、log_softmax 报 11.3），差点误判成内核错了。
+
+## 24. ⚠️ 更正：「aten 分发器 ~73 µs/次」是被污染的测量，实际几乎免费
+
+§21/§22 里那条「aten 分发器固定成本 ~73 µs、热路径要绕开 aten」**是错的**，来源是我自己挖的坑：
+
+* 当时 `_aten_kernels.register()` 在 C++ 已经接管 `aten::mm` 的情况下**又注册了一遍 Python 版**，
+  于是每次 `aten::mm` 实际走的是 Python kernel（那条 `Overriding a previously registered kernel`
+  警告就是它的痕迹）。量到的 82–84 µs 是 **Python 回调开销**，不是分发器。
+* 去掉重复注册后复测（torch28 连跑两次）：`aten mm 16³ = 10.14 / 10.20 µs`，
+  而直调 `shim.launch` 是 `10.78 / 10.82 µs`——**aten 路径和直调同速**，
+  256³ 也是 170.52 vs 170.49 µs。
+
+正确结论：
+
+> **aten 分发器基本免费（10.1 vs 10.8 µs）。真正的成本是「用 Python 实现算子」。**
+> `Overriding a previously registered kernel` 警告是**实质缺陷**，必须清掉——它意味着你测的
+> 根本不是你以为的那个实现。
+
+实际影响（好消息）：**接 coffin 时热路径可以照常走 aten**，不必自建绕过层，
+「多 kernel 连续发射」入口的优先级可以往后放。
+
+## 25. 又一类静默算错：广播操作数没 expand 就被当同形读
+
+`_out_binary` 原来只要求「out 形状 == 广播形状」，却没处理 `self`/`other` 本身更小的情况。
+内核按 `out.numel()` 线性遍历三个指针，于是把 `[T,1,HD]` 的 `other` 当成 `[T,HEADS,HD]` 读——
+**越界读、不报错、数值全错**。
+
+触发点在 RoPE：`x1 * cos[:, None, :]`（`x1` 是 `[T,HEADS,HD/2]` 的切片视图，
+`cos[:, None, :]` 是 `[T,1,HD/2]`）。`probes/019` 的逐阶段比对里，这一步 max_abs **6.4**
+而前后各阶段都在 1e-5 量级。
+
+修法：物化时必须显式 `expand(shape).contiguous()`，不能只 `.contiguous()`（后者保留原形状）。
+同时把「非连续就报错」改成「非连续就物化」——真实前向里到处是切片视图，报错等于把
+「能算但慢」变成「不能算」。
+
+**教训**：`broadcast_shapes` 算出的形状与三个指针的**实际形状**是两件事；凡是「按 numel 线性
+遍历指针」的内核，调用方必须先保证三者同形，否则就是静默越界。
+
+## 26. 阶段 5 预演：一个 2 层 mini decoder 端到端跑通（`probes/018`）
+
+结构：`embedding → rms_norm → qkv(mm) → RoPE(切片写) → bmm+softmax+bmm → o_proj → 残差 →
+rms_norm → MLP(mm+silu+mm) → 残差 → rms_norm → head`，`VOCAB=32 DIM=64 HEADS=4 T=8`，两层。
+
+| 项 | 结果 |
+| --- | --- |
+| 与 CPU 同结构前向的**全局相对误差** | **6.631e-06** |
+| logits argmax 一致率 | **1.000** |
+| 首次（含内核编译） | 412.5 ms |
+| 热跑 | 56.7 ms |
+
+逐阶段比对（`probes/019`）显示每一步都在 1e-5 量级以内，没有累积放大。
+
+这条前向暴露的两个缺口都是**单算子表测不出来的**，正是「先接真实前向」的价值：
+1. `F.rms_norm` 是 composite，会分解出我们没实现的 `aten::pow` → 必须**直接接管** `aten::rms_norm`
+   （且要同时挂 `AutogradPrivateUse1`，只挂 `PrivateUse1` 会停在 `Autogradcorex` 层报算子不存在）；
+2. 广播操作数与切片视图（见 §25）。

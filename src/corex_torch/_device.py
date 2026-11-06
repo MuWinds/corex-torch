@@ -386,24 +386,44 @@ def _out_binary(name: str):
                 f"corex 的 {name}.out 暂不支持 resize：out.shape={tuple(out.shape)} 期望 {shape}"
             )
         for label, t in (("self", self), ("other", other), ("out", out)):
-            if not t.is_contiguous():
-                raise NotImplementedError(f"corex 的 {name}.out 暂不支持非连续 {label}")
             if t.device.type != DEVICE_NAME:
                 raise NotImplementedError(f"corex 的 {name}.out 要求 {label} 在 corex 上，收到 {t.device}")
-        from . import _ops_elementwise as ops
-
-        # ``alpha`` 只有 add/sub 有（``out = self ± alpha*other``）；mul/div 的 schema 里没有，
-        # 无条件传会得到 ``TypeError: mul() got an unexpected keyword argument 'alpha'``。
-        fn = getattr(ops, name)
-        if name in ("add", "sub"):
-            fn(self.data_ptr(), other.data_ptr(), out.data_ptr(),
-               int(out.numel()), _dtype_name(out.dtype), alpha=float(alpha))
-        else:
-            fn(self.data_ptr(), other.data_ptr(), out.data_ptr(),
-               int(out.numel()), _dtype_name(out.dtype))
-        return out
+        # 非连续/需广播：内核只认「三个同形连续指针」，所以**先物化成 out 的形状**再算。
+        # 语义与 torch 一致（结果相同），代价是一次拷贝；之前直接报错，但真实前向里到处是
+        # 切片视图（`x[..., 0::2]`）与广播乘子（`cos[:, None, :]`），报错等于把「能算但慢」
+        # 变成「不能算」（`probes/018` 的 mini decoder 撞在 `mul.out` 上）。
+        #
+        # **广播必须显式 expand**：只做 `.contiguous()` 会保留 [T,1,HD] 这种形状，而内核按
+        # out.numel() 线性遍历，于是把更小的 other 当同形读——**不报错、数值全错**
+        # （`probes/019` 的 5a 阶段：RoPE 的 `x1 * cos[:, None, :]` 误差 6.4）。
+        if not self.is_contiguous() or tuple(self.shape) != shape:
+            self = self.expand(shape).contiguous()
+        if not other.is_contiguous() or tuple(other.shape) != shape:
+            other = other.expand(shape).contiguous()
+        if not out.is_contiguous():
+            stage = _empty_impl(list(out.shape), dtype=out.dtype, device=out.device)
+            _out_binary_into(name, self, other, stage, alpha)
+            out.copy_(stage)                 # copy_ 走按 stride 的分段搬，见 _aten_extra
+            return out
+        return _out_binary_into(name, self, other, out, alpha)
 
     return impl
+
+
+def _out_binary_into(name: str, self, other, out, alpha) -> Any:
+    """把 ``self <op> other`` 写进连续的 ``out``（三个张量都必须已连续、同形）。"""
+    from . import _ops_elementwise as ops
+
+    # ``alpha`` 只有 add/sub 有（``out = self ± alpha*other``）；mul/div 的 schema 里没有，
+    # 无条件传会得到 ``TypeError: mul() got an unexpected keyword argument 'alpha'``。
+    fn = getattr(ops, name)
+    if name in ("add", "sub"):
+        fn(self.data_ptr(), other.data_ptr(), out.data_ptr(),
+           int(out.numel()), _dtype_name(out.dtype), alpha=float(alpha))
+    else:
+        fn(self.data_ptr(), other.data_ptr(), out.data_ptr(),
+           int(out.numel()), _dtype_name(out.dtype))
+    return out
 
 
 def _register_ops() -> None:

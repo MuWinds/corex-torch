@@ -915,20 +915,21 @@ Python 侧首次编译后调一次 `set_mm_kernel(dtype_code, handle, bm, bn, bk
 | `aten` `a @ b`（C++ 实现） | **204.1 µs** | **164.4** |
 | `probes/010` 基线（Python 实现） | 265.8 µs | 126.2 |
 
-**但 aten 路径比直调慢得多，多出来的部分是分发器本身**——这一点必须单独记住：
+> **2026-11-07 02:10 更正（重要）。** 这里原本记着「aten 分发器 ≈73 µs/次固定成本」，
+> 那是**被污染的测量**：当时 `_aten_kernels` 把 Python 版 `mm` 又注册了一遍，覆盖掉了 C++ 版
+> （就是那条 `Overriding a previously registered kernel` 警告）。每次 `aten::mm` 实际走的是
+> **Python kernel**，那 73 µs 是 Python 回调，不是分发器。C++ 接管且 Python 版不再重复注册之后：
 
-| 量 | 值 | 含义 |
+| 量 | 值（02:08 两次复现） | 含义 |
 | --- | --- | --- |
-| `aten mm 16³`（内核≈0） | **83.6 µs** | 走分发器的完整地板 |
-| `shim.launch` 16³ | 10.8 µs | 同样一次启动，不经过分发器 |
-| `shim.is_initialized()`（pybind 地板） | **0.21 µs** | Python→C++ 调用本身不贵 |
-| `分配 + 直调快路径`（每轮新分配输出） | 111.4 µs | 分配只占 ~0.9 µs |
+| `aten mm 16³`（内核≈0） | **10.14 / 10.20 µs** | 走分发器的完整地板 |
+| `shim.launch` 16³ | 10.78 / 10.82 µs | 同样一次启动，不经过分发器 |
+| `aten` `a @ b` 256³ | **170.52 µs / 196.8 GFLOP/s** | 与直调 170.49 µs 持平 |
+| `shim.is_initialized()`（pybind 地板） | 0.21 µs | Python→C++ 调用本身不贵 |
 
-结论：**约 73 µs/次 是 aten 分发器的固定成本**，与内核大小无关。把实现挪到 C++ 只能省掉
-Python 实现那一层（265.8→204.1），省不掉分发器。所以 hot path 想再往下压只有两条路：
-① 绕过 aten 直接调 `shim.launch` + 预分配输出（decode 的 kernel 级循环）；
-② 减少发射次数。另外 `aten::mm.out` 还没实现（`torch.mm(a, b, out=c)` 报未实现），
-补上它能省掉每轮一次分配——对 73 µs 的分发器成本没帮助，但对显存复用有用。
+结论：**aten 分发器基本免费**（10.14 vs 直调 10.78 µs，差异在噪声内）。热路径**不必**自建绕过 aten 的一层，
+只要保证「Python 版 kernel 不要覆盖 C++ 版」。真正要避开的是「用 Python 实现」而不是「用 aten」。
+（这条更正反过来也说明：那条 `Overriding ... previous kernel` 警告是**实质缺陷**，不是噪音。）
 ---
 
 ## 13. 复跑记录（2026-11-07 01:47，三探针同批）
@@ -973,3 +974,33 @@ ALL_OK
 方阵上 X/Y 交换与维度错位都不可见，而吞吐与正确性无关。判据必须是
 **形状矩阵 × 与 CPU 逐元素比对 × 污染池**，吞吐只是附加信息。这跟「只看 llc 不看 lld」
 是同一类问题：判据选错，测试就变成安慰剂。
+
+---
+
+## 14. 全量回归（2026-11-07 02:10，最新 .so 340512 B + ENABLE_FAST_MM 默认 True）
+
+| 探针 | rc | 结果 | 通过 / 失败 / 数值不符 |
+| --- | --- | --- | --- |
+| `120_aten_coverage` | 0 | `ATEN_COVERAGE_DONE` | **37/43 · 6 · 0** |
+| `121_view_alias` | 0 | `VIEW_ALIAS_PASS` | 全绿 |
+| `122_fast_launch` | 0 | `FAST_LAUNCH_PASS` | 全绿 |
+| `123_mm_registration` | 0 | `ALL_OK` | 5 形状 × 2 路径全 0 误差 |
+| `008_device_end_to_end` | 0 | `DEVICE_VERDICT PARTIAL` | 9/10 · 1 · 0 |
+| `009_torch_ops` | 0 | `TORCH_OPS_VERDICT PASS` | **9/9** |
+| `017_torch_ops_batch5` | 0 | `OPS5_VERDICT PASS` | **12/12** |
+
+### 14.1 失败项定性
+
+| 失败项 | 探针 | 定性 | 说明 |
+| --- | --- | --- | --- |
+| `sum.dim_IntList` / `sum.IntList_out` / `mean.dim` | 120 | **内核缺口** | 归约内核只支持「全归约」或「最后一维」，`dim=[0]` 报 `NotImplementedError` |
+| `max.dim` / `argmax` | 120 | **内核缺口** | 同上，只支持最后一维（最后一维的 `max.dim`/`argmax` 已由 017 验过全绿） |
+| `var.correction` | 120 | **分发缺口** | 该重载连 composite 都没有；可用 mean→平方差→mean 拼（Lead 归口） |
+| 非连续**目的**张量的 `_copy_from` | 008 | **设备层缺口** | `_copy_from` 已支持非连续**源**，但目的端非连续仍报错；可复用 `_aten_extra._copy_impl` 的分段搬运 |
+
+### 14.2 关键数字（同批实测）
+
+- 发射地板：Triton Python **39.57 µs** → C++ **10.78 µs**（3.7x）
+- mm 256³：Python 实现 183.19 µs / 183.2 GFLOP/s → C++ 直调 **170.49 µs / 196.8 GFLOP/s**
+- mm 256³ 走 aten：**170.52 µs / 196.8 GFLOP/s**（与直调持平，见 §12.5 的更正）
+- `009` 的 mm 64×128@128×256 与注意力小块：`max_rel = 0.000e+00` / `1.618e-07`

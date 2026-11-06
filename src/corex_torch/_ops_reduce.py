@@ -37,6 +37,7 @@ from ._ops_elementwise import dtype_info, itemsize, traffic_bytes
 __all__ = [
     "sum_last", "mean_last", "max_last", "sum_all", "softmax_last",
     "log_softmax_last", "max_dim", "argmax_last",
+    "row_var", "row_std", "sum_axis", "mean_axis",
     "rms_norm", "layernorm", "cache_info", "clear_cache",
 ]
 
@@ -231,6 +232,89 @@ if triton is not None:
         tl.store(idx_ptr + row, best.to(tl.int64))
 
     @triton.jit
+    def _row_var_kernel(a_ptr, out_ptr, rows, cols, correction,
+                        BLOCK: tl.constexpr, OUT_DTYPE: tl.constexpr,
+                        SQRT_OUT: tl.constexpr):
+        """逐行方差/标准差：``var = sum((x-mean)^2) / (cols - correction)``。
+
+        **两趟，不是一趟 ``sum(x^2) - n*mean^2``**。那个恒等式代数上没错，但 ``sum(x^2)`` 与
+        ``n*mean^2`` 是两个**量级相近的大数**，相减时有效位被整段抵消：``x ~ 1e6`` 时
+        ``sum(x^2) ~ 4e15``，fp32 在这个量级的 ulp 是 5e8，而真正的方差项只有 1e3 量级
+        ——一趟公式的误差比待求量还大几个数量级（``probes/197`` §1 有实测对照）。
+        两趟的代价只是把行**再读一遍**，而行在 L1/L2 里（一行 4 KB 量级），DRAM 上仍只读一次。
+
+        为什么不是 Welford：Welford 要把 ``(mean, M2, count)`` 三元组做**跨 lane 的树形合并**
+        （Triton 里得给 ``tl.reduce`` 塞自定义 combine），而两趟已经把误差压到「输出舍入」这一档；
+        等真出现「行大到装不进 L1/L2、第二趟要走 DRAM」时再换 Welford 才有收益。
+
+        ``correction``（贝塞尔校正）是 fp32 标量：1.0 = 样本方差（torch 默认），0.0 = 总体方差。
+        ``SQRT_OUT=1`` 直接出标准差（同一条内核，省一条内核、省一次往返）。
+        ``cols - correction <= 0`` 时结果为 inf/NaN，与 torch 相同（不特判）。
+        """
+        row = tl.program_id(0)
+        base = row * cols
+        offs = tl.arange(0, BLOCK)
+        n_f = cols.to(tl.float32)
+        # 第一趟：和 → 均值
+        s = tl.zeros((BLOCK,), tl.float32)
+        for c0 in range(0, cols, BLOCK):
+            idx = c0 + offs
+            v = tl.load(a_ptr + base + idx, mask=idx < cols, other=0.0).to(tl.float32)
+            s += v
+        mean = tl.sum(s, axis=0) / n_f
+        # 第二趟：平方差。**尾部 lane 必须用 where 掩掉**——它们读的是 other=0.0，
+        # 若直接累加 (0-mean)^2，等于给方差白加一堆 mean^2 的赝品。
+        d = tl.zeros((BLOCK,), tl.float32)
+        for c0 in range(0, cols, BLOCK):
+            idx = c0 + offs
+            mask = idx < cols
+            v = tl.load(a_ptr + base + idx, mask=mask, other=0.0).to(tl.float32)
+            dv = v - mean
+            d += tl.where(mask, dv * dv, 0.0)
+        var = tl.sum(d, axis=0) / (n_f - correction)
+        if SQRT_OUT:
+            var = tl.sqrt(var)
+        tl.store(out_ptr + row, var.to(OUT_DTYPE))
+
+    @triton.jit
+    def _sum_axis_kernel(a_ptr, out_ptr, outer, red, inner,
+                         BLOCK: tl.constexpr, OUT_DTYPE: tl.constexpr,
+                         MEAN: tl.constexpr):
+        """对**单个中间维**做 sum/mean：逻辑形状 ``(outer, red, inner)``，归约 ``red``。
+
+        布局假设（与 torch 连续张量一致）：``inner`` 最内层且**连续**，``red`` 的步长是
+        ``inner``，``outer`` 的步长是 ``red*inner``。于是每个 lane 固定一个 inner 位置、跨 red
+        累加即可——不需要 stride/gather 语义，访存是「跨 inner 长度步进的连续段」，天然合并。
+
+        为什么不做「先 permute 到最后一维再归约」：那次 permute + contiguous 会多出**一次全量
+        拷贝**（对激活就是多一遍 DRAM 往返）。这条内核原地读一遍就出结果。
+
+        多维组合（同时归约两个以上非相邻维）仍由上层显式报错——那需要通用步长向量，
+        是另一个量级的工作量，而模型里几乎用不到。
+        """
+        o = tl.program_id(0)
+        blk = tl.program_id(1)
+        i = (blk * BLOCK + tl.arange(0, BLOCK)).to(tl.int64)
+        mask = i < inner.to(tl.int64)
+        acc = tl.zeros((BLOCK,), tl.float32)
+        # **指针行走，不是 `r * inner`**：步长 1 的运行期循环会让 LLVM 的 indvars 把归纳变量
+        # 加宽到 i64，再在每个用到它的地方 `trunc nuw nsw i64 %iv to i32` —— 那两个标记是
+        # LLVM 17 才有的，厂商 llc（16）直接 `error: expected type`
+        # （实测原文：`%44 = trunc nuw nsw i64 %indvars.iv to i32`）。把「第 r 行的地址」做成
+        # 一个**循环携带的 i64 向量**自己往前挪，就没有归纳变量可加宽了。
+        # 第三处同一族的坑（前两处见 §7.2：`splat` 非零向量常量、`trunc nsw`）。
+        off = o.to(tl.int64) * red.to(tl.int64) * inner.to(tl.int64) + i
+        stride = inner.to(tl.int64)
+        for _ in range(0, red):
+            v = tl.load(a_ptr + off, mask=mask, other=0.0).to(tl.float32)
+            acc += v
+            off += stride
+        if MEAN:
+            acc = acc / red.to(tl.float32)
+        tl.store(out_ptr + o.to(tl.int64) * inner.to(tl.int64) + i, acc.to(OUT_DTYPE),
+                 mask=mask)
+
+    @triton.jit
     def _rms_norm_kernel(x_ptr, w_ptr, out_ptr, rows, cols, eps,
                          BLOCK: tl.constexpr, OUT_DTYPE: tl.constexpr):
         """RMSNorm：``out = x / sqrt(mean(x^2) + eps) * w``，两遍扫描（求平方和 → 写回）。
@@ -387,6 +471,24 @@ def _build_kernel(name: str, dtype: Optional[str], op: Optional[int], block: int
         cexpr = {"BLOCK": int(block), "OUT_DTYPE": out_dt, "LOG": bool(op)}
         return _compile(_softmax_kernel, sig, cexpr, dtype, num_warps,
                         f"softmax(log={bool(op)})")
+    if name == "row_var":
+        ptr_ty = dtype_info(dtype)[0]
+        sig = {"a_ptr": ptr_ty, "out_ptr": ptr_ty, "rows": "i32", "cols": "i32",
+               "correction": "fp32",
+               "BLOCK": "constexpr", "OUT_DTYPE": "constexpr", "SQRT_OUT": "constexpr"}
+        # ``op`` 槽位：0 = 方差，1 = 标准差（同一条内核，只有最后一步 sqrt 不同）
+        cexpr = {"BLOCK": int(block), "OUT_DTYPE": out_dt, "SQRT_OUT": bool(op)}
+        return _compile(_row_var_kernel, sig, cexpr, dtype, num_warps,
+                        f"row_var(sqrt={bool(op)})")
+    if name == "sum_axis":
+        ptr_ty = dtype_info(dtype)[0]
+        sig = {"a_ptr": ptr_ty, "out_ptr": ptr_ty, "outer": "i32", "red": "i32",
+               "inner": "i32", "BLOCK": "constexpr", "OUT_DTYPE": "constexpr",
+               "MEAN": "constexpr"}
+        # ``op`` 槽位：0 = sum，1 = mean
+        cexpr = {"BLOCK": int(block), "OUT_DTYPE": out_dt, "MEAN": bool(op)}
+        return _compile(_sum_axis_kernel, sig, cexpr, dtype, num_warps,
+                        f"sum_axis(mean={bool(op)})")
     if name == "max_dim":
         ptr_ty = dtype_info(dtype)[0]
         sig = {"a_ptr": ptr_ty, "val_ptr": ptr_ty, "idx_ptr": "*i64",
@@ -595,6 +697,90 @@ def layernorm(x_ptr, w_ptr, out_ptr, rows: int, cols: int, eps: float, dtype: st
     见 ``_layernorm_kernel`` 的说明与探针实测。
     """
     _norm("layernorm", x_ptr, w_ptr, out_ptr, rows, cols, eps, dtype, block, num_warps, stream)
+
+
+# --------------------------------------------------------------------------- #
+# 方差 / 中间维归约
+# --------------------------------------------------------------------------- #
+
+def row_var(a_ptr, out_ptr, rows: int, cols: int, dtype: str, correction: float, *,
+            block: Optional[int] = None, num_warps: Optional[int] = None,
+            stream: Optional[int] = None) -> None:
+    """逐行方差（``torch.var(x, dim=-1, correction=...)``）。
+
+    两趟算法（先均值、再平方差），**不用** ``E[x^2]-E[x]^2`` 那个一趟恒等式——理由与实测见
+    ``_row_var_kernel`` 的注释和 ``probes/197`` §1。
+
+    Args:
+        rows/cols: 形状（``cols`` 是被归约的最后一维长度）。
+        correction: 贝塞尔校正，**fp32 标量**。1.0 = 样本方差（torch 默认），0.0 = 总体方差。
+        out_ptr: ``rows`` 个元素的输出（dtype 同输入）。
+    """
+    _var(0, a_ptr, out_ptr, rows, cols, dtype, correction, block, num_warps, stream)
+
+
+def row_std(a_ptr, out_ptr, rows: int, cols: int, dtype: str, correction: float, *,
+            block: Optional[int] = None, num_warps: Optional[int] = None,
+            stream: Optional[int] = None) -> None:
+    """逐行标准差 = ``sqrt(逐行方差)``。
+
+    与 :func:`row_var` **共用同一条内核**（``SQRT_OUT`` constexpr）：多写一条内核只会多一份
+    要同步维护的代码，而 ``sqrt`` 是最后一步的标量运算，分支成本为零。
+    """
+    _var(1, a_ptr, out_ptr, rows, cols, dtype, correction, block, num_warps, stream)
+
+
+def _var(sqrt_out: int, a_ptr, out_ptr, rows: int, cols: int, dtype: str,
+         correction: float, block: Optional[int], num_warps: Optional[int],
+         stream: Optional[int]) -> None:
+    dtype_info(dtype)
+    if rows < 0 or cols < 0:
+        raise ValueError(f"rows/cols 不能为负：rows={rows} cols={cols}")
+    if rows == 0 or cols == 0:
+        return
+    blk = int(block or DEFAULT_BLOCK)
+    kernel = _get_kernel("row_var", dtype, int(sqrt_out), blk,
+                         int(num_warps or DEFAULT_NUM_WARPS))
+    _triton.launch(kernel, (rows,), a_ptr, out_ptr, int(rows), int(cols),
+                   float(correction), stream=stream)
+
+
+def sum_axis(a_ptr, out_ptr, outer: int, red: int, inner: int, dtype: str, *,
+             block: Optional[int] = None, num_warps: Optional[int] = None,
+             stream: Optional[int] = None) -> None:
+    """对**单个中间维**求和：逻辑形状 ``(outer, red, inner)`` → 输出 ``(outer, inner)``。
+
+    ``inner`` 必须是最内层连续维、``red`` 是紧邻其左的那一维（torch 连续张量里
+    ``x.sum(dim=-2)`` 就是这种形状）。上层负责把「归约某一维」翻译成这三个长度：
+    被归约维左侧的所有维折叠成 ``outer``，右侧折叠成 ``inner``。
+
+    多维组合（同时归约两个非相邻维）**不支持**，请由上层显式报错——见
+    ``_sum_axis_kernel`` 的说明。
+    """
+    _axis_reduce(0, a_ptr, out_ptr, outer, red, inner, dtype, block, num_warps, stream)
+
+
+def mean_axis(a_ptr, out_ptr, outer: int, red: int, inner: int, dtype: str, *,
+              block: Optional[int] = None, num_warps: Optional[int] = None,
+              stream: Optional[int] = None) -> None:
+    """对单个中间维求均值（``sum_axis / red``，与 :func:`sum_axis` 共用内核）。"""
+    _axis_reduce(1, a_ptr, out_ptr, outer, red, inner, dtype, block, num_warps, stream)
+
+
+def _axis_reduce(mean: int, a_ptr, out_ptr, outer: int, red: int, inner: int,
+                 dtype: str, block: Optional[int], num_warps: Optional[int],
+                 stream: Optional[int]) -> None:
+    dtype_info(dtype)
+    if min(outer, red, inner) < 0:
+        raise ValueError(f"outer/red/inner 不能为负：{outer}/{red}/{inner}")
+    if outer == 0 or red == 0 or inner == 0:
+        return                                  # red==0 时 torch 给 0（sum）/NaN（mean），不模拟
+    blk = int(block or DEFAULT_BLOCK)
+    kernel = _get_kernel("sum_axis", dtype, int(mean), blk,
+                         int(num_warps or DEFAULT_NUM_WARPS))
+    grid = (int(outer), (int(inner) + blk - 1) // blk)
+    _triton.launch(kernel, grid, a_ptr, out_ptr, int(outer), int(red), int(inner),
+                   stream=stream)
 
 
 # --------------------------------------------------------------------------- #
