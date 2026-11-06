@@ -177,6 +177,13 @@ def _copy_from_impl(src, dst, non_blocking: bool = False) -> Any:
     """
     if dst.shape != src.shape:
         raise NotImplementedError("corex 的 _copy_from 暂不支持形状变化（走 resize 的那条路）")
+    # 线性 memcpy 只对「两边都连续」成立。任何一边非连续时直接按字节扫过去会把行序读错，
+    # 而且结果看起来像「数值有点怪」而不是报错——所以必须挡在门口。
+    if not (src.is_contiguous() and dst.is_contiguous()):
+        raise NotImplementedError(
+            "corex 的 _copy_from 暂不支持非连续张量（先 .contiguous() 的路径本身也缺）："
+            f"src.contiguous()={src.is_contiguous()} dst.contiguous()={dst.is_contiguous()}"
+        )
     nbytes = int(dst.numel()) * int(dst.element_size())
     if nbytes == 0:
         return dst
@@ -324,8 +331,15 @@ def _out_binary(name: str):
                 raise NotImplementedError(f"corex 的 {name}.out 要求 {label} 在 corex 上，收到 {t.device}")
         from . import _ops_elementwise as ops
 
-        getattr(ops, name)(self.data_ptr(), other.data_ptr(), out.data_ptr(),
-                           int(out.numel()), _dtype_name(out.dtype), alpha=float(alpha))
+        # ``alpha`` 只有 add/sub 有（``out = self ± alpha*other``）；mul/div 的 schema 里没有，
+        # 无条件传会得到 ``TypeError: mul() got an unexpected keyword argument 'alpha'``。
+        fn = getattr(ops, name)
+        if name in ("add", "sub"):
+            fn(self.data_ptr(), other.data_ptr(), out.data_ptr(),
+               int(out.numel()), _dtype_name(out.dtype), alpha=float(alpha))
+        else:
+            fn(self.data_ptr(), other.data_ptr(), out.data_ptr(),
+               int(out.numel()), _dtype_name(out.dtype))
         return out
 
     return impl
@@ -360,6 +374,14 @@ def _register_ops() -> None:
         pass
     else:
         _aten_extra.register(lib)
+    # 需要真算的算子（矩阵乘/规约/softmax/索引）单独一处：它们的内核在 _ops_* 里，
+    # 这里只做形状与布局检查。缺了它设备仍然能用，只是这些算子报未实现。
+    try:
+        from . import _aten_kernels
+    except ImportError:
+        pass
+    else:
+        _aten_kernels.register(lib)
 
 
 def _make_device_module() -> types.ModuleType:
@@ -411,9 +433,30 @@ def _make_device_module() -> types.ModuleType:
     def current_stream(device: Optional[int] = None):
         return _runtime.Stream.default()
 
+    def manual_seed(seed: int) -> None:
+        """卡上没有 RNG，这里**只吞掉种子**。
+
+        为什么要提供：``torch.manual_seed`` 会检查 device module 里有没有这几个函数，
+        缺了会打 ``UserWarning: Set seed for corex device does not take effect``。
+        我们没有实现任何随机算子（``aten::normal_`` 会显式报未实现），所以「种子不生效」
+        在这个后端上是事实而不是疏漏；等哪天接了 RNG 再让它真的起作用。
+        """
+
+    def manual_seed_all(seed: int) -> None:
+        """同 :func:`manual_seed`，多卡版本。"""
+
+    def _is_in_bad_fork() -> bool:
+        """torch 的 fork 安全检查用；本后端没有 fork 语义，恒 False。"""
+        return False
+
+    def initial_seed() -> int:
+        """没有 RNG，返回固定值。"""
+        return 0
+
     for fn in (_lazy_init, is_available, device_count, current_device, set_device,
                synchronize, empty_cache, memory_allocated, max_memory_allocated,
-               memory_reserved, current_stream):
+               memory_reserved, current_stream, manual_seed, manual_seed_all,
+               _is_in_bad_fork, initial_seed):
         setattr(module, fn.__name__, fn)
     return module
 

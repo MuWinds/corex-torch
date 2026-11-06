@@ -673,6 +673,62 @@ at::Tensor from_blob(int64_t ptr, at::IntArrayRef size, at::IntArrayRef stride, 
                               /*owned=*/false, size, stride, scalar_type, device_index);
 }
 
+/// 建一个**共享同一块存储**的 strided 视图（对应 `aten::as_strided`）。
+///
+/// 为什么必须落在 C++：视图要三样东西同时成立——共享 StorageImpl（写穿可见）、
+/// 各自独立的 sizes/strides/storage_offset、以及**生命周期跟谁绑**（视图活着时底层存储不能被
+/// 释放）。这三样都只存在于 `c10::TensorImpl` + `c10::Storage` 的 ABI 里。而
+/// `aten::as_strided` 正是 Python 侧缺的那个算子：`probes/120` 的基线里 19 个算子都报
+/// `Could not run 'aten::as_strided'`——view / t / transpose / permute / squeeze / unsqueeze /
+/// expand / expand_as / contiguous / select / slice / narrow / embedding 全部由它解锁。
+///
+/// 实现方式与 ATen 的 `as_strided` 同构：拷一份 `Storage`（intrusive_ptr 复制 = 同一个
+/// StorageImpl、引用计数 +1，所以视图天生持有存储所有权），再用
+/// `set_sizes_and_strides(size, stride, storage_offset)` 改元数据。
+///
+/// @param self 源张量。
+/// @param size 视图形状。
+/// @param stride 视图 strides（原样使用，允许 0 = 广播）。
+/// @param storage_offset 相对存储起点的**元素**偏移（不是字节）。
+at::Tensor as_strided(const at::Tensor& self, at::IntArrayRef size, at::IntArrayRef stride,
+                      int64_t storage_offset) {
+  TORCH_CHECK(size.size() == stride.size(),
+              "corex_shim: as_strided 的 size 与 stride 维数不一致（", size.size(), " vs ",
+              stride.size(), "）");
+  TORCH_CHECK(self.device().is_privateuseone(), "corex_shim: as_strided 只接 corex 张量，收到 ",
+              self.device());
+  const c10::TensorImpl* src = self.unsafeGetTensorImpl();
+  const c10::Storage& src_storage = src->storage();
+  TORCH_CHECK(storage_offset >= 0, "corex_shim: as_strided 的 storage_offset 必须 >= 0，收到 ",
+              storage_offset);
+
+  // 越界检查（与 ATen 同口径）：视图能碰到的最大元素下标必须落在存储范围内。
+  // 少了这一步，越界读会安静地读到别人的显存——本平台没有统一地址空间保护。
+  if (size.size() > 0) {
+    int64_t max_index = 0;
+    for (size_t i = 0; i < size.size(); ++i) {
+      TORCH_CHECK(size[i] >= 0, "corex_shim: as_strided 的 size 不能为负");
+      TORCH_CHECK(stride[i] >= 0, "corex_shim: as_strided 暂不支持负 stride（", stride[i], "）");
+      if (size[i] > 0) {
+        max_index += stride[i] * (size[i] - 1);
+      }
+    }
+    const int64_t itemsize = static_cast<int64_t>(src->itemsize());
+    const int64_t available = static_cast<int64_t>(src_storage.nbytes()) / itemsize;
+    TORCH_CHECK(storage_offset + max_index < available,
+                "corex_shim: as_strided 越界：末元素下标 ", storage_offset + max_index,
+                " 超出存储元素数 ", available, "（storage.nbytes=", src_storage.nbytes(),
+                ", itemsize=", itemsize, "）");
+  }
+
+  // 拷一份 Storage：intrusive_ptr 复制 → 指向同一个 StorageImpl，视图因此持有存储所有权。
+  c10::Storage storage(src_storage);
+  auto out = at::detail::make_tensor<c10::TensorImpl>(std::move(storage), src->key_set(),
+                                                     src->dtype());
+  out.unsafeGetTensorImpl()->set_sizes_and_strides(size, stride, storage_offset);
+  return out;
+}
+
 /// 已经向驱动要到的字节数（含缓存中的空闲块，所有设备求和）。
 int64_t reserved_bytes() {
   std::lock_guard<std::mutex> lock(g_pool_mutex);
@@ -736,6 +792,7 @@ using corex_shim::empty_strided;
 using corex_shim::from_blob;
 using corex_shim::init;
 using corex_shim::is_initialized;
+using corex_shim::as_strided;
 using corex_shim::reserved_bytes;
 using corex_shim::slab_alignment;
 
@@ -753,6 +810,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("from_blob", &from_blob, pybind11::arg("ptr"), pybind11::arg("size"),
         pybind11::arg("stride"), pybind11::arg("dtype"), pybind11::arg("device_index"),
         "用外部设备指针建张量，不接管所有权");
+  m.def("as_strided", &as_strided, pybind11::arg("self"), pybind11::arg("size"),
+        pybind11::arg("stride"), pybind11::arg("storage_offset") = 0,
+        "建共享同一存储的 strided 视图（aten::as_strided 的底层）");
   m.def("reserved_bytes", &reserved_bytes, "已向驱动要到的字节数（含缓存）");
   m.def("allocated_bytes", &allocated_bytes, "已借出的字节数");
   m.def("empty_cache", &empty_cache, "把空闲的板/大块还给驱动");

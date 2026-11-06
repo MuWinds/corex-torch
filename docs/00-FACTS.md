@@ -222,3 +222,31 @@ kernel 名可以在 `corex_drive_re/perf/pulled/` 下的 `ixprof` 原始输出�
 
 **后果**：`corex-triton` 一升级（比如 00:31 那次加了 16 位访存模板），我们这边不用改就能吃到——
 fp16 算子就是靠那次升级才通的（`docs/04-TRITON-BRIDGE.md` §6）。
+
+## 15. torch 层的算子验收（`probes/009_torch_ops.sh`）
+
+内核层（`probes/170`–`182`）验的是「每个 kernel 与 CPU 参照对得上」；这一层验的是**分发有没有接错**
+（形状/stride 检查、out 张量对账、dtype 转换、composite 落点）。8/9 通过，唯一失败的是
+`as_strided`（C++ shim 还没导出它，`.t().contiguous()` 走不下去）。
+
+| 用例 | 结果 | 判据 |
+| --- | --- | --- |
+| `mm` 64×128 @ 128×256 | **max_rel = 0.000e+00** | 与 CPU 逐元素完全相等 |
+| `bmm` 4×16×32 @ 4×32×24 | **max_rel = 0.000e+00** | 同上 |
+| `softmax` 32×512 / 2×8×256，dim=-1 | 8.14e-07 / 7.80e-07 | 门槛 1e-6（`ex2.approx` 的误差） |
+| `sum()` 全归约 4096 | 5.59e-07 | 门槛 1e-5 |
+| `sum(dim=-1)` 64×1000 | 2.39e-06 | **vs float64 参照**，门槛 1e-4 |
+| `mean(dim=-1)` 64×1000 | 6.96e-06 | 同上 |
+| `index_select` 7 行（i64 下标） | **逐字节相等** | — |
+| 注意力小块（`q@k.t().contiguous()` + softmax + `p@v`） | **未通过**：`_corex_shim` 无 `as_strided` | 需要 shim 补一个「按 storage_offset 造视图」的工厂 |
+| `mm` 256³ 端到端（含派发） | 341.4 µs → 98.3 GFLOP/s | 内核本身 177.7 µs / 188.8 GFLOP/s |
+
+两条口径说明（避免后人误判）：
+
+1. **归约类的参照要用 float64**。CPU 的 `sum`/`mean` 走 pairwise 求和，比顺序累加准得多；
+   拿它当 1e-5 门槛会误判成「我们的实现错了」——顺序 fp32 累加 1000 项的固有相对误差本来就在
+   1e-5 量级。所以这两项改成「对 float64 参照 ≤ 1e-4」。
+2. **端到端比内核慢一倍**（341 vs 178 µs）。差额在 Python 派发 + `torch.empty` + ctypes 打包上，
+   元素级算子那边实测是 21–36 µs/次（`docs/04-TRITON-BRIDGE.md` §6），mm 这一档为何到 160 µs
+   量级还没定位（UNKNOWN）。要把这个差额压下去只能把参数打包与 `cuLaunchKernel` 挪进 C++ shim，
+   接 coffin 的 decode 之前必须解决——那一步每 token 有六百多次发射。

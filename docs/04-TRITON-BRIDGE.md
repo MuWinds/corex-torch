@@ -502,6 +502,9 @@ def install() -> None:
 | `161_login_biir.sh` | 登录节点 | 修正版：无 torch 编到 biir 并核对 bi IR | PASS |
 | `170_eltwise.sh` | 沙箱（卡） | 元素级算子 fp32：正确性 + 尾块 + 带宽（含 L2 口径对比） | PASS，45/45 逐字节相等，add 内核 295.5 GB/s（见 §6） |
 | `171_eltwise_dtype.sh` | 沙箱（卡） | 同上但 fp16 / bf16 | fp16 **33/33 逐字节相等**；bf16 6/33（`fp_round` 选不出来，见 §6.7） |
+| `180_reduce_softmax.sh` | 沙箱（卡） | 规约（sum/mean/max/sum_all）+ softmax：正确性/尾块/带宽/bf16 契约 | PASS，22/22；softmax max_abs ≤ 1.15e-08（见 §7） |
+| `181_mm.sh` | 沙箱（卡） | mm/bmm：dyadic 逐字节 + 非 dyadic 误差 + GFLOP/s + 分块扫描 | PASS，11/11；256³ **188.8 GFLOP/s**（见 §7） |
+| `182_norm_index.sh` | 沙箱（卡） | rms_norm / layernorm / gather_rows：正确性 + 带宽 | PASS，12/12（见 §7） |
 
 载荷约定（两个沙箱探针都要）：
 
@@ -681,3 +684,167 @@ triton_corex.rewrite.PortError: 未登记的 PTX 操作数模板：
 下一步（按性价比）：① 把参数打包 + `cuLaunchKernel` 挪进 shim（顺手，收益直接）；
 ② bf16 若要支持，写 bf16-native 内核（避免 `fp_round`）；③ 大 n 下的真实上限要单独量
 （本表是 1M 元素、L2 冷，启动地板占了 1/4）。
+
+---
+
+## 7. 规约 / softmax / 矩阵乘 / norm / index（阶段 4 第二批）
+
+三个新模块：`_ops_reduce.py`（行内 sum/mean/max、全量 sum、softmax、rms_norm/layernorm）、
+`_ops_matmul.py`（mm/bmm，`tl.dot` 走 FMA）、`_ops_index.py`（gather_rows）。
+三个探针：`probes/180`（规约+softmax）、`probes/181`（矩阵乘）、`probes/182`（norm+index），
+全部 `PASS`，全程 `torch_modules = 0`。
+
+### 7.1 接口（与 `_device.py` 的契约，位置参数不能改）
+
+```python
+sum_last(a_ptr, out_ptr, rows, cols, dtype)          # out[r] = sum(a[r, :])
+mean_last(a_ptr, out_ptr, rows, cols, dtype)
+max_last(a_ptr, out_ptr, rows, cols, dtype)
+sum_all(a_ptr, out_ptr, n, dtype)                    # out[0] = sum(a)
+softmax_last(x_ptr, out_ptr, rows, cols, dtype)      # 逐行；out 可与 x 同指针
+mm(a_ptr, b_ptr, c_ptr, M, N, K, dtype)              # 行主序 M×K · K×N
+bmm(a_ptr, b_ptr, c_ptr, B, M, N, K, dtype)
+rms_norm(x_ptr, w_ptr, out_ptr, rows, cols, eps, dtype)
+layernorm(x_ptr, w_ptr, out_ptr, rows, cols, eps, dtype)
+gather_rows(src_ptr, idx_ptr, out_ptr, rows, cols, dtype)   # + idx_dtype="i32"/"i64"
+```
+
+额外 keyword-only：`block / num_warps / stream`，矩阵乘另有 `block_m / block_n / block_k /
+num_stages`。不支持的 dtype → `NotImplementedError`（带 llc 原文）。
+
+### 7.2 三个「厂商 llc 解析不了」的坑（本批踩出来的，都建议上游补）
+
+这一批的迭代几乎全花在这三条上，它们都不是我的算法问题，而是**上游 IR 里比 LLVM 16 新的东西**：
+
+| # | 现象 | 根因 | 我的绕法 |
+| --- | --- | --- | --- |
+| 1 | `llc: error: expected value token`，指到 `%14 = phi <8 x float> [ … ], [ splat (float 0xFFF0000000000000), … ]` | `tl.full((BLOCK,), -inf, …)` / `other=-inf` 会生成**非零向量常量**，上游 LLVM 20 把它打成 `splat (float …)`，LLVM 16 没有这个语法。零常量打成 `zeroinitializer`，所以 `other=0.0` 一直没事 | max/softmax 的第一遍改成**钳位下标**（`tl.minimum(idx, cols-1)`，越界处重复读最后一个元素，对 max 无害）+ 初值取真实加载值；softmax 第二遍用 `tl.where(mask, exp(v-m), 0.0)` |
+| 2 | `llc: error: expected type`，指到 `%62 = trunc nsw i64 %54 to i32` | LLVM 自己的循环归纳变量加宽（把 32 位 IV 提到 64 位再截回）在 LLVM 17 起了 `nsw` 标记。`corex-triton/rewrite.py` 已经会剥 `zext nneg`，但**没剥 `trunc nsw`** | `sum_all` 的 `chunk` 从 constexpr 改成**运行期参数**：constexpr 上界会让 LLVM 把 4 轮循环整个展开再诱发加宽；运行期上界不会 |
+| 3 | `NameError: Cannot access global variable _OP_MAX from within @jit'ed function` | Triton 3.4 不允许 @jit 函数引用普通模块级全局（要么 `tl.constexpr(...)` 实例化，要么用字面量） | 内核里用字面量 `0/1/2`，并在模块顶部注明对应关系 |
+
+**给 corex-triton 的建议（两条都能在 `rewrite.py` 里做，改完本仓库的绕法可以留着也无害）**：
+`(trunc|zext|sext)\s+nsw` 一并剥掉（`nsw` 只是「不溢出」的承诺，剥掉语义更宽、安全）；
+`splat (T <const>)` 展开成显式 `<N x T …>` 向量常量。
+
+### 7.3 正确性（口径：与 CPU 双精度参照比；"逐字节"只用在能逐字节的地方）
+
+**规约类不承诺逐字节相等**，判据是「误差 ≤ 8 × 顺序 fp32 累加自己的误差」——
+后者是 CPU 上一一步步 `fp32` 累加与双精度的差，就是「累加顺序不同」的自然量级。
+所以下表每个 sum/mean 都带一个「顺序 fp32 误差」和「限」两列。
+
+| 用例 | max_abs | 顺序 fp32 误差 | 结论 |
+| --- | --- | --- | --- |
+| `sum_last` cols=512 / 1000 / 4097（dyadic 数据） | **0.000e+00** ×3 | 0（数据精确） | 通过。注意：这组数据（0.5 的倍数、和 < 2^24）的和**本来就是精确的**，所以 max_abs=0 只证明算法对，不证明累加顺序无误差 |
+| `sum_last` cols=4097（**非 dyadic**，0.1 的倍数） | **2.403e-05** | 1.607e-04 | 通过，且比「顺序 fp32 累加」自己的误差**小 6.7 倍**（成对/树形累加更准） |
+| `sum_last` cols=1000（非 dyadic） | 4.387e-06 | 3.843e-05 | 通过，小 8.8 倍 |
+| `mean_last` cols=512 / 1000 / 4097 | 0 / 4.768e-09 / 1.398e-09 | — | 通过 |
+| `max_last` cols=512 / 1000 / 4097 | **逐字节相等** ×3 | — | max 与顺序无关，必须精确 |
+| `softmax_last` cols=512 / 1000 / 4097 | **1.149e-08 / 6.279e-09 / 1.961e-09** | — | 通过（门槛 1e-6）。另报「每行和偏离 1」= 9.352e-08 / 6.306e-08 / 8.402e-08，用来暴露 max 或 denom 算错 |
+| `softmax_last` **原地**（out==x） | 与 out-of-place **逐字节相同** ×3 | — | 三遍扫描对每个 lane 是「先读自己、再写自己」，原地安全 |
+| `sum_all` n=4096 / 100000 / 1M | **0.000e+00** ×3 | 0 | 通过 |
+| `sum_all` n=1M，block=256 / 4096（G 被夹住的回归） | 0.000e+00 / 0.000e+00 | — | 通过（这两个变体是 §7.5 那三个 bug 的回归用例） |
+
+矩阵乘分两档判，这是刻意的：
+
+| 用例 | 判据 | 结果 |
+| --- | --- | --- |
+| **dyadic 输入**（±0.5/±1/±2）8³、17×19×23、37×53×29、64³、100×33×65 | 逐字节相等 | **5/5 全等** |
+| bmm dyadic (2,8,8,8)、(3,13,17,11)、(4,32,16,24) | 逐字节相等 | **3/3 全等** |
+| 非 dyadic 32³ / 17×19×23 / 37×53×29 | max_abs ≤ 8×顺序 fp32 误差 | 5.770e-07 / 4.673e-07 / 6.342e-07（限 9.224e-06 / 6.534e-06 / 8.061e-06） |
+| 256³ / 512³ 抽查 4 个元素 | 相对误差（只取 \|ref\|>1e-3 的元素） | 8.385e-07 / 2.036e-06 |
+
+> 为什么 dyadic 那一档值钱：fp32 累加在 dyadic 输入上是**精确**的，所以「逐字节相等」可以当
+> 硬判据用 —— 它抓的是**布局/索引错**（行主序算错一维、批量偏移算错），那才是矩阵乘最容易
+> 出的错。§7.5 的第一个 bug 就是被这一档抓出来的，而当时小尺寸全绿。
+
+norm / index：
+
+| 用例 | 结果 |
+| --- | --- |
+| `rms_norm` cols=512 / 1000 / 4097 | max_rel **1.423e-07 / 1.112e-07 / 1.621e-07** |
+| `layernorm` 同上 | max_rel **1.722e-07 / 1.658e-07 / 1.908e-07** |
+| 单遍方差（`E[x²]-E[x]²`）vs 两遍方差的差 | 0 / 6.821e-13 / 3.467e-11 —— 这批数据上单遍算法没有可测代价；「均值远大于标准差」的输入才会有相消误差（`_layernorm_kernel` 注释里写了） |
+| 常量行：`layernorm` | 输出**全 0**（精确） |
+| 常量行：`rms_norm` | 与 `w` 的 max_abs 6.819e-08 |
+| `gather_rows` 7×1000 / 5×4097 / 33×512（乱序 + 重复下标） | **逐字节相等**，i32 与 i64 下标都是 |
+
+### 7.4 性能
+
+矩阵乘（口径：每轮刷 256 MiB L2、事件中位数；`flops = 2MNK`）：
+
+| 尺寸 | 耗时 | GFLOP/s | 对照 |
+| --- | --- | --- | --- |
+| mm 256³ | 177.7 µs | **188.8** | Triton FMA 基线 105 → **1.80x**；厂商 TCU 1577 → 0.120x（只当天花板，见 §9 的口径约定） |
+| mm 512³ | 1267.5 µs | **211.8** | — |
+| bmm B=8, 256³ | 1271.2 µs | 211.2 | 与 mm 同量级，批偏移没有额外代价 |
+
+分块扫描（mm 256³，定默认值用）：
+
+| (BM,BN,BK) | warps | stages | GFLOP/s |
+| --- | --- | --- | --- |
+| **(16,16,16)** | **1** | **1** | **189.1** ← 默认值 |
+| (16,16,32) | 1 | 1 | 150.8 |
+| (16,16,32) | 1 | 3 | 153.5 |
+| (32,32,32) | 1 | 1 | 141.3 |
+| (32,32,32) | 4 | 1 | 100.9 |
+| (64,64,16) | 4 | 1 | 141.8 |
+| (16,32,32) | 2 | 1 | 116.2 |
+| (16,16,64) | 2 | 1 | 126.3 |
+
+结论与 `corex-triton/docs/00-FACTS.md` §15.2 一致：**FMA 路径吃「更多并发块 + 更少每块工作」**，
+与矩阵单元正好相反（(16,16,16) 比 (32,32,32,4 warps) 快 87%）。多级流水（stages=3）没有收益，
+因为这张卡没有 cp.async。
+
+规约 / softmax / norm / index（1M 量级，L2 刷）：
+
+| 算子 | 形状 | 耗时 | GB/s | 流量口径 |
+| --- | --- | --- | --- | --- |
+| `sum_last` | 1024×1000 | 28.6 µs | 143.3 | 读 3.91 MiB + 写 4 KiB |
+| `mean_last` | 1024×1000 | 28.4 µs | 144.2 | 同上 |
+| `max_last` | 1024×1000 | 27.0 µs | 151.9 | 同上 |
+| `softmax_last` | 1024×1000 | 42.5 µs | 192.7 | 读 1 + 写 1（**源码读 3 遍**，行 4 KB 留在 L1/L2，DRAM 上仍 1 遍） |
+| `sum_all` | n=1M | 34.1 µs | 122.9 | 读 4.00 MiB（两段式：256 个部分和 + 1 次归约） |
+| `sum_all` | n=4M | 74.1 µs | **226.4** | 同上 —— 尺寸翻 4 倍带宽接近翻倍，说明 1M 那档仍被启动地板压着（同 §6.5 的结论） |
+| `rms_norm` | 1024×1000 | 38.2 µs | 321.3 | 读 x + 读 w + 写 out |
+| `layernorm` | 1024×1000 | 39.0 µs | 315.1 | 同上 |
+| `gather_rows` | 1024×1000（表 4096 行） | 34.5 µs | 237.3 | 读 1 行 + 写 1 行 |
+
+（norm/index 这一组跑了两遍，两次差异 ≤ 1%，属同一噪声量级。）
+
+### 7.5 我在这一批里修掉的三个「静默算错」型 bug
+
+写在这里是因为**它们都不会崩、只会算错**，而且都被不同的判据抓出来：
+
+| # | bug | 为什么不显形 | 被谁抓到 |
+| --- | --- | --- | --- |
+| 1 | `b_ptrs += BLOCK_K` 应该是 `+= BLOCK_K * N`（b 是 K×N，沿 k 走 BLOCK_K **行** = BLOCK_K*N 个元素） | `K ≤ BLOCK_K` 时循环只跑一轮、指针根本不递增 → 小尺寸全对。写成 `+= BLOCK_K` 只在 N==1 时才对 | **dyadic + K=64** 那一档（`mm 64x64x64` 从全绿变成 max_abs=2.5） |
+| 2 | `sum_all` 的 G 必须 ≤ BLOCK | 第二段是单程序按 BLOCK 装载部分和再 `tl.sum`，G > BLOCK 时后面的部分和被 `offs < g` 掩码挡掉 → 少算 | 我原来的 `_MAX_PARTS` 恰好等于 `BLOCK`（都是 1024）所以正常路径全对，改 `block=` 参数才暴露；现在 G 同时受 `min(_MAX_PARTS, block)` 约束 |
+| 3 | `chunk` 必须是 BLOCK 的整数倍 | 内核按 `for j in range(0, chunk, BLOCK)` 扫，最后一个窗口会向上取整到 BLOCK；chunk 不是整数倍时相邻程序**读重叠的一段**，等于重复累加 | `sum_all n=100000`（max_abs 17.5）与 `n=1M block=4096`（max_abs 187）。修法：chunk 先按 G 算、再向上取到 BLOCK 的整数倍 |
+
+教训：**「大尺寸 + 非整除」这两个条件必须同时出现在用例里**。第 1 个 bug 在「小尺寸」下隐身，
+第 3 个在「整除」下隐身。
+
+### 7.6 bf16：四个算子显式 `NotImplementedError`，`gather_rows` 反而能跑
+
+| 算子（bf16） | 结果 |
+| --- | --- |
+| `sum_last` / `softmax_last` / `rms_norm` / `mm` | `NotImplementedError`，消息里带 llc 原文：`LLVM ERROR: Cannot select: … f32 = fp_extend …`（这批内核读 bf16 要**加宽**到 fp32，bi 后端选不出 `fp_extend`；与元素级那批的 `fp_round`（收窄）是同一个缺口的两个方向） |
+| `gather_rows` | **编得过并跑通** —— 它是纯搬运，不做 bf16↔fp32 转换，所以不碰这两个指令 |
+
+契约执行情况（`probes/180` §3）：**5/5**，四个抛 `NotImplementedError`、`gather_rows` 正常返回。
+没有任何一条静默降精度。
+
+### 7.7 结论与下一步
+
+| # | 结论 |
+| --- | --- |
+| 1 | 规约/softmax/norm/index/矩阵乘全部在真机上跑通，三个探针 `PASS`，全程无 torch |
+| 2 | **矩阵乘 256³ 188.8 GFLOP/s**：是 Triton FMA 基线（105）的 **1.80x**，是厂商 TCU（1577）的 **0.12x** —— 后者是矩阵单元的成绩，接 TCU 之前不可能追上（要落到 `TritonGPU→LLVM` 那层，见 `corex-triton/docs/00-FACTS.md` §13） |
+| 3 | 规约类误差比「朴素顺序 fp32 累加」**小 6.7–8.8 倍**（树形/成对累加更准），max 与 gather 是逐字节精确 |
+| 4 | 三个「上游 IR 比 LLVM 16 新」的坑（§7.2）：`splat` 非零向量常量、`trunc nsw`、@jit 看不到普通全局。前两个建议 corex-triton 在 `rewrite.py` 里补，补完我这边的绕法留着也无害 |
+| 5 | bf16 依旧不可用（`fp_extend`/`fp_round` 都选不出），按契约显式报错 |
+
+下一步：① `mma`/TCU 的 lowering（决定矩阵乘能不能从 189 走到四位数）；
+② 规约类目前是「一行一个程序」，`rows` 很大（比如 10 万行）时并行度够、但每程序只搬 4 KB，
+启动地板会吃掉效率，可以改成「一个程序处理多行」；③ softmax 三遍扫描可换成在线（online）算法
+把读次数压到 1。
