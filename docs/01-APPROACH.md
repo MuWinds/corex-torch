@@ -44,11 +44,32 @@
 | 0 | 摸清两端：CoreX 运行时能给什么、torch 2.8 要求什么 | **已完成**，见 `00-FACTS.md` §3、`03-TORCH28-API.md`、`04-TRITON-BRIDGE.md` |
 | 1 | torch 2.8 CPU 在 `~/venvs/corex28` 可用 | **已完成**：`2.8.0+cpu`，`torch.cuda.is_available() == False`（`probes/100`） |
 | 2 | **立起设备**：`rename_privateuse1_backend("corex")` + 分配器 + 设备属性 + 流/事件 | **已完成**：`probes/008` `DEVICE_VERDICT PASS`——`torch.zeros(4, device="corex")`、`.cpu()` 往返逐字节相等、`.item()`、非连续 strides、4 MiB 填读回、`empty_cache` 全过 |
-| 3 | **元素级算子**（`add`/`sub`/`mul`/`div`/`fill`/`silu`/`copy`） | **已完成**：fp32 45/45、fp16 33/33 逐字节相等（`probes/170`、`171`）；add 295.5 GB/s = Triton 基线的 1.00x。**bf16 不支持**，根因是厂商 llc 选不出 `bf16 = fp_round(f32)`（`04-TRITON-BRIDGE.md` §6） |
-| 4 | **推理最小算子集**：规约（`sum`/`mean`）、`softmax`、`mm`/`bmm`、`rms_norm`、`embedding`、`view`/`transpose` | 进行中。每个算子与 CPU 参照的误差量级写进表；`tl.dot` 走 FMA（矩阵单元未接，约 1/15 算力） |
-| 5 | **集成**：coffin 的一条最小前向在 torch 2.8 + corex 上跑通 | 逐 token 与厂商 torch 2.1 的 logits 对齐（误差量级单独记） |
+| 3 | **元素级算子**（`add`/`sub`/`mul`/`div`/`fill`/`silu`/`copy`） | **已完成**：fp32 45/45、fp16 33/33、**bf16 33/33** 逐字节相等（`probes/170`、`171`、`192`）；add 295.5 GB/s = Triton 基线的 1.00x |
+| 4 | **推理最小算子集**：规约、`softmax`/`log_softmax`、`mm`/`bmm`、`rms_norm`/`layernorm`、`index_select`、激活、`max`/`argmax`、视图族 | **基本完成**：内核层与 torch 层各有一张表（`probes/180`–`196` 与 `009`、`017`）；缺口见下面「当前缺口」 |
+| 5 | **集成**：coffin 的一条最小前向在 torch 2.8 + corex 上跑通 | **未开始**。前置条件已备齐（设备 + 算子 + bf16 通路） |
 
 阶段 2 之前不写任何算子代码：**设备层不通，算子层的一切数字都不可信**。
+
+## 当前缺口（截至 2026-11-07 02:10，逐条可复现）
+
+| 缺口 | 归属 | 说明 |
+| --- | --- | --- |
+| `var` / `std`（`var.correction`） | 需要新内核 `row_var` | 两趟（mean→平方差的均值）在 fp32 下会掉精度；等一趟 Welford 内核 |
+| `sum`/`mean` 的**中间维**与多维组合 | `_ops_reduce` 扩参数 | 现在只支持「全归约」与「最后一维」；中间维需要跨步读，没有 strided 内核 |
+| `_softmax` 的**非最后维** | 同上 | 同上 |
+| `max.dim`/`argmax` 的**非最后维**、`keepdim=True` | `_aten_kernels` 补形状 | 内核已支持任意维的展平版本，缺的是形状换算 |
+| `masked_fill` 的**广播 mask** | `_ops_elementwise` 扩参数 | 现在要求 mask 与 self 同形 |
+| `embedding`（`index_select` 之外的 gather 语义） | `_aten_extra` | `index_select` 已通，`embedding` 是 composite，未逐项验 |
+| `matmul`（三维以上批量） | `_aten_kernels` | `mm`/`bmm` 已通，`matmul` 需要 reshape + 逐批循环 |
+| 矩阵单元（TCU） | `corex-triton` 阶段 5 | `tl.dot` 走 FMA，算力约为 TCU 的 1/15 |
+| `_softmax.out` 的 C++ 接管 | 可选性能项 | 受 aten 分发器 73 µs 的成本上限约束，收益有限 |
+
+## 下一步优先级
+
+1. `var`/`std` 的 `row_var` 内核（模型做归一化时常用），以及 `sum`/`mean` 的中间维支持；
+2. 接 coffin 的一条最小前向（阶段 5）：先用 `rms_norm + mm + softmax` 拼一个 block，逐 token 与
+   厂商 torch 2.1 的 logits 对齐；这一步会立刻暴露「缺哪个算子」，比按清单猜准；
+3. 若那时还剩时间，再考虑 `_softmax.out` 的 C++ 接管与「多 kernel 连续发射」入口。
 
 ## 算子该走什么机制（决定性能天花板）
 
