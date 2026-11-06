@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+
+# 构建产物
+build/
+dist/
+*.so
+*.o
+*.a
+
+# 本地临时与抓回来的样本
+*.log
+*.tmp
+.tmp/
+
+# torch / triton 的编译缓存（按 kernel 哈希落在 ~ 下，这里只是防手滑拷进来）
+.triton/
+.torch_extensions/

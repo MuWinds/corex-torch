@@ -1,0 +1,146 @@
+# 已确证的环境事实
+
+每条事实后面跟产生它的命令。新结论按同样格式往下加；没有证据的写 `UNKNOWN`。
+探针脚本在 `probes/`，编号与这里引用的命令对应。
+
+采集环境：`cx-sandbox`（SCOW 作业 **4935**，节点 `gpu-node-07`，健康物理卡 6、7），
+2026-11-06 23:56。
+
+## 1. 两个沙箱作业（别用错）
+
+| 事实 | 证据 |
+| --- | --- |
+| 作业 4930 `q4-sbxA` 在 **gpu-node-06**（卡全坏），工作目录 `~/coffin-work/sbxA` | `python -c "…running_jobs()"` 输出 `nodesOrReason: gpu-node-06` |
+| 作业 4935 `q4-sbxB` 在 **gpu-node-07**，健康卡 **6、7**，工作目录 `~/coffin-work/sbxB` | 同上 `gpu-node-07`；`cat ~/coffin-work/base/sandbox/logs/env.txt` 得 `healthy=6,7` |
+| **两个作业共用同一个队列目录** `~/coffin-work/base/sandbox`：`heartbeat.txt` 在 `gpu-node-06 healthy=none` 与 `gpu-node-07 healthy=6,7` 之间交替 | `python tools/remote.py status` 连看两次，`HB … host=` 会变 |
+| 后果：坏节点那个进程因为 `HEALTHY_IDS` 为空**不消费队列**，只空转；但队列项一旦被它抢到就会跑在坏卡上 | `corex-triton/tools/sandbox.sh` 第 110–113 行 `if [ -z "$HEALTHY_IDS" ]; then sleep 30; continue; fi` |
+| 因此每条碰卡的探针脚本**开头自己验卡**，坏卡 `exit 9`，不占队列 | `probes/001`… 各脚本头部 |
+| 作业有 8 小时时限：4935 约在 **2026-11-07 07:28 (+08)** 结束 | 作业详情 `timeLimit: "07:50:00"`，`startTime 2026-11-06T15:37:55Z` |
+
+## 2. 登录节点与计算节点的分工
+
+| 事实 | 证据 |
+| --- | --- |
+| 登录节点 `mgt` 上**没有 `/usr/local/corex`**：`ls -d /usr/local/corex*` 输出为空 | `python -m scow run 'ls -d /usr/local/corex*'` |
+| 共享 py310 环境在登录节点 `import torch` 失败：`OSError: libcufft.so.10: cannot open shared object file`（即使把 corex 的 lib64 加进 `LD_LIBRARY_PATH` 也一样，因为目录根本不存在） | `/data/software/Anaconda3/2024.10-1/envs/py310/bin/python -c "import torch"` |
+| 所以：pip / venv / 读源码 / 编 CPU 扩展放登录节点；任何 `torch.cuda`、CoreX 头文件、碰卡的事放沙箱 | 上面两条的直接推论 |
+
+## 3. 厂商运行时到底有什么（`probes/001_corex_surface.sh`）
+
+| 事实 | 证据 |
+| --- | --- |
+| CoreX 3.2.1，`/usr/local/corex -> /usr/local/corex-3.2.1/` | `ls -ld /usr/local/corex` |
+| 兼容层自称 **CUDA 10.2.89**：`libcudart.so.10.2 -> libcudart.so.10.2.89`，头文件 `CUDART_VERSION 10020`、`CUDA_VERSION 10020` | `readlink -f $C/lib64/libcudart.so`；`grep -hn "define CUDA_VERSION" $C/include/cuda.h` |
+| 有 **runtime API**（`libcudart.so.10.2`）与 **driver API**（`libcuda.so.1`）两套，都有 | 同上 `readlink -f` |
+| 数学库版本：`libcublas.so.10.2.3.254`、`libcublasLt.so.10.2.3.254`、`libcusolver.so.10.3.0.89`、`libcusparse.so`、`libcurand.so`、`libcufft.so.10.1.2.89`（`CUFFT_VER 10.1`）、`libcudnn.so.7` | `readlink -f $C/lib64/libcublas.so` 等 |
+| 有 `libnccl.so.2.11.4` | `readlink -f $C/lib64/libnccl.so` |
+| 编译器：`clang 16.0.6`（厂商分支）、`llc`、`lld`/`ld.lld`、`fatbinary`、`nvcc`（壳） | `$C/bin/clang++ --version` |
+| **gcc 10.3.1 / g++ 10.3.1** 在计算节点上可用；`cmake 3.22.0` | `gcc --version`、`cmake --version` |
+| 设备节点 8 个：`/dev/iluvatar0..7`；内核模块 `iluvatar` | `ls /dev \| grep iluvatar`、`lsmod` |
+
+## 4. 厂商 torch 2.1（参照物，不参与适配）
+
+| 事实 | 证据 |
+| --- | --- |
+| 共享 py310 里是 **`torch-2.1.0+corex.3.2.1`**（厂商按 CoreX 版本重发的 wheel） | `ls …/py310/lib/python3.10/site-packages/ \| grep -i torch` |
+| 它带 `libtorch_cuda.so`、`libtorch_cpu.so`、`libnvfuser_codegen.so`（有 nvFuser） | 同上 `torch/lib/` |
+| 同环境还有一整套 `nvidia_*_cu12-12.4.x` 的 pip 包（CUDA 12.4 用户态） | 同上 `grep -i nvidia` |
+
+## 5. torch 2.8 的安装现状
+
+| 事实 | 证据 |
+| --- | --- |
+| 隔离 venv 已建好：`~/venvs/corex28`（python3.10，**不带** `--system-site-packages`，与厂商 torch 2.1 完全隔离） | `~/venv28.sh`、`cat ~/venvs/corex28/pyvenv.cfg` |
+| 装 torch 2.8.0 CPU 失败过一次：venv 里 pip 23.0.1 太老，下载 `typing-extensions` 时判 `expected 'typing-extensions', but metadata has 'typing_extensions'`，随后错误地退化成源码构建并卡在 `flit_core<4,>=3.11` | `~/venvs/corex28-pip.log` |
+| 隔离的理由（原脚本注释）：py310 里的 `torch 2.1.0+corex` 是全环境共用的，装 2.8 会覆盖它，而 2.1 后面还要用来做数值基线 | `~/venv28.sh` 顶部注释 |
+
+## 6. 设备层：runtime API 单独可用，不需要 torch（`probes/002_cudart_binding.sh`）
+
+**这是本次适配最关键的一条**：用 ctypes 打开 `libcudart.so.10.2`，不 import 任何 torch 版本，
+就能把一个 context 用起来。所以不需要 `cuInit`/`cuCtxCreate`（那条路在本平台坏卡上挂死过，
+`corex-triton/docs/00-FACTS.md` §5），runtime 会自己延迟建 primary context。
+
+| 事实 | 输出 |
+| --- | --- |
+| 自报版本 `cudaRuntimeGetVersion` / `cudaDriverGetVersion` 都是 **10020** | 同上探针 §1 |
+| 上面那条 `missing symbols` 里只有我自己写错的假名字（`cudaMemcpyKind_dummy`），其余 23 个真符号全在 | 同上 |
+| `cudaGetDeviceCount` / `cudaSetDevice(0)` / `cudaGetDevice` 全部 rc=0 | 同上 §2 |
+| 设备名 **`Iluvatar BI-V100`** | `cudaGetDeviceProperties` |
+| `warpSize = 64`（与 `corex-triton/docs/00-FACTS.md` §8 的实测一致）、`maxThreadsPerBlock = 4096`、`multiProcessorCount = 16`、`sharedMemPerBlock = 131072`（128 KB） | `cudaDeviceGetAttribute(10/1/16/8)` |
+| 显存 **31.72 GiB**（`cudaMemGetInfo` 的 free 与 total 在空载时相同） | 同上 |
+| `cudaMalloc(1 MiB)` → `cudaMemcpy` H2D → D2H，**往返逐字节相等** | 探针 §3 `ROUNDTRIP_BYTES_EQUAL = True` |
+| 设备指针形如 `0x304000002000000`（高位非规范地址，别假设它是 CPU 地址） | 探针 §3 打印 |
+| `cudaStreamCreate` / `cudaMemcpyAsync` / `cudaStreamSynchronize` 全部 rc=0 | 探针 §4 |
+| `cudaEventCreate` / `cudaEventRecord` / `cudaEventSynchronize` / `cudaEventElapsedTime` 全部 rc=0 | 探针 §4 |
+| `cudaGetErrorString(0)` = `no error`、`(1)` = `invalid argument`；`cudaDeviceSynchronize` rc=0 | 探针 §5 |
+
+含义（写进 `02-RUNTIME-API.md` 的取舍）：设备层的分配/拷贝/流/事件可以直接绑 runtime API，
+**不需要 C++ 也能跑**；C++ 只需要在 PrivateUse1 要求「从 C++ 注册分配器」时才出场。
+
+## 7. 沙箱里的两个操作陷阱
+
+| 陷阱 | 现象与正确写法 |
+| --- | --- |
+| 覆盖 `CUDA_VISIBLE_DEVICES` | runner 已把健康卡写进 CVD（`6,7`），子进程里逻辑 0 号 = 物理 6 号。**探针里再写 `CUDA_VISIBLE_DEVICES=0` 会指到物理 0 号（坏卡）**，症状是开头验卡就 `CARD_UNHEALTHY`（2026-11-06 踩过一次）。正确做法：有继承值就直接用，没有才逐卡挑 |
+| 中文乱码 | Windows 侧 Python 默认按 GBK 输出，`remote.py` 打回来的日志会花。设 `PYTHONIOENCODING=utf-8` 或直接用 read 工具读落盘文件 |
+| **同名脚本被 `done/<name>.running.sh` 挡住** | runner 的 `mv queue/x.sh done/x.running.sh` 一旦碰到已存在的同名 `.running.sh` 就不覆盖/不执行，队列里那个脚本会一直躺着不被消费（`for` 循环里 `mv ... \|\| continue` 静默跳过）。**重跑请换名字**；`sbx-reset` 只清 `rc`/`log`，清不掉 `.running.sh` |
+| **脚本最后一句是 `echo` 时 rc 恒为 0** | 探针必须把被测命令的退出码 `exit` 出去，否则日志里全是 traceback 而 `done/*.rc` 仍是 0，失败要人去翻日志 |
+
+## 7.1 Python/ctypes 的一个坑（与平台无关，但在这条路上必然遇到）
+
+`int(ctypes.c_void_p(...))` **不返回地址**：CPython 的 ctypes 给 `c_void_p` 实现的 `__int__`
+走的是 `int(bytes(obj))`，即把 8 字节地址当十进制字符串解析。地址字节恰好全是 ASCII 数字时它
+「能用」，否则抛 `ValueError: invalid literal for int() with base 10: b'\x00\x00\x00\x02...'`。
+
+```python
+>>> int(ctypes.c_void_p(0x0304000002000000))
+ValueError: invalid literal for int() with base 10: b'\x00\x00\x00\x02\x00\x00\x04\x03'
+```
+
+取地址一律用 `.value`。本仓库把这条规则收在 `_runtime._ptr()` 与 `_triton._device_addr()` 两处。
+（2026-11-07：`_triton` 第一版就是这样炸的，报错信息里连指针都没有，很难往「取地址」上想。）
+
+## 8. UNKNOWN（下次探测要什么手段）
+
+| 未知 | 需要的手段 |
+| --- | --- |
+| 纯 Python 能否给 `PrivateUse1` 注册显存分配器 | torch 2.8 wheel 装上后实测，见 `docs/03-TORCH28-API.md` |
+| 动态 shared 的上限行为 | 已确证：默认就能到 128 KiB，132 KiB 才 `invalid argument`；`cuFuncSetAttribute(8, N)` 只能收紧（`probes/153`） |
+
+## 9. 厂商 torch 2.1 的算子成绩**不能当作 Triton 的基线**（用户当面纠正，2026-11-07）
+
+之前 `corex-triton/docs/00-FACTS.md` §12/§14.3 里「厂商 torch」那一列被当成「Triton 本可以达到的
+水平」来对比，这是错的。逐算子看是谁在干活：
+
+| 算子 | 实际执行的 kernel | 谁实现的 | 成绩 |
+| --- | --- | --- | --- |
+| `copy_` | `Memcpy DtoD (Device -> Device)` | **驱动的 DMA 拷贝引擎**，连 kernel 都不是 | 51.0 µs / 471 GB/s |
+| `add` | `at::native::modern::elementwise_kernel<CUDAFunctor_add<float>, Array<char*,3>>` | ATen 手写 CUDA kernel（向量化） | 100.4 µs / 402 GB/s |
+| `matmul` | `Gemm_tcu_bi_kernel::gemm_tcu2h_trans<float,64,64,32,16,16,true,true>` | 厂商手写 GEMM，**`tcu2h` 就是矩阵单元** | 17.8 µs / 1577 GFLOP/s |
+| `softmax` | `softmax_warp_forward<float,float,float,10,false,false>` | ATen 手写 warp 级 kernel | 15.0 µs（64×1024） |
+
+kernel 名可以在 `corex_drive_re/perf/pulled/` 下的 `ixprof` 原始输出里交叉核对
+（`Gemm_tcu_bi_kernel::gemm_h_h_tcu_25`、`elementwise_kernel<CUDAFunctor_add<Half>>` 都在）。
+
+**含义（决定我们每个算子该走什么机制）**：
+
+| 我们的选择 | 依据 |
+| --- | --- |
+| `copy_` / `_to_copy` / `.contiguous()` **必须走 `cudaMemcpyAsync`（D2D/DMA）**，不写 Triton 内核 | 471 GB/s 是 DMA 引擎的成绩；Triton 逐元素内核实测只有 295 GB/s（`../corex-triton/docs/00-FACTS.md` §14.3），差 1.6 倍，且 DMA 不占 SM |
+| 逐元素算子的天花板按 **ATen 402 GB/s** 记，Triton 版当前 295 GB/s（约 0.73x） | 差距来自向量化宽度，不是语义；后面要专门量一遍 |
+| `matmul` 在接上 TCU 之前**只能按 FMA 算**（105 GFLOP/s，约 1/15） | 厂商那 1577 GFLOP/s 是矩阵单元的成绩，`tl.dot` 走 FMA 不可能追上 |
+| softmax 这类有 warp 级规约的算子按 Triton 的成绩单独量，不与 ATen 的 `softmax_warp_forward` 混比 | 尺寸不同不可直接比（ATen 那组是 64×1024） |
+
+**这条对阶段 4 的验收口径有直接影响**：算子表里要写「我们的数 / CPU 参照（正确性）」
+与「我们的数 / ATen 同类实现（性能）」，**并且注明后者用的机制**，不能笼统写「对厂商 torch 的比值」。
+
+## 10. 设备层与算子层引擎都已验通（2026-11-07）
+
+| 事实 | 证据 |
+| --- | --- |
+| `_runtime` 在真机上可用：设备属性、分配、H2D/D2H 逐字节往返、流、事件全部正常 | `probes/003_runtime_module.sh`：`ROUNDTRIP_BYTES_EQUAL = True`、16 个事件同时挂起全部成功 |
+| `cudaMalloc` 实测约 3–12 µs/次、`cudaFree` 约 2 µs/次（1 KiB / 1 MiB / 64 MiB 三档） | 同上 §4。对着 aten 的分配频率，缓存池仍然是必需的（`05-DRIVER-CONSTRAINTS.md` R7） |
+| `record + record + sync` 一轮约 **29 µs**；空载 `cudaDeviceSynchronize` 约 **1.1 µs** | 同上 §4/§5。计时口径要按这个算：一步里若插十几次同步，光同步就上百 µs |
+| **Triton 适配层（`_triton`）在无 torch 进程里全通**：编译 424 ms → cubin 3464 B → 装载 → 启动 → 逐字节相等 | `probes/006_triton_adapter.sh`：`ADAPTER_VERDICT PASS`，n=4096 与 n=4000（尾块掩码）都 `max_abs_diff=0.000e+00` |
+| 我们这条链产出的 cubin 与 `probes/151`（独立写的另一条链）**字节数相同（3464 B）** | 两次独立测量，说明编译产物是确定的 |
+| `CompiledKernel.__getitem__` 的 runner **不补齐网格维度**（只传 `(16,)` 会 IndexError） | `_triton.launch()` 负责补成 3 元组 |
