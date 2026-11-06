@@ -842,3 +842,25 @@ C++ 补上广播物化并声明 `elementwise_supports_broadcast() == True` 之�
 
 第 3 条是有代价的教训：三轮排查里有两轮是在看**已经不存在的代码**。缓存失效这类问题会伪装成
 「改错了」，而且越是「明明改了却还是旧行为」越容易让人怀疑自己的修改本身。
+
+## 39. stream / 事件 的 torch 惯例 API 补齐（`probes/028`，6/6 PASS）
+
+目标里要「分配/拷贝/stream/事件」，但此前只验过**运行时**那一层（`_runtime.Stream`/`Event`，
+`probes/002`/`003`/`007`），而框架接进来时用的是 `torch.corex.*` 这层。补上之后：
+
+```
+torch.corex.Stream / Event / current_stream / stream / synchronize   全部就位
+[OK] current_stream() 返回 Stream 对象
+[OK] Stream() / with torch.corex.stream(s)        造 + 进上下文 + 同步
+[OK] Event(enable_timing=True).record + elapsed_time = 0.023 ms（一次 256³ mm）
+[OK] Event(record + synchronize) 后结果正确
+[OK] 自定义流上 H2D + mul_ + 同步，4096 元素逐字节相等
+[OK] 退出 with 后 current_stream 仍可用
+```
+
+两个实现细节值得记：
+
+* **`Stream` 用「持有 + `__getattr__` 转发」而不是继承**：`_runtime.Stream.__init__` 要一个已创建的
+  句柄（构造应当走 `Stream.create()`），继承的话子类得复刻创建逻辑；转发只有一行。
+* **`__enter__`/`__exit__` 必须显式定义**：`with` 语句查的是**类型**上的这两个名字，
+  `__getattr__` 转发对它们无效——第一次写就撞到 `AttributeError: __enter__`。

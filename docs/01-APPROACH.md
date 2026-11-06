@@ -135,3 +135,17 @@
 **退路**（需要证据才切）：bf16 只在搬运与逐元素上支持，矩阵乘与规约继续显式报错。
 判据是内核侧拿不到 `bitcast` 这条位运算通道——那时纯 bf16 硬算等于把数值不可用的内核
 伪装成「支持 bf16」，不做。
+
+## 目标达成的证据索引（逐条对应）
+
+| 目标要素 | 证据 |
+| --- | --- |
+| 独立仓库 `corex-torch` | 本仓库，`git log` 全部提交 |
+| 以 `corex-triton`（Triton 3.4）为基座 | `src/corex_torch/_triton.py` 只做适配不改上游；编译链 `ttir→ttgir→llir→biir→cubin` 全用它的后端 |
+| 设备分配 | `probes/008`（`DEVICE_VERDICT PASS` 10/10），分配器在 `src/csrc/corex_shim.cpp` |
+| 拷贝（H2D/D2H/D2D，含非连续） | `probes/008`、`020`（四方向逐字节）、`026`（p50 1 KiB~1 MiB 与大小无关） |
+| stream / 事件 | `probes/028`（6/6 PASS），`torch.corex.{Stream,Event,current_stream,stream}` |
+| 关键算子走 Triton 内核 | `probes/180`–`197`（内核层）、`009`(9/9)、`017`(12/12)、`021`(13/13)、`120`(39/43)、`192`(bf16 33/33+15/15+5/5) |
+| 真机验证（作业 4935 / gpu-node-07 / 卡 6、7） | 所有探针日志头部 `HOST=gpu-node-07`、`INHERITED_CVD=6,7`、收尾 `CARD_STILL_HEALTHY` |
+| 禁止 CUDA graph 与 cp.async | `grep -r "cudaGraph\|cp\.async" src/ tools/` 只命中注释里的禁令说明，无任何调用 |
+| 端到端（超出最小要求） | `probes/018` 两层 decoder 整段前向（6.631e-06、argmax 1.000）；`probes/022` 增量 decode + KV cache（每 token 6.62e-06、argmax 6/6、cache 逐字节稳定，4.9 ms/步） |

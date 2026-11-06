@@ -595,7 +595,74 @@ def _make_device_module() -> types.ModuleType:
         return int(shim().reserved_bytes())
 
     def current_stream(device: Optional[int] = None):
+        """当前流。本后端只有一个 legacy null stream，所以永远返回它。"""
         return _runtime.Stream.default()
+
+    class Stream:
+        """``torch.corex.Stream``：把运行时的流对象暴露给 torch 的惯例 API。
+
+        为什么要包一层而不是直接给 ``_runtime.Stream``：torch 生态里的代码会按惯例用
+        ``torch.<device>.Stream()``、``with torch.<device>.stream(s):``、``s.wait_event(e)``、
+        ``s.query()``，这些名字得在 device module 上找得到，否则框架（coffin）接进来时
+        还得自己造适配层。
+
+        这里用**持有 + 属性转发**而不是继承：``_runtime.Stream.__init__`` 要一个已创建的句柄
+        （构造走 ``Stream.create()``），继承的话子类 ``__init__`` 得复刻这套创建逻辑，
+        而转发只有一行。
+        """
+
+        def __init__(self, device: Optional[int] = None, priority: int = 0) -> None:
+            self._inner = _runtime.Stream.create()
+
+        def __getattr__(self, name: str):
+            # 只在自身找不到时触发，所以 `self._inner` 本身不会递归（它已在 __dict__ 里）。
+            return getattr(self._inner, name)
+
+        def wait_event(self, event) -> None:
+            """等一个事件（本平台只有 legacy null stream，等价于全同步）。"""
+            event.synchronize()
+
+        # `with` 语句查的是**类型**上的 `__enter__`/`__exit__`，`__getattr__` 转发对它们无效
+        # （2026-11-07 在 probes/028 撞到 `AttributeError: __enter__`）。所以这两条必须显式写。
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *exc):
+            return self._inner.__exit__(*exc)
+
+        def __repr__(self) -> str:
+            return f"<corex.Stream handle=0x{(self._inner.handle.value or 0):x}>"
+
+    class Event(_runtime.Event):
+        """``torch.corex.Event``：记时/同步用。
+
+        ``elapsed_time`` 是 torch 的命名惯例，运行时里的同名能力叫 ``elapsed_ms``——
+        两边都留着，谁也不必改。
+        """
+
+        def __init__(self, enable_timing: bool = False) -> None:
+            _runtime.Event.__init__(self)
+            self.enable_timing = bool(enable_timing)
+
+        def elapsed_time(self, other) -> float:
+            """两个事件之间的毫秒数（``other`` 在前，与 torch 的语义一致）。"""
+            return float(self.elapsed_ms(other))
+
+    def stream(stream_obj=None):
+        """``with torch.corex.stream(s):`` —— 上下文管理器形式切流。
+
+        直接返回 ``Stream`` 本身：它的 ``__enter__``/``__exit__`` 已经在运行时里实现了
+        （见 ``_runtime.Stream``）。本平台只有 legacy null stream，所以这里的作用是
+        **语义占位**——保证框架代码能按习惯写，不会被 ``AttributeError`` 拦住。
+
+        Args:
+            stream_obj: ``None`` 表示默认流。
+
+        Returns:
+            可作上下文管理器用的 ``Stream``。
+        """
+        return stream_obj if stream_obj is not None else _runtime.Stream.default()
 
     def manual_seed(seed: int) -> None:
         """卡上没有 RNG，这里只提醒一次，不抛异常。
@@ -630,9 +697,12 @@ def _make_device_module() -> types.ModuleType:
 
     for fn in (_lazy_init, is_available, device_count, current_device, set_device,
                synchronize, empty_cache, memory_allocated, max_memory_allocated,
-               memory_reserved, current_stream, manual_seed, manual_seed_all,
+               memory_reserved, current_stream, stream, manual_seed, manual_seed_all,
                _is_in_bad_fork, initial_seed):
         setattr(module, fn.__name__, fn)
+    # 类要单独设：`fn.__name__` 对类来说是 `Stream`/`Event`，用同一个循环也行，但分开更清楚。
+    module.Stream = Stream
+    module.Event = Event
     return module
 
 
