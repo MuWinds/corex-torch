@@ -663,3 +663,34 @@ argmax 6/6、KV cache 逐字节稳定）；`probes/018` 整段前向 56.2 ms 不
    它一次消掉「aten 回调 25 µs + 我们实现体 25 µs + launch 打包」三层。
 2. **减少算子/拷贝的次数**（融合：RoPE 不必用切片写、rms_norm 的 `pow/mean/rsqrt` 已直接接管、
    残差 add 可以与下一个算子合并），这一条要改模型侧代码，属于 coffin 集成阶段的事。
+
+## 33. 热路径算子的 C++ 交接：接口就位、代价已量（`probes/025`）
+
+内核组把「稳定取内核」和「实参顺序表」做成了机器可读的单一真源
+（`_ops_elementwise.fast_op()` / `get_launch_meta()` / `fast_variants()`），并用一个**不许用内部知识**
+的 shim 模拟器验了 24 组（4 op × 2 variant × 3 dtype，n=4097）**逐字节正确**（`probes/199` PASS 29/29）。
+这一点很关键：实参顺序若错位（长度与 alpha 互换成 float 与 i32），内核跑完不报错但结果全错，
+只有「按表填 + 逐字节对参照」才抓得住。
+
+注册代价（`probes/025`，磁盘缓存已热）：
+
+| 项 | 时间 |
+| --- | --- |
+| `corex_torch.register()`（含 mm 三内核 + 能力探测） | **471 ms** |
+| 24 个 fast-op 内核首轮 `get_launch_meta()` | **124 ms**（平均 5 ms/个） |
+| 第二轮（缓存命中） | **0 ms** |
+
+冷缓存时按单内核 ~0.4 s 估，最坏 ~10 s——所以 `ENABLE_FAST_OPS` 用环境变量控制（默认开），
+开关写在 `_aten_kernels` 里并注明原因。当前 shim 18 个导出、**没有** `load_fast_op`，
+所以 `_register_fast_ops()` 目前是**空操作**（`hasattr` 探测），Python 实现继续生效。
+
+**实参表的两个概念必须分开**（内核组把它做成了显式字段，很有必要）：
+
+* `has_alpha`：签名里**有没有** alpha 槽位 —— tensor 变体都有；
+* `alpha_effective`：alpha **是否真的改变结果** —— 只有 add/sub 的 tensor 变体是 True。
+  mul/div 的槽位**仍然必须传**（`probes/199` 实测传 0.0 与 1.0 输出逐字节相同），
+  少传就是实参个数不符 → 参数错位 → 「跑完了但全错」。
+
+抽查两个（`probes/025` §3）：`add/tensor/fp32` → `n_ptrs=3 n_i32=1 n_f32=1
+alpha_effective=True block=1024 warps=4 stages=1 cubin=7168B`；
+`mul/tensor/bf16` → 同形但 `alpha_effective=False`、`cubin=7008B`。

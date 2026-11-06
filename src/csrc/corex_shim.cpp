@@ -1298,194 +1298,366 @@ at::Tensor mm_impl(const at::Tensor& a, const at::Tensor& b) {
 }
 
 // ---------------------------------------------------------------------------
-// 逐元素算子（add/sub/mul/div）的 C++ 实现：照 aten::mm 的模式
+// 逐元素算子的 C++ 实现（照 aten::mm 的模式，接口由 Lead 定稿）
 // ---------------------------------------------------------------------------
 
 namespace {
 
-/// 一套登记给某个 (算子, dtype) 的逐元素内核。
-///
-/// 内核形参（`_ops_elementwise._binary_kernel`）：
-/// ``(a_ptr, b_ptr, out_ptr, n: i32, alpha: fp32, BLOCK, OP, OUT_DTYPE)``
-/// 再在末尾追加 Triton 3.4 的 global scratch 指针，所以 spec 是 ``"pppifp"``
-/// （mul/div 不带 alpha 时是 ``"pppip"``）。
+/// 变体：Tensor 实参 or Scalar 实参。
+enum class ElemVariant { Tensor = 0, Scalar = 1 };
+
+/// 一套登记好的逐元素内核。`n_ptrs/n_i32/n_f32` 全部来自 Python 侧按内核签名**数出来**的
+/// 实参表（`_ops_elementwise.fast_op()`），C++ 这边**不抄默认值**——抄的那份会漂移，
+/// 而漂移的表现是「跑完了但全错」（长度和值互相错位）。
 struct ElemKernel {
-  int64_t handle = 0;      ///< `load_kernel` 的句柄。
-  int64_t block = 1024;    ///< 每块元素数（= 内核的 BLOCK constexpr）：grid = ceil(n/block)。
-  int64_t num_warps = 4;   ///< 每块 warp 数（blockDim = warps*32）。
-  bool has_alpha = false;  ///< add/sub 的 Tensor 变体为真（out = a ± alpha*b）。
+  int64_t handle = 0;
+  int64_t num_warps = 1;
+  int64_t block = 1024;
+  int64_t n_ptrs = 0;
+  int64_t n_i32 = 0;
+  int64_t n_f32 = 0;
+  bool alpha_effective = false;   ///< 只有 add/sub 的 tensor 变体会让 alpha 改变结果。
+  int64_t shared = 0;             ///< 动态 shared 字节数（elementwise 一般是 0）。
 };
 
-std::mutex g_elem_mutex;
-std::unordered_map<int, std::unordered_map<int, ElemKernel>> g_elem_kernels;
+using ElemKey = std::tuple<int, int, int>;   ///< (op_code, variant, dtype_code)
 
-/// 取某个 (op, dtype) 的内核；没登记就明确报错（**不回落**，回落会让性能数据失去意义）。
-ElemKernel elem_kernel_for(int op_code, const char* op_name, const at::Tensor& a) {
+std::mutex g_elem_mutex;
+std::map<ElemKey, ElemKernel> g_elem_kernels;
+
+/// 从 cubin（ELF64 可重定位对象）里找出内核符号名。
+///
+/// 为什么需要：`cuModuleGetFunction` 只认名字，而 `load_fast_op` 的入参只有 cubin 字节；
+/// 与其让调用方多传一个「必须和 cubin 完全一致」的名字，不如从符号表读出来。
+/// 做法：遍历 `.symtab` 里 `STT_FUNC` 且 size>0 的符号——Triton 生成的 cubin 里
+/// 真正被 launch 的那个就是最大的那个函数符号。
+std::string kernel_name_from_cubin(const std::string& cubin) {
+  TORCH_CHECK(cubin.size() > 64, "corex_shim: cubin 太小，不是 ELF");
+  const auto* raw = reinterpret_cast<const unsigned char*>(cubin.data());
+  TORCH_CHECK(raw[0] == 0x7f && raw[1] == 'E' && raw[2] == 'L' && raw[3] == 'F',
+              "corex_shim: cubin 不是 ELF 文件（魔数不符）");
+  auto u16 = [raw](size_t at) {
+    uint16_t value = 0;
+    std::memcpy(&value, raw + at, sizeof(value));
+    return value;
+  };
+  auto u32 = [raw](size_t at) {
+    uint32_t value = 0;
+    std::memcpy(&value, raw + at, sizeof(value));
+    return value;
+  };
+  auto u64 = [raw](size_t at) {
+    uint64_t value = 0;
+    std::memcpy(&value, raw + at, sizeof(value));
+    return value;
+  };
+  const size_t shoff = static_cast<size_t>(u64(0x28));
+  const size_t shentsize = u16(0x3A);
+  const size_t shnum = u16(0x3C);
+  TORCH_CHECK(shoff != 0 && shentsize >= 64 && shnum != 0, "corex_shim: cubin 没有节头表");
+
+  constexpr uint32_t kSymTab = 2;          // SHT_SYMTAB
+  constexpr unsigned char kFunc = 2;       // STT_FUNC
+  std::string best_name;
+  size_t best_size = 0;
+  for (size_t index = 0; index < shnum; ++index) {
+    const size_t at = shoff + index * shentsize;
+    if (at + 64 > cubin.size()) {
+      break;
+    }
+    if (u32(at + 4) != kSymTab) {
+      continue;
+    }
+    const size_t sym_off = static_cast<size_t>(u64(at + 24));
+    const size_t sym_size = static_cast<size_t>(u64(at + 32));
+    const size_t sym_entsize = static_cast<size_t>(u64(at + 56));
+    const size_t link = u32(at + 40);
+    if (sym_entsize != 24 || link >= shnum) {
+      continue;
+    }
+    const size_t str_at = shoff + link * shentsize;
+    const size_t str_off = static_cast<size_t>(u64(str_at + 24));
+    const size_t str_size = static_cast<size_t>(u64(str_at + 32));
+    for (size_t sym = 0; sym + 24 <= sym_size; sym += 24) {
+      const size_t entry = sym_off + sym;
+      if (entry + 24 > cubin.size()) {
+        break;
+      }
+      if ((raw[entry + 4] & 0x0f) != kFunc) {
+        continue;
+      }
+      const uint64_t name_at = u32(entry);
+      const uint64_t func_size = u64(entry + 16);
+      if (name_at == 0 || name_at >= str_size) {
+        continue;
+      }
+      const size_t abs = str_off + static_cast<size_t>(name_at);
+      if (abs >= cubin.size()) {
+        continue;
+      }
+      const std::string name(cubin.c_str() + abs);   // 符号名以 NUL 结尾
+      if (name.empty()) {
+        continue;
+      }
+      if (func_size > best_size) {                   // 取最大的函数符号
+        best_size = static_cast<size_t>(func_size);
+        best_name = name;
+      }
+    }
+  }
+  TORCH_CHECK(!best_name.empty(), "corex_shim: 在 cubin 的 .symtab 里找不到函数符号");
+  return best_name;
+}
+
+int op_code_from_name(const std::string& op) {
+  if (op == "add") return 0;
+  if (op == "sub") return 1;
+  if (op == "mul") return 2;
+  if (op == "div") return 3;
+  TORCH_CHECK(false, "corex_shim: 未知的算子名 '", op, "'（只认 add/sub/mul/div）");
+}
+
+int dtype_code_from_name(const std::string& dtype) {
+  if (dtype == "fp16") return 5;
+  if (dtype == "fp32") return 6;
+  if (dtype == "bf16") return 15;
+  TORCH_CHECK(false, "corex_shim: 未知的 dtype 名 '", dtype, "'（只认 fp16/fp32/bf16）");
+}
+
+std::string op_display_name(int op_code, ElemVariant variant) {
+  static const char* kOps[4] = {"add", "sub", "mul", "div"};
+  std::string out(kOps[op_code]);
+  out += (variant == ElemVariant::Tensor) ? ".out(tensor)" : ".out(scalar)";
+  return out;
+}
+
+/// 取某个 (op, variant, dtype) 的内核；没登记就明确报错（**不回落**）。
+ElemKernel elem_kernel_for(int op_code, ElemVariant variant, const at::Tensor& a,
+                           const char* op_name) {
   std::lock_guard<std::mutex> lock(g_elem_mutex);
-  const auto by_dtype = g_elem_kernels.find(op_code);
-  TORCH_CHECK(by_dtype != g_elem_kernels.end(),
-              "corex 的 ", op_name, " 还没登记内核。先在 Python 侧编译并登记：\n"
-              "  k = _ops_elementwise._get_kernel('binary', dtype, op, block, warps)\n"
-              "  h = shim.load_kernel(k.asm['cubin'], k.name, 'pppifp', k.metadata.shared)\n"
-              "  shim.set_elementwise_kernel(op, dtype_code, h, 3, 1, 1, True, block, warps)");
-  const auto found = by_dtype->second.find(static_cast<int>(a.scalar_type()));
-  TORCH_CHECK(found != by_dtype->second.end(),
-              "corex 的 ", op_name, " 没有 dtype=", static_cast<int>(a.scalar_type()),
-              " 的内核（该算子已登记 ", by_dtype->second.size(), " 个 dtype）");
+  const auto found = g_elem_kernels.find(ElemKey{op_code, static_cast<int>(variant),
+                                                 static_cast<int>(a.scalar_type())});
+  TORCH_CHECK(found != g_elem_kernels.end(),
+              "corex 的 ", op_name, "（dtype=", static_cast<int>(a.scalar_type()),
+              "，", (variant == ElemVariant::Tensor ? "tensor" : "scalar"),
+              " 变体）还没登记 C++ 内核；先用 shim.load_fast_op 登记，或用 Python 实现");
   return found->second;
 }
 
 }  // namespace
 
-/// 登记一套逐元素内核（Python 侧按 (算子, dtype) 各调一次）。
+/// 装载并登记一个逐元素内核（Python 侧在 `_register_fast_ops()` 里按 (op, variant, dtype) 调）。
 ///
-/// @param op_code 0=add 1=sub 2=mul 3=div（与 `_ops_elementwise` 的 `_OP_*` 一致）。
-/// @param dtype_code `c10::ScalarType` 整数（fp16=5 / fp32=6 / bf16=15）。
-/// @param handle `load_kernel` 返回的句柄。
-/// @param n_ptrs/n_i32/n_f32 该内核实参表里指针 / i32 / f32 的个数（本批固定 3 / 1 / 0或1）。
-/// @param has_alpha add/sub 的 Tensor 变体传 true（alpha 走 f32 数组）。
-/// @param block 内核的 BLOCK constexpr（grid = ceil(n/block)）。
+/// 实参表由 Python 侧从内核签名数出来（`_ops_elementwise.fast_op()`）：
+///   * tensor 变体：`a*, b*, out*, n:i32, alpha:f32`
+///   * scalar 变体：`a*, out*, n:i32, scalar:f32`
+/// 末尾再追加 Triton 3.4 的 global scratch 指针。**`alpha_effective` 与「有没有 alpha 槽位」
+/// 是两件事**：mul/div 的 tensor 变体也有 alpha 槽位，只是值不影响结果——槽位必须照传。
+///
+/// @param op `add`/`sub`/`mul`/`div`。
+/// @param variant `tensor`/`scalar`。
+/// @param dtype `fp16`/`fp32`/`bf16`。
+/// @param cubin Triton 的 `compiled.asm["cubin"]`。
 /// @param num_warps 每块 warp 数（blockDim = warps*32）。
-void set_elementwise_kernel(int64_t op_code, int64_t dtype_code, int64_t handle, int64_t n_ptrs,
-                            int64_t n_i32, int64_t n_f32, bool has_alpha, int64_t block,
-                            int64_t num_warps) {
-  TORCH_CHECK(handle != 0, "corex_shim: set_elementwise_kernel 收到 0 句柄（先 load_kernel）");
-  TORCH_CHECK(n_ptrs == 3, "corex_shim: 本批逐元素内核要求 3 个指针实参，收到 ", n_ptrs);
-  TORCH_CHECK(n_i32 == 1, "corex_shim: 本批逐元素内核要求 1 个 i32 实参（n），收到 ", n_i32);
-  TORCH_CHECK(n_f32 == (has_alpha ? 1 : 0),
-              "corex_shim: has_alpha=", has_alpha, " 时 f32 实参应为 ", has_alpha ? 1 : 0,
-              " 个，收到 ", n_f32);
+/// @param num_stages 流水级数（本平台恒为 1；这里只做记录）。
+/// @param n_ptrs/n_i32/n_f32 实参表里各类实参的个数。
+/// @param alpha_effective 只有 add/sub 的 tensor 变体为真。
+/// @param block 内核的 BLOCK constexpr（网格 = cdiv(n, block)）。
+/// @param shared 动态 shared 字节数（`metadata.shared`，elementwise 一般是 0）。
+void load_fast_op(const std::string& op, const std::string& variant, const std::string& dtype,
+                  const std::string& cubin, int64_t num_warps, int64_t num_stages, int64_t n_ptrs,
+                  int64_t n_i32, int64_t n_f32, bool alpha_effective, int64_t block,
+                  int64_t shared) {
+  (void)num_stages;                       // 只在需要复现编译配置时才有意义
+  const int op_code = op_code_from_name(op);
+  const int dtype_code = dtype_code_from_name(dtype);
+  ElemVariant variant_kind;
+  if (variant == "tensor") {
+    variant_kind = ElemVariant::Tensor;
+  } else if (variant == "scalar") {
+    variant_kind = ElemVariant::Scalar;
+  } else {
+    TORCH_CHECK(false, "corex_shim: 未知的变体 '", variant, "'（只认 tensor/scalar）");
+  }
+  TORCH_CHECK(n_ptrs > 0 && n_i32 >= 0 && n_f32 >= 0, "corex_shim: 实参个数不能为负");
   TORCH_CHECK(block > 0 && num_warps > 0, "corex_shim: block/num_warps 必须为正");
+
+  // 实参类型串：指针 → i32 → f32，最后是 global scratch 指针（Triton 3.4 固定追加）。
+  std::string spec;
+  spec.append(static_cast<size_t>(n_ptrs), 'p');
+  spec.append(static_cast<size_t>(n_i32), 'i');
+  spec.append(static_cast<size_t>(n_f32), 'f');
+  spec.push_back('p');
+
+  const std::string name = kernel_name_from_cubin(cubin);
+  const int64_t handle = load_kernel(cubin, name, spec, shared);
+
   std::lock_guard<std::mutex> lock(g_elem_mutex);
   ElemKernel kernel;
   kernel.handle = handle;
-  kernel.block = block;
   kernel.num_warps = num_warps;
-  kernel.has_alpha = has_alpha;
-  g_elem_kernels[static_cast<int>(op_code)][static_cast<int>(dtype_code)] = kernel;
+  kernel.block = block;
+  kernel.n_ptrs = n_ptrs;
+  kernel.n_i32 = n_i32;
+  kernel.n_f32 = n_f32;
+  kernel.alpha_effective = alpha_effective;
+  kernel.shared = shared;
+  g_elem_kernels[ElemKey{op_code, static_cast<int>(variant_kind), dtype_code}] = kernel;
 }
 
-/// 已登记的逐元素内核明细 `[[op, dtype, block, warps, has_alpha], ...]`（诊断用）。
+/// 已登记逐元素内核明细 `[[op, variant, dtype, block, warps, n_ptrs, n_i32, n_f32], ...]`。
 std::vector<std::vector<int64_t>> elementwise_kernel_info() {
   std::lock_guard<std::mutex> lock(g_elem_mutex);
   std::vector<std::vector<int64_t>> out;
-  for (const auto& by_op : g_elem_kernels) {
-    for (const auto& by_dtype : by_op.second) {
-      out.push_back({by_op.first, by_dtype.first, by_dtype.second.block,
-                     by_dtype.second.num_warps, by_dtype.second.has_alpha ? 1 : 0});
-    }
+  for (const auto& item : g_elem_kernels) {
+    out.push_back({std::get<0>(item.first), std::get<1>(item.first), std::get<2>(item.first),
+                   item.second.block, item.second.num_warps, item.second.n_ptrs,
+                   item.second.n_i32, item.second.n_f32,
+                   item.second.alpha_effective ? 1 : 0});
   }
-  std::sort(out.begin(), out.end());
   return out;
 }
 
-/// C++ 已经接管的逐元素算子名列表。Python 侧据此**跳过**同名 Python 实现——
-/// 否则 Python 注册会覆盖 C++ 注册，静默退回 Python 实现（这个坑在 mm 上踩过一次）。
+/// C++ 已接管的逐元素 schema 名。Python 侧据此**跳过**同名 Python 实现——
+/// 否则 Python 注册会覆盖 C++ 注册，静默退回 Python 实现（mm 上踩过一次）。
 std::vector<std::string> elementwise_op_names() {
-  return {"add.out",  "sub.out",  "mul.out",  "div.out",
-          "add_.Tensor", "sub_.Tensor", "mul_.Tensor", "div_.Tensor"};
+  return {"add.out",      "sub.out",      "mul.out",      "div.out",
+          "add_.Tensor",  "sub_.Tensor",  "mul_.Tensor",  "div_.Tensor",
+          "add_.Scalar",  "sub_.Scalar",  "mul_.Scalar",  "div_.Scalar"};
 }
 
 namespace {
 
-/// 四个逐元素算子的公共实现：同形 + 连续 + 同设备 + 同 dtype 才走快路径。
-///
-/// **不满足条件就报错、不静默回落**——回落（无论回落到 Python 还是某条慢路径）会让性能
-/// 数据失去意义，这是本项目已经踩过的坑。
-at::Tensor& elementwise_out(int64_t op_code, const char* op_name, at::Tensor& out,
-                            const at::Tensor& a, const at::Tensor& b, double alpha) {
-  TORCH_CHECK(out.device().is_privateuseone() && a.device().is_privateuseone() &&
-                  b.device().is_privateuseone(),
+/// 公共实现：同形 + 连续 + 同设备 + 同 dtype 才走快路径；否则**明确报错**。
+at::Tensor& elementwise_run(int op_code, ElemVariant variant, const char* op_name,
+                            at::Tensor& out, const at::Tensor& a, const at::Tensor& b,
+                            double alpha, double scalar_value) {
+  TORCH_CHECK(out.device().is_privateuseone() && a.device().is_privateuseone(),
               "corex 的 ", op_name, " 要求张量都在 corex 上");
-  TORCH_CHECK(a.scalar_type() == b.scalar_type() && a.scalar_type() == out.scalar_type(),
-              "corex 的 ", op_name, " 要求同 dtype：", a.scalar_type(), " / ", b.scalar_type(),
-              " / ", out.scalar_type());
-  TORCH_CHECK(a.sizes() == b.sizes() && a.sizes() == out.sizes(),
-              "corex 的 ", op_name, " 的 C++ 快路径只支持同形（不做广播）：", a.sizes(), " / ",
-              b.sizes(), " / ", out.sizes());
-  TORCH_CHECK(a.is_contiguous() && b.is_contiguous() && out.is_contiguous(),
+  TORCH_CHECK(a.scalar_type() == out.scalar_type(),
+              "corex 的 ", op_name, " 要求同 dtype：", a.scalar_type(), " vs ", out.scalar_type());
+  TORCH_CHECK(a.is_contiguous() && out.is_contiguous(),
               "corex 的 ", op_name, " 的 C++ 快路径只支持连续张量（先 .contiguous()）");
+  if (variant == ElemVariant::Tensor) {
+    TORCH_CHECK(b.device().is_privateuseone() && b.scalar_type() == a.scalar_type() &&
+                    b.sizes() == a.sizes() && b.is_contiguous(),
+                "corex 的 ", op_name, " 的 C++ 快路径只支持同形、连续、同 dtype（不做广播）");
+  }
+  TORCH_CHECK(a.sizes() == out.sizes(), "corex 的 ", op_name, " 要求 out 与 self 同形");
 
-  const ElemKernel kernel = elem_kernel_for(static_cast<int>(op_code), op_name, a);
+  const ElemKernel kernel = elem_kernel_for(op_code, variant, a, op_name);
   const int64_t n = a.numel();
   if (n == 0) {
     return out;
   }
   const auto* entry = reinterpret_cast<const KernelEntry*>(static_cast<intptr_t>(kernel.handle));
   TORCH_CHECK(entry != nullptr, "corex 的 ", op_name, " 收到无效内核句柄");
+  TORCH_CHECK(static_cast<int64_t>(entry->spec.size()) ==
+                  kernel.n_ptrs + kernel.n_i32 + kernel.n_f32 + 1 &&
+                  entry->spec.back() == 'p',
+              "corex 的 ", op_name, " 的内核 spec 与登记的实参个数不符（", entry->spec, "）");
 
-  // 实参类型串校验：本批布局是 ppp i [f] [p=scratch]。错的 spec 会让内核静默算错
-  // （mm 上就是「M 收到 0、一个元素都不写」），所以宁可在启动前挡下来。
-  const std::string base = kernel.has_alpha ? "pppif" : "pppi";
-  const std::string& spec = entry->spec;
-  const bool with_scratch = spec.size() == base.size() + 1 && spec.back() == 'p' &&
-                            spec.compare(0, base.size(), base) == 0;
-  TORCH_CHECK(spec == base || with_scratch, "corex 的 ", op_name, " 要求内核 spec 为 \"", base,
-              "\" 或 \"", base, "p\"（scratch 在最后），实际收到 \"", spec, "\"");
-
-  std::vector<int64_t> ptr_args{a.data_ptr(), b.data_ptr(), out.data_ptr()};
-  if (with_scratch) {
-    ptr_args.push_back(0);
+  std::vector<int64_t> ptr_args;
+  ptr_args.push_back(reinterpret_cast<int64_t>(a.data_ptr()));
+  if (variant == ElemVariant::Tensor) {
+    ptr_args.push_back(reinterpret_cast<int64_t>(b.data_ptr()));
   }
+  ptr_args.push_back(reinterpret_cast<int64_t>(out.data_ptr()));
+  ptr_args.push_back(0);                       // global scratch（Triton 3.4 固定尾参）
   std::vector<double> f32_args;
-  if (kernel.has_alpha) {
-    f32_args.push_back(alpha);
+  if (variant == ElemVariant::Tensor) {
+    // alpha 槽位**永远**要传（mul/div 只是值不影响结果）。
+    f32_args.push_back(kernel.alpha_effective ? alpha : 1.0);
+  } else {
+    f32_args.push_back(scalar_value);
   }
   const int64_t grid = (n + kernel.block - 1) / kernel.block;
-  launch(kernel.handle, {grid, 1, 1}, {kernel.num_warps * 32, 1, 1}, entry->shared, 0, ptr_args,
+  launch(kernel.handle, {grid, 1, 1}, {kernel.num_warps * 32, 1, 1}, kernel.shared, 0, ptr_args,
          f32_args, {n}, {});
   return out;
 }
 
 }  // namespace
 
-/// `aten::add.out`：`out = self + alpha * other`。
-at::Tensor& add_out_impl(at::Tensor& out, const at::Tensor& self, const at::Tensor& other,
-                         const at::Scalar& alpha) {
-  return elementwise_out(0, "add.out", out, self, other, alpha.to<double>());
+/// `aten::add.out`（tensor 变体）：`out = self + alpha * other`。
+at::Tensor& add_out_impl(const at::Tensor& self, const at::Tensor& other, const at::Scalar& alpha,
+                         at::Tensor& out) {
+  return elementwise_run(0, ElemVariant::Tensor, "add.out", out, self, other, alpha.to<double>(),
+                         0.0);
 }
 
-/// `aten::sub.out`：`out = self - alpha * other`。
-at::Tensor& sub_out_impl(at::Tensor& out, const at::Tensor& self, const at::Tensor& other,
-                         const at::Scalar& alpha) {
-  return elementwise_out(1, "sub.out", out, self, other, alpha.to<double>());
+/// `aten::sub.out`（tensor 变体）：`out = self - alpha * other`。
+at::Tensor& sub_out_impl(const at::Tensor& self, const at::Tensor& other, const at::Scalar& alpha,
+                         at::Tensor& out) {
+  return elementwise_run(1, ElemVariant::Tensor, "sub.out", out, self, other, alpha.to<double>(),
+                         0.0);
 }
 
-/// `aten::mul.out`：`out = self * other`。
-at::Tensor& mul_out_impl(at::Tensor& out, const at::Tensor& self, const at::Tensor& other) {
-  return elementwise_out(2, "mul.out", out, self, other, 1.0);
+/// `aten::mul.out`（tensor 变体）。
+at::Tensor& mul_out_impl(const at::Tensor& self, const at::Tensor& other, at::Tensor& out) {
+  return elementwise_run(2, ElemVariant::Tensor, "mul.out", out, self, other, 1.0, 0.0);
 }
 
-/// `aten::div.out`：`out = self / other`。
-at::Tensor& div_out_impl(at::Tensor& out, const at::Tensor& self, const at::Tensor& other) {
-  return elementwise_out(3, "div.out", out, self, other, 1.0);
+/// `aten::div.out`（tensor 变体）。
+at::Tensor& div_out_impl(const at::Tensor& self, const at::Tensor& other, at::Tensor& out) {
+  return elementwise_run(3, ElemVariant::Tensor, "div.out", out, self, other, 1.0, 0.0);
 }
 
-/// `aten::add_.Tensor`：就地 `self += alpha * other`。
+/// `aten::add_.Tensor`。
 at::Tensor& add_inplace_impl(at::Tensor& self, const at::Tensor& other, const at::Scalar& alpha) {
-  return elementwise_out(0, "add_", self, self, other, alpha.to<double>());
+  return elementwise_run(0, ElemVariant::Tensor, "add_", self, self, other, alpha.to<double>(),
+                         0.0);
 }
 
-/// `aten::sub_.Tensor`：就地 `self -= alpha * other`。
+/// `aten::sub_.Tensor`。
 at::Tensor& sub_inplace_impl(at::Tensor& self, const at::Tensor& other, const at::Scalar& alpha) {
-  return elementwise_out(1, "sub_", self, self, other, alpha.to<double>());
+  return elementwise_run(1, ElemVariant::Tensor, "sub_", self, self, other, alpha.to<double>(),
+                         0.0);
 }
 
-/// `aten::mul_.Tensor`：就地 `self *= other`。
+/// `aten::mul_.Tensor`。
 at::Tensor& mul_inplace_impl(at::Tensor& self, const at::Tensor& other) {
-  return elementwise_out(2, "mul_", self, self, other, 1.0);
+  return elementwise_run(2, ElemVariant::Tensor, "mul_", self, self, other, 1.0, 0.0);
 }
 
-/// `aten::div_.Tensor`：就地 `self /= other`。
+/// `aten::div_.Tensor`。
 at::Tensor& div_inplace_impl(at::Tensor& self, const at::Tensor& other) {
-  return elementwise_out(3, "div_", self, self, other, 1.0);
+  return elementwise_run(3, ElemVariant::Tensor, "div_", self, self, other, 1.0, 0.0);
+}
+
+/// `aten::add_.Scalar`：就地 `self += alpha * other`（other 是标量）。
+at::Tensor& add_scalar_inplace_impl(at::Tensor& self, const at::Scalar& other,
+                                    const at::Scalar& alpha) {
+  return elementwise_run(0, ElemVariant::Scalar, "add_.Scalar", self, self, self,
+                         alpha.to<double>(), alpha.to<double>() * other.to<double>());
+}
+
+/// `aten::sub_.Scalar`。
+at::Tensor& sub_scalar_inplace_impl(at::Tensor& self, const at::Scalar& other,
+                                    const at::Scalar& alpha) {
+  return elementwise_run(1, ElemVariant::Scalar, "sub_.Scalar", self, self, self,
+                         alpha.to<double>(), alpha.to<double>() * other.to<double>());
+}
+
+/// `aten::mul_.Scalar`。
+at::Tensor& mul_scalar_inplace_impl(at::Tensor& self, const at::Scalar& other) {
+  return elementwise_run(2, ElemVariant::Scalar, "mul_.Scalar", self, self, self, 1.0,
+                         other.to<double>());
+}
+
+/// `aten::div_.Scalar`。
+at::Tensor& div_scalar_inplace_impl(at::Tensor& self, const at::Scalar& other) {
+  return elementwise_run(3, ElemVariant::Scalar, "div_.Scalar", self, self, self, 1.0,
+                         other.to<double>());
 }
 
 }  // namespace corex_shim
 
 // aten 的分发键注册必须在全局作用域做（`TORCH_LIBRARY_IMPL` 展开出的是一个静态注册对象）。
 // 注意：**一旦加载本 .so，这些算子就由 C++ 接手**；没登记内核时它们明确报错、不回落
-// Python 实现（刻意设计，见 elementwise_out 的注释）。
+// Python 实现（刻意设计，见 elementwise_run 的注释）。out 变体的 kernel 签名里 **out 在最后**
+// （torch 2.8 的约定，不是 ATen native 函数的 out-first 形状——写反了会在 .so 加载期
+// 抛 "Mismatch in kernel C++ signatures" 直接 abort）。
 TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("mm", TORCH_FN(corex_shim::mm_impl));
   m.impl("add.out", TORCH_FN(corex_shim::add_out_impl));
@@ -1496,8 +1668,11 @@ TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
   m.impl("sub_.Tensor", TORCH_FN(corex_shim::sub_inplace_impl));
   m.impl("mul_.Tensor", TORCH_FN(corex_shim::mul_inplace_impl));
   m.impl("div_.Tensor", TORCH_FN(corex_shim::div_inplace_impl));
+  m.impl("add_.Scalar", TORCH_FN(corex_shim::add_scalar_inplace_impl));
+  m.impl("sub_.Scalar", TORCH_FN(corex_shim::sub_scalar_inplace_impl));
+  m.impl("mul_.Scalar", TORCH_FN(corex_shim::mul_scalar_inplace_impl));
+  m.impl("div_.Scalar", TORCH_FN(corex_shim::div_scalar_inplace_impl));
 }
-
 // pybind 绑定代码必须写在全局作用域：PYBIND11_MODULE 展开出的是 `extern "C"` 的
 // `PyInit_<name>`，放在 namespace 里会变成某个命名空间的成员，import 时找不到入口。
 using corex_shim::allocated_bytes;
@@ -1513,9 +1688,10 @@ using corex_shim::last_error;
 using corex_shim::launch;
 using corex_shim::mm_kernel_dtypes;
 using corex_shim::elementwise_kernel_info;
+using corex_shim::load_fast_op;
 using corex_shim::elementwise_op_names;
 using corex_shim::memcpy2d;
-using corex_shim::set_elementwise_kernel;
+
 using corex_shim::mm_kernel_info;
 using corex_shim::load_kernel;
 using corex_shim::reserved_bytes;
@@ -1559,11 +1735,12 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         pybind11::arg("num_warps") = 1, pybind11::arg("shared") = -1,
         "登记 aten::mm 用的内核（按 dtype）；shared 传 metadata.shared（-1 = 用 load_kernel 记的）");
   m.def("mm_kernel_dtypes", &mm_kernel_dtypes, "已登记 mm 内核的 dtype 列表");
-  m.def("set_elementwise_kernel", &set_elementwise_kernel, pybind11::arg("op_code"),
-        pybind11::arg("dtype_code"), pybind11::arg("handle"), pybind11::arg("n_ptrs"),
-        pybind11::arg("n_i32"), pybind11::arg("n_f32"), pybind11::arg("has_alpha"),
-        pybind11::arg("block") = 1024, pybind11::arg("num_warps") = 4,
-        "登记逐元素内核（op: 0=add 1=sub 2=mul 3=div）；没登记时那个算子明确报错");
+  m.def("load_fast_op", &load_fast_op, pybind11::arg("op"), pybind11::arg("variant"),
+        pybind11::arg("dtype"), pybind11::arg("cubin"), pybind11::arg("num_warps"),
+        pybind11::arg("num_stages"), pybind11::arg("n_ptrs"), pybind11::arg("n_i32"),
+        pybind11::arg("n_f32"), pybind11::arg("alpha_effective"), pybind11::arg("block"),
+        pybind11::arg("shared") = 0,
+        "装载并登记一个逐元素内核（实参表由 Python 按签名数出来）");
   m.def("elementwise_kernel_info", &elementwise_kernel_info,
         "已登记逐元素内核 [[op, dtype, block, warps, has_alpha], ...]");
   m.def("elementwise_op_names", &elementwise_op_names,

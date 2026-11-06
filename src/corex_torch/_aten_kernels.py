@@ -647,6 +647,59 @@ def _std_dim_impl(self, dim, *, correction=1, keepdim: bool = False):
     return _std_correction_impl(self, dims[0], correction=correction, keepdim=keepdim)
 
 
+#: 是否把热路径逐元素算子交给 C++。
+#:
+#: 打开它要在**初始化阶段串行编译** 4 op × 2 variant × 3 dtype = 24 个内核（首次每个约 0.2–0.4 s，
+#: Triton 有磁盘缓存时后续便宜得多），所以用环境变量控制：`COREX_FAST_OPS=1` 打开、`=0` 关闭。
+#: 未打开时这些算子仍走本模块的 Python 实现——正确性完全一样，只是每次多花约 50 µs。
+ENABLE_FAST_OPS = os.environ.get("COREX_FAST_OPS", "1") == "1"
+
+
+def _register_fast_ops() -> None:
+    """把热路径逐元素算子（add/sub/mul/div × tensor/scalar × 三 dtype）登记给 C++。
+
+    为什么重要（`probes/023`、`probes/024`）：Python 实现的 ``aten add`` 是 **78.8 µs**，
+    其中 aten 回调 25 µs、我们的实现体 25 µs、launch 打包 28 µs；而 C++ 快路径的 ``mm``
+    只要 **3.1 µs**。decode 一步有五千次以上的 Python 级调用，这一层是主要成本。
+
+    **实参顺序一张表、一处定义**：``_ops_elementwise.fast_op()`` 是从内核签名**数出来**的
+    （不是手写常量），C++ 侧按它的 ``args`` 填三个并行数组。手写表迟早与签名漂移，
+    而漂移的表现是「跑完了但全错」（长度与 alpha 位置互换时，一个被当 float、一个被当长度）。
+
+    两个必须分开的概念（``_ops_elementwise.fast_op`` 也分开给了）：
+
+    * ``has_alpha``：签名里**有没有** alpha 这个实参 —— tensor 变体都有；
+    * ``alpha_effective``：alpha **是否真的改变结果** —— 只有 add/sub 的 tensor 变体是 True。
+      mul/div 的 alpha 槽位**仍然要传**（传 1.0），少传就是实参个数不符。
+    """
+    if not ENABLE_FAST_OPS:
+        return
+    from . import _device
+
+    shim = _device.shim()
+    if not hasattr(shim, "load_fast_op"):
+        # C++ 侧还没实现这套接口：Python 实现继续生效，不影响正确性。
+        return
+    elt = _mod("_ops_elementwise")
+    if not hasattr(elt, "fast_variants"):
+        return
+    # 遍历内核组给的驱动源，不自己写死 (op, variant) 列表——那又是一份会漂移的表。
+    for op, variant in elt.fast_variants():
+        if op not in getattr(elt, "FASTPATH_OPS", ()):
+            continue
+        for dtype in ("fp32", "fp16", "bf16"):
+            try:
+                meta = elt.get_launch_meta(op, dtype, variant)
+                shim.load_fast_op(op, variant, dtype, meta["cubin"],
+                                  int(meta["num_warps"]), int(meta["num_stages"]),
+                                  int(meta["n_ptrs"]), int(meta["n_i32"]), int(meta["n_f32"]),
+                                  bool(meta["alpha_effective"]), int(meta["block"]))
+            except Exception:                           # noqa: BLE001
+                # 某个 (op, dtype) 编不出来（工具链缺指令等）：让它回落到 Python 实现，
+                # 注册期不该因为一个 dtype 把整个设备搞挂。
+                continue
+
+
 def _register_fast_mm() -> None:
     """把编译好的 mm 内核句柄登记给 C++ 侧，让 ``aten::mm`` 全程不碰 Python。
 
@@ -736,3 +789,5 @@ def register(lib) -> None:
     lib.impl("std.correction", _std_correction_impl, "PrivateUse1")
     # mm 可能已被 C++ 接管：上面的 impl 只作为「旧版 shim / 未接管」时的实现存在。
     _register_fast_mm()
+    # 逐元素热路径（add/sub/mul/div）：C++ 侧有这套接口时把内核句柄交过去。
+    _register_fast_ops()

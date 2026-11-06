@@ -514,6 +514,7 @@ def install() -> None:
 | `196_new_ops.sh` | 沙箱（卡） | **第 5 批算子**：relu/rsqrt/gelu/masked_fill/max.dim+argmax/log_softmax × 3 dtype × 尾块 | **PASS**，63/63 + 36/36，bf16 命中 130（见 §9） |
 | `197_var_axis.sh` | 沙箱（卡） | **最后一批**：`row_var`/`row_std`（两趟 vs 一趟公式对照）、中间维 `sum_axis`/`mean_axis` | **PASS**，27/27 + 18/18，bf16 命中 17（见 §10） |
 | `198_bmm_repro.sh` | 沙箱（卡） | 复现「`bmm` 2505 µs」并做分布+对照组归因 | **假阳性**：p50 两形状都是 13.5 µs，均值被 4% 的 ~500 µs 环境停顿污染（见 §11） |
+| `199_fastop_api.sh` | 沙箱（卡） | C++ 快路径的两个入口：`get_kernel` / `fast_op`，并用「只按表 launch」的 shim 模拟器验收 | **PASS**，29/29；24 组逐字节相等（见 §12） |
 
 载荷约定（两个沙箱探针都要）：
 
@@ -1314,3 +1315,91 @@ bf16 全部真支持：`sum_axis` 逐字节、`mean_axis` 1.4e-04、`row_var` �
 顺带一个交叉验证：`[4,1,6]@[4,6,16]` 的 85.6 µs 与我的账**完全对得上** ——
 内核 13.5 + 分配 ~7 + aten/Python 分发约 50~60（`probes/023` 自己测出 `add` 里内核 33、总 82
 ⇒ 分发约 49）≈ 70~80 µs。也就是说**"快"的那一行是诚实的，"慢"的那一行是污染的**。
+
+---
+
+## 12. 给 C++ 快路径的稳定入口（`_ops_elementwise`）
+
+把逐元素算子挪进 C++（模式照 `mm`：Python 编译 → `shim.load_kernel` → `set_*_kernel`）需要两样
+东西；本文件提供四个公开入口，全部**语义化**，调用方不需要知道 `block`/`num_warps` 之类的内部参数。
+
+### 12.1 入口
+
+```python
+from corex_torch import _ops_elementwise as elt
+
+elt.fast_variants()                       # → 15 个 (op, variant) 组合（遍历这个，别自己写死列表）
+elt.fast_op("add", "fp16", "scalar")      # → 实参顺序表（**不编译**，纯元数据）
+elt.get_kernel("add", "fp16", "scalar")   # → CompiledKernel，.asm["cubin"] 即 load_kernel 的输入
+elt.get_cubin("add", "fp16", "scalar")    # → bytes（上面那行的便捷写法）
+elt.get_launch_meta("add", "fp16", "scalar")
+# → {cubin, name, num_warps, num_stages, shared, block, args, n_ptrs, n_i32, n_f32, ...}
+```
+
+`variant` 只区分 **`"tensor"` / `"scalar"`**。`gelu` 的 erf/tanh 是**关键字 `mode`**，不是 variant
+——两者是同一个 (op, variant) 下的两种数学形式，混进 variant 会让「变体」这个词失去意义。
+
+### 12.2 为什么顺序表是「从签名数出来的」
+
+`_signature()` 是内核签名的**单一真源**：`_build_kernel()` 用它编译，`fast_op()` 用它**派生**
+`n_ptrs/n_i32/n_f32/args`。**两边不各写一份。**
+
+这不是洁癖：实参顺序错了**不会报错**，只会算错——`n`（i32）与 `alpha`（f32）位置互换时，一个被
+当成 float 解释、一个被当成长度，结果是「跑完了但全错」。手写常量表迟早和签名漂移，而漂移的
+那天没人会注意到。所以顺序表必须是数出来的。
+
+### 12.3 实参顺序表（`FASTPATH_OPS` 这批；三种 dtype 只差指针类型）
+
+| op | variant | n_ptrs | n_i32 | n_f32 | has_alpha | alpha_effective | args（有序） |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `add` | tensor | 3 | 1 | 1 | ✅ | ✅ | `a*, b*, out*, n:i32, alpha:f32` |
+| `sub` | tensor | 3 | 1 | 1 | ✅ | ✅ | `a*, b*, out*, n:i32, alpha:f32` |
+| `mul` | tensor | 3 | 1 | 1 | ✅ | ❌ | `a*, b*, out*, n:i32, alpha:f32` |
+| `div` | tensor | 3 | 1 | 1 | ✅ | ❌ | `a*, b*, out*, n:i32, alpha:f32` |
+| `add` | scalar | 2 | 1 | 1 | ❌ | ❌ | `a*, out*, n:i32, scalar:f32` |
+| `sub` | scalar | 2 | 1 | 1 | ❌ | ❌ | `a*, out*, n:i32, scalar:f32` |
+| `mul` | scalar | 2 | 1 | 1 | ❌ | ❌ | `a*, out*, n:i32, scalar:f32` |
+| `div` | scalar | 2 | 1 | 1 | ❌ | ❌ | `a*, out*, n:i32, scalar:f32` |
+
+其余已登记、本批不进快路径的：`fill` 1/1/1、`copy` 2/1/0、`silu`/`relu`/`rsqrt`/`gelu` 2/1/0、
+`masked_fill` 3/1/1（`ptr_types` 里 `mask` 是 `*i8`）。
+
+**`has_alpha` 与 `alpha_effective` 必须分开看**，这是本表最容易踩的地方：
+
+* `has_alpha`：**内核签名里有没有 `alpha` 这个实参**。tensor 变体的 add/sub/mul/div 都有。
+* `alpha_effective`：`alpha` 是否**真的改变结果**。只有 `add`/`sub` 的 tensor 变体是 True。
+  `mul`/`div` 的那个槽位**仍然必须传**（签名要求的），传任何值都会被忽略——照签名传 `1.0` 最省事。
+  `probes/199` §3 验过：`mul`/`div` 传 `alpha=0.0` 与 `1.0` 结果逐字节相同。
+
+只留 `has_alpha` 的话很容易得出「mul 可以少传一个参数」的结论，然后 launch 参数个数不符
+（`corex-triton` 的 driver 会报 `参数个数不符：签名要求 N 个`，还算不幸中的万幸）。
+
+### 12.4 验收：`probes/199_fastop_api.sh` PASS 29/29
+
+关键的一段是 **shim 模拟器**——它**只读 `fast_op()` 的返回值**，按表把实参填进
+指针/i32/f32 三个并行数组再 `launch`，然后与「直调 Python 算子」比对：
+
+```
+add/sub/mul/div × tensor/scalar × fp32/fp16/bf16  → 24/24 全部逐字节相等
+n = 4097（非 2 的幂、非 BLOCK 整数倍）
+```
+
+这就是 C++ 侧要做的事，所以等于先当了一次 C++。表若错位，24 组里必然有组算错。
+
+### 12.5 建议用法（C++ 侧伪代码，对应 `_register_fast_ops()`）
+
+```python
+for (op, variant) in elt.fast_variants():
+    if op not in elt.FASTPATH_OPS:
+        continue
+    for dtype in ("fp32", "fp16", "bf16"):
+        m = elt.get_launch_meta(op, dtype, variant)     # cubin + 全部启动参数
+        shim.load_kernel(op, variant, dtype, m["cubin"],
+                         num_warps=m["num_warps"], num_stages=m["num_stages"],
+                         n_ptrs=m["n_ptrs"], n_i32=m["n_i32"], n_f32=m["n_f32"],
+                         args=m["args"])                # ← 顺序以 args 为准
+        shim.set_grid(op, variant, dtype, "cdiv(n, block)", block=m["block"])
+```
+
+网格是 `cdiv(n, block)`（`fast_op()["grid_fn"]` 也能直接算，探针里就是这么用的）。
+`block` 与 `num_warps` 从 `get_launch_meta()` 拿，别在 C++ 里再抄一遍默认值——抄的那份会漂移。
