@@ -43,10 +43,39 @@ Triton 内核——那部分已经由姊妹仓库 [`corex-triton`](../corex-trit
 | `docs/01-APPROACH.md` | 路线、阶段划分、每阶段的验收口径、不做什么 |
 | `docs/02-RUNTIME-API.md` | CoreX 运行时可当「设备层」用的接口清单（ctypes 绑定面） |
 | `docs/03-TORCH28-API.md` | torch 2.8 的 PrivateUse1 扩展点盘点（必需清单 + 证据） |
-| `docs/04-TRITON-BRIDGE.md` | corex-triton 与外部 runtime 的解耦接缝 |
+| `docs/04-TRITON-BRIDGE.md` | corex-triton 与外部 runtime 的解耦接缝、算子层实测 |
+| `docs/05-DRIVER-CONSTRAINTS.md` | 驱动侧的硬禁用清单与本仓库的十条规矩 |
 | `probes/` | 编号探针脚本，全部可重放；结论回写进 `00-FACTS.md` |
 | `tools/remote.py` | 远端通道：登录节点执行 + 沙箱队列投递/收结果 |
-| `src/` | 后端实现（随阶段推进） |
+| `tools/build_shim.py` | 编 C++ shim（`src/csrc/corex_shim.cpp` → `src/corex_torch/_corex_shim.so`） |
+| `src/csrc/` | 分配器 + `DeviceGuardImplInterface` + Tensor factory（编译期零 CUDA 依赖） |
+| `src/corex_torch/_runtime.py` | ctypes 直连 CoreX `libcudart`：设备/显存/拷贝/流/事件（不 import torch） |
+| `src/corex_torch/_triton.py` | 接 `corex-triton` 的编译与启动（不 import torch） |
+| `src/corex_torch/_ops_elementwise.py` | 元素级算子（纯设备指针接口，不 import torch） |
+| `src/corex_torch/_device.py` | PrivateUse1 注册 + 首批 aten 实现 |
+
+## 一分钟跑起来（计算节点上）
+
+```bash
+# 1) torch 2.8 + triton 3.4（官方配对）
+python -m venv ~/venvs/corex28 && ~/venvs/corex28/bin/pip install torch==2.8.0 triton==3.4.0
+
+# 2) 编 C++ shim（登录节点即可，编译期不需要 CUDA）
+~/venvs/corex28/bin/python tools/build_shim.py
+
+# 3) 指向 corex-triton 的源码（它没打包安装）
+export COREX_TRITON_SRC=/path/to/coffin-repo/corex-triton/src
+
+# 4) 用
+import torch, corex_torch
+corex_torch.register()                 # 之后才有 torch.device("corex")
+x = torch.zeros(1024, device="corex")
+y = x + 1.0
+print(y.cpu())
+```
+
+验收脚本是 `probes/008_device_end_to_end.sh`（当前 `DEVICE_VERDICT PASS`），
+通过 `python tools/remote.py sbx-run probes/008_device_end_to_end.sh --name 008dev` 跑。
 
 ## 运行环境的三个前提
 

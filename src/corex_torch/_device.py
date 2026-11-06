@@ -351,6 +351,15 @@ def _register_ops() -> None:
     lib.impl("_local_scalar_dense", _local_scalar_dense_impl, "PrivateUse1")
     for op in ("add", "sub", "mul", "div"):
         lib.impl(f"{op}.out", _out_binary(op), "PrivateUse1")
+    # 第二批 aten（元数据类、规约、拼装）单独一个模块：它们要么靠 composite 自动成立、
+    # 要么需要逐个判断「为什么不交给 composite」，混在这个文件里会让注册表变成一锅粥。
+    # 模块还没写时不能阻塞设备，所以 import 失败只是少一批算子。
+    try:
+        from . import _aten_extra
+    except ImportError:
+        pass
+    else:
+        _aten_extra.register(lib)
 
 
 def _make_device_module() -> types.ModuleType:
