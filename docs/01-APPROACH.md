@@ -45,8 +45,9 @@
 | 1 | torch 2.8 CPU 在 `~/venvs/corex28` 可用 | **已完成**：`2.8.0+cpu`，`torch.cuda.is_available() == False`（`probes/100`） |
 | 2 | **立起设备**：`rename_privateuse1_backend("corex")` + 分配器 + 设备属性 + 流/事件 | **已完成**：`probes/008` `DEVICE_VERDICT PASS`——`torch.zeros(4, device="corex")`、`.cpu()` 往返逐字节相等、`.item()`、非连续 strides、4 MiB 填读回、`empty_cache` 全过 |
 | 3 | **元素级算子**（`add`/`sub`/`mul`/`div`/`fill`/`silu`/`copy`） | **已完成**：fp32 45/45、fp16 33/33、**bf16 33/33** 逐字节相等（`probes/170`、`171`、`192`）；add 295.5 GB/s = Triton 基线的 1.00x |
-| 4 | **推理最小算子集**：规约、`softmax`/`log_softmax`、`mm`/`bmm`、`rms_norm`/`layernorm`、`index_select`、激活、`max`/`argmax`、视图族 | **基本完成**：内核层与 torch 层各有一张表（`probes/180`–`196` 与 `009`、`017`）；缺口见下面「当前缺口」 |
-| 5 | **集成**：coffin 的一条最小前向在 torch 2.8 + corex 上跑通 | **未开始**。前置条件已备齐（设备 + 算子 + bf16 通路） |
+| 4 | **推理最小算子集**：规约、`softmax`/`log_softmax`、`mm`/`bmm`、`rms_norm`/`layernorm`、`index_select`、激活、`max`/`argmax`、视图族 | **已完成**：内核层 `probes/180`–`197`、torch 层 `009`/`017`/`021` 全绿；`probes/120` 覆盖 39/43，剩 4 项全是「非末维 `dim=0`」的归约/索引，按需再补 |
+| 5 | **集成**：coffin 的一条最小前向在 torch 2.8 + corex 上跑通 | **已验证到「逐步生成」这一层**：`probes/018` 两层 decoder 整段前向（全局相对 6.63e-06、argmax 1.000）；`probes/022` 增量 decode + KV cache（逐 token 最差 6.62e-06、argmax 6/6、cache 两次运行逐字节相同）。**尚未接 coffin 本体**（要真权重与 tokenizer） |
+| 6 | **性能** | **进行中**：decode `17.1 → 9.2 ms/步`（`probes/124` 的搬运路径重构）。当前天花板是「算子层是 Python」：C++ 快路径的 `mm` 只要 **3.1 µs**，而 Python 实现的算子 **67–127 µs**。下一步是把热路径算子也挪进 C++（照 `mm` 的 `TORCH_LIBRARY_IMPL` + `set_*_kernel` 模式） |
 
 阶段 2 之前不写任何算子代码：**设备层不通，算子层的一切数字都不可信**。
 

@@ -471,12 +471,16 @@ def _copy_impl(self, src, non_blocking: bool = False):
             memcpy(dst_base + dst_off, src_base, block_bytes, kind)
         return self
 
-    # 快路径 3：外层各维在母侧都「彼此紧挨」时，整个拷贝就是一条 memcpy2D
-    # （行数 = 外层元素个数，行宽 = run 个元素）。同步 cudaMemcpy 每次 5–13 µs，
-    # 这条把「N 条 memcpy」压成 1 条，`slice+contiguous` 这类走的就是它。
+    device_index = int(self.device.index or 0)
+
+    # 路径 A：目的后缀连续（dst 最内层若干维紧挨）——最优情形：一圈外层下标 + 一条 memcpy2D。
+    # `slice+contiguous`、`cat` 的相邻块都走这条。
     run, run_dims = _inner_run(self, src)
-    if run_dims > 0 and run_dims < self.dim():
+    if run_dims > 0:
         outer_dims = list(range(self.dim() - run_dims))
+        if not outer_dims:                       # 两侧都连续（理论上被路径 1 拦掉了）
+            memcpy(dst_base, src_base, total * item, kind)
+            return self
         packed = True
         for left, right in zip(outer_dims, outer_dims[1:]):
             if (dst_stride[left] != sizes[right] * dst_stride[right]
@@ -489,24 +493,62 @@ def _copy_impl(self, src, non_blocking: bool = False):
                 height *= sizes[dim]
             memcpy2d(dst_base, dst_stride[outer_dims[0]] * item,
                      src_base, src_stride[outer_dims[0]] * item,
-                     run * item, height, int(self.device.index or 0))
+                     run * item, height, device_index)
             return self
 
-    # 快路径 4：二维转置（解码路径里 ``k_.t().contiguous()`` 每步都出现）。
-    # 这种情形源沿最后一维「跳着取」，一次 memcpy 只能搬 1 个元素；一条 memcpy2D
-    # 能搬一整行（width=1 个元素、height=该维长度、src_pitch=源行距），
-    # 调用数从 numel 降到「目的行数」。**根治还是需要一条 gather 内核**（一次发射即可），
-    # 这条只是把「几千次同步 memcpy」压成「几十次」。
-    if (self.dim() == 2 and self.is_contiguous() and sizes[1] > 1
-            and src_stride[1] != 1 and src_stride[0] < src_stride[1]):
-        device_index = int(self.device.index or 0)
-        row_bytes = sizes[1] * item
-        for row in range(sizes[0]):
-            memcpy2d(dst_base + row * row_bytes, item,
-                     src_base + row * src_stride[0] * item, src_stride[1] * item,
-                     item, sizes[1], device_index)
+    # 路径 B0：源是「均匀步长视图」（每个非 size-1 维的 stride 都等于 k × 该维之后的元素数），
+    # 而目的连续。这时整个拷贝等价于「带源步长 k 的 1-D 拷贝」：一条 memcpy2D 就够
+    # （width=1 个元素、height=numel、src_pitch=k×item）。`x[..., 0::2]`、`x[::2]`
+    # 这类步长切片走这条：32 个元素从 160 µs（逐元素）降到 ~10 µs。
+    if self.is_contiguous() and total > 1:
+        uniform_step = None
+        ok_uniform = True
+        tail = 1
+        for dim in range(self.dim() - 1, -1, -1):
+            if sizes[dim] > 1:
+                if src_stride[dim] % tail != 0:
+                    ok_uniform = False
+                    break
+                step = src_stride[dim] // tail
+                if uniform_step is None:
+                    uniform_step = step
+                elif uniform_step != step:
+                    ok_uniform = False
+                    break
+            tail *= sizes[dim]
+        if ok_uniform and uniform_step is not None:
+            memcpy2d(dst_base, item, src_base, uniform_step * item, item, total, device_index)
+            return self
+
+    # 路径 B：目的后缀在源上不连续（转置 / 步长切片），但**源自己有一个最内层连续维**。
+    # 这条是 probes/022 那 2 ms 的正解：`[4,6,16].transpose(1,2)` 的源沿 h 维 stride=1，
+    # 于是一整段 h（16 个元素）能用一条 memcpy2D 搬到目的（目的里这 16 个元素步长是 6），
+    # 调用数从 numel(384) 降到 numel/16(24)。此前 `_inner_run` 只在「目的后缀」上找连续段，
+    # 一转置就退化成逐元素，每元素付 ~5 µs 的 Python + 同步 memcpy 固定成本。
+    src_inner = None
+    for dim in range(self.dim()):
+        if src_stride[dim] == 1 and sizes[dim] > 1:
+            src_inner = dim
+            break
+    if src_inner is not None:
+        run_len = sizes[src_inner]
+        outer_dims = [dim for dim in range(self.dim()) if dim != src_inner]
+        outer_shape = [sizes[dim] for dim in outer_dims]
+        dst_steps = [dst_stride[dim] for dim in outer_dims]
+        src_steps = [src_stride[dim] for dim in outer_dims]
+        step = dst_stride[src_inner]
+        for index in itertools.product(*[range(length) for length in outer_shape]):
+            dst_offset = 0
+            src_offset = 0
+            for i, dst_step, src_step in zip(index, dst_steps, src_steps):
+                dst_offset += i * dst_step
+                src_offset += i * src_step
+            memcpy2d(dst_base + dst_offset * item, step * item,
+                     src_base + src_offset * item, item, item, run_len, device_index)
         return self
-    # 通用路径：把「末尾连续的一段」合成一次 memcpy，外层按 stride 走。
+
+    # 路径 C：最坏情形——两侧都没有连续段（例如二维步长切片）。只能逐元素；保留它是为了
+    # 「不静默算错」，量级很难看（probes/124 有记录），真要快需要一条 gather 内核。
     outer_dims = list(range(self.dim() - run_dims))
     outer_shape = [sizes[dim] for dim in outer_dims]
     move_bytes = run * item
