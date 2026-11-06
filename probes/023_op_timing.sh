@@ -127,7 +127,7 @@ for _ in range(ITERS * 20):
     pass
 print(f"  {'空循环':46s} {1e6 * (time.perf_counter() - t0) / (ITERS * 20):9.3f} us")
 print("=== C. 分层拆解：同一个 add 走三层各多贵 ===")
-from corex_torch import _ops_elementwise, _triton as _t
+from corex_torch import _device, _ops_elementwise, _triton as _t
 
 N = 64
 pa = torch.empty(N, device="corex")
@@ -154,6 +154,39 @@ if k_obj is not None:
     timed("_triton.launch 裸调（同一内核）", launch_only, 200)
 timed("aten add（x1 + x1）", lambda: x1 + x1, 200)
 timed("aten mul 标量（x1 * 2.0）", lambda: x1 * 2.0, 200)
+
+print("=== D. 把「aten 回调」与「我们的实现体」拆开 ===")
+# 手法：用同一个 schema 重新注册一个**什么都不做**的实现，量出来的就是
+# 「aten 分发 + Python 回调」的纯成本；它与真实实现的差就是我们实现体的成本。
+_impl = _device._out_binary("add")
+_a = dev(torch.randn(4, DIM))
+_b = dev(torch.randn(4, DIM))
+_out = torch.empty(4, DIM, device="corex")
+
+
+def body_only():
+    _impl(_a, _b, out=_out)
+
+
+timed("只调我们的实现体（绕开 aten）", body_only, 500)
+
+
+def _noop_impl(self, other, *, alpha=1, out=None):
+    return out
+
+
+try:
+    lib = _device._state["library"]
+    lib.impl("add.out", _noop_impl, "PrivateUse1")
+    timed("aten add → 空实现（纯分发成本）", lambda: _a + _b, 500)
+except Exception as exc:                                # noqa: BLE001
+    print("  空实现注册失败:", type(exc).__name__, str(exc)[:80])
+finally:
+    # 把真实实现装回去，免得后面（如果有）量到假的数
+    try:
+        _device._state["library"].impl("add.out", _device._out_binary("add"), "PrivateUse1")
+    except Exception:                                   # noqa: BLE001
+        pass
 
 print("OP_TIMING_DONE")
 

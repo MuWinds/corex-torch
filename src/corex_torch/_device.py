@@ -380,6 +380,13 @@ def _out_binary(name: str):
             raise NotImplementedError(f"corex 的 {name}.out 要求显式 out")
         if not isinstance(other, torch.Tensor):
             return _scalar_out(name, self, other, alpha, out)
+        # **快路径**：三者同形、都连续、同设备——decode/训练里绝大多数调用都在这里。
+        # 为什么值得单独写：`torch.broadcast_shapes` 在 `probes/024` 的 profile 里每步被调 28 次、
+        # 自身耗时在 Python 侧排进前五；同形时它是恒等函数，白算一次元组还建了个 dict。
+        if (self.shape == other.shape and self.shape == out.shape
+                and self.is_contiguous() and other.is_contiguous() and out.is_contiguous()
+                and other.device == self.device and out.device == self.device):
+            return _out_binary_into(name, self, other, out, alpha)
         shape = tuple(torch.broadcast_shapes(self.shape, other.shape))
         if tuple(out.shape) != shape:
             raise NotImplementedError(

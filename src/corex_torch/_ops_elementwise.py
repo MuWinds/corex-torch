@@ -371,60 +371,70 @@ def _get_kernel(kind: str, dtype: str, op: Optional[int], block: int, num_warps:
     return kernel
 
 
-def _build_kernel(kind: str, dtype: str, op: Optional[int], block: int, num_warps: int):
-    """真正做编译的那一半（不带缓存）。"""
+def _signature(kind: str, dtype: str, op: Optional[int], block: int):
+    """内核签名的**单一真源**。
+
+    返回 ``(sig, cexpr, kernel_fn, what, check_dtype)``。``_build_kernel()`` 用它编译，
+    ``fast_op()`` 用它**派生**给 C++ 的实参顺序表——两边绝不各写一份。
+
+    为什么这点很重要：实参顺序错了不会报错，只会算错（``n`` 和 ``alpha`` 位置互换时，
+    前者当成 float 解释、后者当成长度，结果是错得离谱但"跑完了"）。所以顺序表必须是
+    **从签名数出来的**，而不是手写常量。
+    """
     ptr_ty = dtype_info(dtype)[0]
     out_dt = _tl_dtype(dtype)
     if kind == "binary":
         sig = {"a_ptr": ptr_ty, "b_ptr": ptr_ty, "out_ptr": ptr_ty, "n": "i32",
                "alpha": "fp32", "BLOCK": "constexpr", "OP": "constexpr",
                "OUT_DTYPE": "constexpr"}
-        cexpr = {"BLOCK": int(block), "OP": int(op), "OUT_DTYPE": out_dt}
-        kernel = _compile(_binary_kernel, sig, cexpr, dtype, num_warps, "binary")
-    elif kind == "scalar":
+        return sig, {"BLOCK": int(block), "OP": int(op), "OUT_DTYPE": out_dt}, \
+            _binary_kernel, "binary", dtype
+    if kind == "scalar":
         sig = {"a_ptr": ptr_ty, "out_ptr": ptr_ty, "n": "i32", "scalar": "fp32",
                "BLOCK": "constexpr", "OP": "constexpr", "OUT_DTYPE": "constexpr"}
-        cexpr = {"BLOCK": int(block), "OP": int(op), "OUT_DTYPE": out_dt}
-        kernel = _compile(_scalar_kernel, sig, cexpr, dtype, num_warps, "scalar")
-    elif kind == "fill":
+        return sig, {"BLOCK": int(block), "OP": int(op), "OUT_DTYPE": out_dt}, \
+            _scalar_kernel, "scalar", dtype
+    if kind == "fill":
         sig = {"out_ptr": ptr_ty, "n": "i32", "value": "fp32",
                "BLOCK": "constexpr", "OUT_DTYPE": "constexpr"}
-        cexpr = {"BLOCK": int(block), "OUT_DTYPE": out_dt}
-        kernel = _compile(_fill_kernel, sig, cexpr, dtype, num_warps, "fill")
-    elif kind == "silu":
+        return sig, {"BLOCK": int(block), "OUT_DTYPE": out_dt}, \
+            _fill_kernel, "fill", dtype
+    if kind == "silu":
         sig = {"a_ptr": ptr_ty, "out_ptr": ptr_ty, "n": "i32",
                "BLOCK": "constexpr", "OUT_DTYPE": "constexpr"}
-        cexpr = {"BLOCK": int(block), "OUT_DTYPE": out_dt}
-        kernel = _compile(_silu_kernel, sig, cexpr, dtype, num_warps, "silu")
-    elif kind == "copy":
+        return sig, {"BLOCK": int(block), "OUT_DTYPE": out_dt}, \
+            _silu_kernel, "silu", dtype
+    if kind == "copy":
         sig = {"src_ptr": ptr_ty, "dst_ptr": ptr_ty, "n": "i32", "BLOCK": "constexpr"}
-        cexpr = {"BLOCK": int(block)}
-        kernel = _compile(_copy_kernel, sig, cexpr, None, num_warps, "copy")
-    elif kind == "relu":
+        return sig, {"BLOCK": int(block)}, _copy_kernel, "copy", None
+    if kind == "relu":
         sig = {"a_ptr": ptr_ty, "out_ptr": ptr_ty, "n": "i32",
                "BLOCK": "constexpr", "OUT_DTYPE": "constexpr"}
-        cexpr = {"BLOCK": int(block), "OUT_DTYPE": out_dt}
-        kernel = _compile(_relu_kernel, sig, cexpr, dtype, num_warps, "relu")
-    elif kind == "rsqrt":
+        return sig, {"BLOCK": int(block), "OUT_DTYPE": out_dt}, \
+            _relu_kernel, "relu", dtype
+    if kind == "rsqrt":
         sig = {"a_ptr": ptr_ty, "out_ptr": ptr_ty, "n": "i32",
                "BLOCK": "constexpr", "OUT_DTYPE": "constexpr"}
-        cexpr = {"BLOCK": int(block), "OUT_DTYPE": out_dt}
-        kernel = _compile(_rsqrt_kernel, sig, cexpr, dtype, num_warps, "rsqrt")
-    elif kind == "gelu":
+        return sig, {"BLOCK": int(block), "OUT_DTYPE": out_dt}, \
+            _rsqrt_kernel, "rsqrt", dtype
+    if kind == "gelu":
         # ``op`` 槽位装 MODE（0=erf 精确版 / 1=tanh 近似版），两种形式共用一条内核。
         sig = {"a_ptr": ptr_ty, "out_ptr": ptr_ty, "n": "i32",
                "BLOCK": "constexpr", "OUT_DTYPE": "constexpr", "MODE": "constexpr"}
-        cexpr = {"BLOCK": int(block), "OUT_DTYPE": out_dt, "MODE": int(op)}
-        kernel = _compile(_gelu_kernel, sig, cexpr, dtype, num_warps,
-                          f"gelu(mode={int(op)})")
-    elif kind == "masked_fill":
+        return sig, {"BLOCK": int(block), "OUT_DTYPE": out_dt, "MODE": int(op)}, \
+            _gelu_kernel, f"gelu(mode={int(op)})", dtype
+    if kind == "masked_fill":
         sig = {"a_ptr": ptr_ty, "mask_ptr": "*i8", "out_ptr": ptr_ty, "n": "i32",
                "value": "fp32", "BLOCK": "constexpr", "OUT_DTYPE": "constexpr"}
-        cexpr = {"BLOCK": int(block), "OUT_DTYPE": out_dt}
-        kernel = _compile(_masked_fill_kernel, sig, cexpr, dtype, num_warps, "masked_fill")
-    else:
-        raise ValueError(f"未知内核种类 {kind!r}")
-    return kernel
+        return sig, {"BLOCK": int(block), "OUT_DTYPE": out_dt}, \
+            _masked_fill_kernel, "masked_fill", dtype
+    raise ValueError(f"未知内核种类 {kind!r}")
+
+
+def _build_kernel(kind: str, dtype: str, op: Optional[int], block: int, num_warps: int):
+    """真正做编译的那一半（不带缓存）。"""
+    sig, cexpr, fn, what, check_dtype = _signature(kind, dtype, op, block)
+    return _compile(fn, sig, cexpr, check_dtype, num_warps, what)
 
 
 # --------------------------------------------------------------------------- #
@@ -672,6 +682,170 @@ def masked_fill(a_ptr, mask_ptr, out_ptr, n: int, dtype: str, value: float, *,
 
 
 # --------------------------------------------------------------------------- #
+# 给 C++ 快路径的稳定入口（语义化，不暴露内部参数）
+# --------------------------------------------------------------------------- #
+
+#: 语义名字 → (内核种类, constexpr 槽位)。
+#:
+#: **``variant`` 只区分 Tensor / Scalar 两种变体**（C++ 侧按 (op, dtype, variant) 登记）。
+#: ``gelu`` 的 erf/tanh 不是 variant，而是单独的关键字 ``mode``——两者是**同一个** (op, variant)
+#: 下的两种数学形式，混进 variant 会让「变体」这个词失去意义。
+_SEMANTIC: Dict[Tuple[str, str], Tuple[str, Optional[int]]] = {
+    ("add", "tensor"): ("binary", _OP_ADD),
+    ("sub", "tensor"): ("binary", _OP_SUB),
+    ("mul", "tensor"): ("binary", _OP_MUL),
+    ("div", "tensor"): ("binary", _OP_DIV),
+    ("add", "scalar"): ("scalar", _OP_ADD),
+    ("sub", "scalar"): ("scalar", _OP_SUB),
+    ("mul", "scalar"): ("scalar", _OP_MUL),
+    ("div", "scalar"): ("scalar", _OP_DIV),
+    ("fill", "tensor"): ("fill", None),
+    ("silu", "tensor"): ("silu", None),
+    ("copy", "tensor"): ("copy", None),
+    ("relu", "tensor"): ("relu", None),
+    ("rsqrt", "tensor"): ("rsqrt", None),
+    ("gelu", "tensor"): ("gelu", None),      # opcode 由 mode 决定，见 fast_op()
+    ("masked_fill", "tensor"): ("masked_fill", None),
+}
+
+#: 真正进 C++ 快路径的那批（其余也登记在 _SEMANTIC 里，方便以后一起挪）。
+FASTPATH_OPS: Tuple[str, ...] = ("add", "sub", "mul", "div")
+
+
+def _resolve(op: str, variant: str, mode: str) -> Tuple[str, Optional[int]]:
+    """把 (语义名, 变体, mode) 解析成 (内核种类, constexpr 槽位)。"""
+    key = (op, variant)
+    if key not in _SEMANTIC:
+        raise NotImplementedError(
+            f"没有 (op={op!r}, variant={variant!r}) 这个组合；"
+            f"可用的是 {sorted(_SEMANTIC)}")
+    kind, slot = _SEMANTIC[key]
+    if kind == "gelu":
+        if mode not in GELU_MODES:
+            raise ValueError(f"gelu 的 mode 只支持 {sorted(GELU_MODES)}，收到 {mode!r}")
+        slot = GELU_MODES[mode]
+    return kind, slot
+
+
+def fast_variants() -> Tuple[Tuple[str, str], ...]:
+    """所有已登记的 ``(op, variant)`` 组合，按名字排序。
+
+    C++ 侧生成注册表时应当**遍历这个**而不是自己写死列表——写死的那份一定会漂移。
+    """
+    return tuple(sorted(_SEMANTIC))
+
+
+def fast_op(op: str, dtype: str = "fp32", variant: str = "tensor", *, mode: str = "erf",
+            block: Optional[int] = None,
+            num_warps: Optional[int] = None) -> Dict[str, Any]:
+    """该 ``(op, variant, dtype)`` 的**实参顺序表**（不编译、不碰卡）。
+
+    这是给 C++ 侧填「三个并行数组」用的机器可读描述。所有字段都从
+    :func:`_signature` 的签名**数出来**，不是手写常量（原因见 :func:`_signature`）。
+
+    Returns:
+        字典，关键字段：
+
+        * ``args``：**有序**的 ``((角色, 类别), …)``，类别是 ``"ptr"`` / ``"i32"`` / ``"f32"``。
+          按这个顺序填参就不会错位。
+        * ``n_ptrs`` / ``n_i32`` / ``n_f32``：三类实参的个数（C++ 的三个并行数组长度）。
+        * ``has_alpha``：**内核签名里有没有 alpha 这个实参**。
+        * ``alpha_effective``：alpha **是否真的改变数学结果**（只有 add/sub 是 True；
+          mul/div 的内核签名里仍有 alpha 槽位，但传任何值都被忽略——照签名传 1.0 即可）。
+          两者分开报是刻意的：只看 ``has_alpha`` 会让人以为 mul/div 可以少传一个参数。
+        * ``ptr_roles`` / ``f32_roles`` / ``ptr_types``：指针的角色（``a``/``b``/``out``…）
+          与 Triton 类型串（``mask`` 是 ``*i8``），用于 C++ 侧的断言与日志。
+        * ``block`` / ``num_warps`` / ``grid_formula`` / ``grid_fn(n)``：启动参数。
+        * ``kernel_kind`` / ``opcode``：内部槽位（排查用，C++ 不需要它）。
+    """
+    blk = int(block or DEFAULT_BLOCK)
+    warps = int(num_warps or DEFAULT_NUM_WARPS)
+    kind, slot = _resolve(op, variant, mode)
+    sig, _cexpr, _fn, _what, _check = _signature(kind, dtype, slot, blk)
+
+    runtime = [(name, ty) for name, ty in sig.items() if ty != "constexpr"]
+    ptrs = [(name, ty) for name, ty in runtime if ty.startswith("*")]
+    i32s = [name for name, ty in runtime if ty in ("i32", "i64")]
+    f32s = [name for name, ty in runtime if ty == "fp32"]
+
+    def role(name: str) -> str:
+        """``a_ptr`` → ``a``，``mask_ptr`` → ``mask``（去掉 ``_ptr`` 后缀，便于阅读）。"""
+        return name[:-4] if name.endswith("_ptr") else name
+
+    args: Tuple[Tuple[str, str], ...] = tuple(
+        (role(n), "ptr" if ty.startswith("*") else ("i32" if ty in ("i32", "i64") else "f32"))
+        for n, ty in runtime)
+
+    return {
+        "op": op, "variant": variant, "dtype": dtype, "mode": mode,
+        "kernel_kind": kind, "opcode": slot,
+        "args": args,
+        "n_ptrs": len(ptrs), "n_i32": len(i32s), "n_f32": len(f32s),
+        "has_alpha": "alpha" in [role(n) for n, _ in ptrs]
+                     or "alpha" in [role(n) for n in i32s + f32s],
+        # 只有 **tensor 变体的 add/sub** 里 alpha 才真的改变数学结果。scalar 变体没有 alpha
+        # 这个实参（它有 `scalar`），所以这里必须是 False——否则会和 has_alpha 自相矛盾
+        # （`has_alpha=False` 却 `alpha_effective=True`），正是容易看错的那一类。
+        "alpha_effective": (variant == "tensor" and op in ("add", "sub")),
+        "ptr_roles": tuple(role(n) for n, _ in ptrs),
+        "f32_roles": tuple(role(n) for n in f32s),
+        "i32_roles": tuple(role(n) for n in i32s),
+        "ptr_types": tuple(ty for _, ty in ptrs),
+        "block": blk, "num_warps": warps,
+        "grid_formula": "cdiv(n, block)",
+        "grid_fn": lambda n, _b=blk: ((int(n) + _b - 1) // _b,),
+    }
+
+
+def get_kernel(op: str, dtype: str, variant: str = "tensor", *, mode: str = "erf",
+               block: Optional[int] = None, num_warps: Optional[int] = None):
+    """按**语义名字**取编译好的内核（带缓存），返回 `CompiledKernel`。
+
+    这是给 C++ 侧 ``shim.load_kernel`` 用的入口：``get_kernel("add","fp16","scalar")``。
+    ``kernel.asm["cubin"]`` 就是要喂给 ``load_kernel`` 的字节串。
+
+    Raises:
+        NotImplementedError: ``(op, variant)`` 组合不存在，或该 dtype 的内核编不过且属于
+            「工具链不支持」类。
+        RuntimeError: 其它编译失败（真 bug）。
+    """
+    blk = int(block or DEFAULT_BLOCK)
+    warps = int(num_warps or DEFAULT_NUM_WARPS)
+    kind, slot = _resolve(op, variant, mode)
+    return _get_kernel(kind, dtype, slot, blk, warps)
+
+
+def get_cubin(op: str, dtype: str, variant: str = "tensor", *, mode: str = "erf") -> bytes:
+    """``get_kernel(...).asm["cubin"]`` 的便捷写法。"""
+    return get_kernel(op, dtype, variant, mode=mode).asm["cubin"]
+
+
+def get_launch_meta(op: str, dtype: str, variant: str = "tensor", *, mode: str = "erf",
+                    block: Optional[int] = None,
+                    num_warps: Optional[int] = None) -> Dict[str, Any]:
+    """一次性拿到 C++ 侧 ``load_kernel`` 需要的全部东西：cubin + 启动参数。
+
+    比让 C++ 侧自己拼 ``num_warps`` 安全：那些值得从已编译内核的 metadata 里读，
+    而不是再抄一遍默认值。
+    """
+    kernel = get_kernel(op, dtype, variant, mode=mode, block=block, num_warps=num_warps)
+    md = kernel.metadata
+    recipe = fast_op(op, dtype, variant, mode=mode, block=block, num_warps=num_warps)
+    return {
+        "cubin": kernel.asm["cubin"],
+        "name": getattr(kernel, "name", ""),
+        "num_warps": int(getattr(md, "num_warps", recipe["num_warps"])),
+        "num_stages": int(getattr(md, "num_stages", 1)),
+        "shared": int(getattr(md, "shared", 0)),
+        "block": recipe["block"],
+        "args": recipe["args"],
+        "n_ptrs": recipe["n_ptrs"], "n_i32": recipe["n_i32"], "n_f32": recipe["n_f32"],
+        "has_alpha": recipe["has_alpha"], "alpha_effective": recipe["alpha_effective"],
+        "ptr_roles": recipe["ptr_roles"], "ptr_types": recipe["ptr_types"],
+    }
+
+
+# --------------------------------------------------------------------------- #
 # 自省（探针用；不属于 aten 契约）
 # --------------------------------------------------------------------------- #
 
@@ -691,5 +865,8 @@ __all__ = [
     "add", "sub", "mul", "div",
     "add_scalar", "sub_scalar", "mul_scalar", "div_scalar",
     "fill", "silu", "copy", "relu", "rsqrt", "gelu", "masked_fill",
+    # ---- C++ 快路径用的稳定入口（语义化）----
+    "FASTPATH_OPS", "fast_variants", "fast_op", "get_kernel", "get_cubin",
+    "get_launch_meta",
     "dtype_info", "itemsize", "traffic_bytes", "cache_info", "clear_cache",
 ]

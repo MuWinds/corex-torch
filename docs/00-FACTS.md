@@ -632,3 +632,34 @@ argmax 6/6、KV cache 逐字节稳定）；`probes/018` 整段前向 56.2 ms 不
 剩下的 9.2 ms/步 ≈ 31 个算子 × ~300 µs，仍高于「纯 Python 分发地板 ≈70–80 µs」。
 方向已明确（下一阶段）：**把热路径算子照 `mm` 的模式挪进 C++**——`TORCH_LIBRARY_IMPL` + 
 `set_*_kernel` 登记内核句柄。判据是「同一算子的 p50 从 ~78 µs 掉到个位数」。
+
+## 32. decode 的 9.2 ms/步是「一千次小调用」，没有单点热点（`probes/024`）
+
+用 cProfile 跑 4 步 decode，按**自身耗时**排序——**最大的单项只占 0.005 s/4 步**，榜单上全是
+0.001–0.003 s 的小函数，189 个函数分摊。所以「优化某个算子」这条路走不通，要看**调用次数**：
+
+| 每步调用次数 | 函数 | 来源 |
+| --- | --- | --- |
+| **1525** | `isinstance` | 我们各层的类型检查 |
+| **265** | `ctypes.cast` / `c_void_p` | `_runtime` 每次拷贝/memset 重建指针对象 |
+| **80** | `_device._empty_impl` | 每个算子都要分配输出 |
+| **44** | `_triton.launch` | 每次内核启动 |
+| **42** | `_aten_extra._copy_impl` | `.contiguous()` / 切片写 / cat / 广播物化 |
+| **28** | `torch.broadcast_shapes` | `_out_binary` 每条二元算子 |
+| **21** | `_device._copy_from_impl` | 拷贝 |
+
+也就是一步 decode 里**有五千次以上的 Python 级调用**，每次哪怕只要 1–2 µs，加起来就是 5–10 ms。
+这和「C++ 快路径的 `mm` 只要 3.1 µs、而 Python 实现的算子要 78 µs」是同一件事的两面。
+
+**两条已试过的弱优化（都不解决根本问题）**：
+
+* `_out_binary` 加同形快路径（跳过 `broadcast_shapes`）：decode 仍是 **9.2 ms/步**，无变化。
+  印证了 profile 的结论——省 28 次调用不够，要省的是上千次。
+* 搬运路径重构（torch28 的 `memcpy2d`）：17.1 → 9.2 ms/步，这是真收益，因为它把
+  「每次拷贝数条 Python 调用」压成了 1 条。
+
+**结论（下阶段的依据）**：要再往下走只有两条路，都得动结构而不是动实现：
+1. **把热路径算子搬进 C++**（照 `mm` 的 `TORCH_LIBRARY_IMPL` + `set_*_kernel`）；
+   它一次消掉「aten 回调 25 µs + 我们实现体 25 µs + launch 打包」三层。
+2. **减少算子/拷贝的次数**（融合：RoPE 不必用切片写、rms_norm 的 `pow/mean/rsqrt` 已直接接管、
+   残差 add 可以与下一个算子合并），这一条要改模型侧代码，属于 coffin 集成阶段的事。
