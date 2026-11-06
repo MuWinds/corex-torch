@@ -210,15 +210,19 @@ if triton is not None:
         row = tl.program_id(0)
         base = row * cols
         offs = tl.arange(0, BLOCK)
-        # 初值用真实元素，best 初始 0（第 0 个元素就是「目前的第一个最大」）
+        # 初值用真实元素，best 初始 0（第 0 个元素就是「目前的第一个最大」）。
+        # 三个量都必须保持**标量**语义：`cand` 容易顺手写成向量（它由 `tl.where(cond, v, m)`
+        # 得到），那样 `tl.where(cand > m, ...)` 会把 `best` 也撑成 BLOCK 维向量，Triton 立刻
+        # 报 "Loop-carried variable best has initial type int32 but is re-assigned to <[1024]>"。
         m = tl.load(a_ptr + base).to(tl.float32)
         best = 0
         for c0 in range(0, cols, BLOCK):
             idx = c0 + offs
             valid = idx < cols
             v = tl.load(a_ptr + base + tl.minimum(idx, cols - 1)).to(tl.float32)
-            bigger = valid & (v > m)
-            cand = tl.where(bigger, v, m)
+            # 本块（连同已有的 m）里的最大值：标量
+            cand = tl.max(tl.where(valid, v, m), axis=0)
+            # 块内第一个等于 cand 的下标；用运行期哨兵 cols（大于任何合法下标）
             i_first = tl.min(tl.where(valid & (v == cand), idx, cols), axis=0)
             best = tl.where(cand > m, i_first, best)
             m = cand

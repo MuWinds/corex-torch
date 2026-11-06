@@ -229,6 +229,83 @@ if triton is not None:
         tl.store(dst_ptr + off, v, mask=mask)
 
 
+    @triton.jit
+    def _relu_kernel(a_ptr, out_ptr, n, BLOCK: tl.constexpr, OUT_DTYPE: tl.constexpr):
+        """``out = max(x, 0)``。
+
+        ``0.0`` 是**零**常量（LLVM 打成 ``zeroinitializer``），不会撞 ``splat (float 0.0)``
+        的语法问题（§7.2）。原地（``out_ptr == a_ptr``）安全：每个 lane 只读自己那个元素。
+        """
+        off = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+        mask = off < n
+        v = tl.load(a_ptr + off, mask=mask)
+        tl.store(out_ptr + off, tl.maximum(v, 0.0).to(OUT_DTYPE), mask=mask)
+
+    @triton.jit
+    def _rsqrt_kernel(a_ptr, out_ptr, n, BLOCK: tl.constexpr, OUT_DTYPE: tl.constexpr):
+        """``out = 1/sqrt(x)``。
+
+        **为什么是 ``1.0 / tl.sqrt(x)`` 而不是 ``tl.math.rsqrt(x)``**：后者在 Triton 3.4 里落成
+        ``%59 = tail call float @llvm.nvvm.rsqrt.approx.ftz.f(float %43)``，而 corex-triton 的
+        改写表里**没有登记**这个 intrinsic，直接抛 PortError（实测原文：
+        ``未登记的 NVVM intrinsic 调用：%59 = tail call float @llvm.nvvm.rsqrt.approx.ftz.f``）。
+        要么改 corex-triton 的模板，要么换一条已经验证过的路——``tl.sqrt`` 是本仓库
+        ``rms_norm``/``layernorm`` 一直在用的（``probes/180``/``182``/``192`` 都跑通了），
+        所以这里用 ``1/sqrt``：多一次 ``div.rn``、多一次舍入，换来零新增 intrinsic。
+
+        数值口径：``sqrt.approx`` + ``div.rn`` 合计约 2 ulp fp32，**不承诺逐字节相等**，
+        探针按 max_rel 判（``probes/196`` §1）。
+        """
+        off = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+        mask = off < n
+        f = tl.load(a_ptr + off, mask=mask).to(tl.float32)
+        tl.store(out_ptr + off, (1.0 / tl.sqrt(f)).to(OUT_DTYPE), mask=mask)
+
+    @triton.jit
+    def _gelu_kernel(a_ptr, out_ptr, n, BLOCK: tl.constexpr, OUT_DTYPE: tl.constexpr,
+                     MODE: tl.constexpr):
+        """GELU 两种形式（``MODE=0`` erf 精确版，``MODE=1`` tanh 近似版）。
+
+        * ``MODE=0``（aten 的 ``approximate="none"``）：
+          ``0.5 * x * (1 + erf(x / sqrt(2)))``；``erf`` 走 ``tl.math.erf``
+          （libdevice ``__nv_erff``，``corex-triton/docs/00-FACTS.md`` §11 验过 erf 6/6）。
+        * ``MODE=1``（``approximate="tanh"``）：
+          ``0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 x^3)))``。
+
+        **为什么 tanh 用 exp 现推而不是调 libdevice**：Triton 3.4 的 ``tl.math`` 里**没有**
+        ``tanh``（实测 ``hasattr(tl.math, "tanh") == False``，而 ``erf``/``rsqrt``/``log`` 都有）。
+        用 ``tanh(z) = 2/(1+exp(-2z)) - 1`` 只需要已经验证过的 ``tl.exp``，不必再赌
+        ``libdevice`` 模块在 jit 作用域里能否解析。代价是多两次舍入，而 tanh 近似本身与精确
+        GELU 就差 ~1e-3 量级，这两次舍入被它完全盖住。
+        """
+        off = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+        mask = off < n
+        f = tl.load(a_ptr + off, mask=mask).to(tl.float32)
+        if MODE == 0:
+            y = 0.5 * f * (1.0 + tl.math.erf(f * 0.7071067811865476))
+        else:
+            z = 0.7978845608028654 * (f + 0.044715 * f * f * f)
+            t = 2.0 / (1.0 + tl.exp(-2.0 * z)) - 1.0
+            y = 0.5 * f * (1.0 + t)
+        tl.store(out_ptr + off, y.to(OUT_DTYPE), mask=mask)
+
+    @triton.jit
+    def _masked_fill_kernel(a_ptr, mask_ptr, out_ptr, n, value,
+                            BLOCK: tl.constexpr, OUT_DTYPE: tl.constexpr):
+        """``out = where(mask, value, x)``（``aten::masked_fill_.Scalar``）。
+
+        ``mask`` 是 **bool 张量**（每元素 1 字节、值只有 0/1），所以按 ``*i8`` 读、用
+        ``m != 0`` 判真——0 是零常量，安全。``value`` 与 ``fill`` 一样是 fp32 标量，
+        存回时收窄到张量 dtype（bf16/fp16 的收窄由 ``_bf16`` 改写层处理）。
+        原地（``out_ptr == a_ptr``）安全。
+        """
+        off = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+        mask = off < n
+        m = tl.load(mask_ptr + off, mask=mask)
+        v = tl.load(a_ptr + off, mask=mask)
+        tl.store(out_ptr + off, tl.where(m != 0, value.to(OUT_DTYPE), v), mask=mask)
+
+
 #: 已编译内核算缓存：``(内核名, dtype, op, BLOCK, num_warps) → CompiledKernel``。
 _KERNEL_CACHE: Dict[Tuple[Any, ...], Any] = {}
 
@@ -323,6 +400,28 @@ def _build_kernel(kind: str, dtype: str, op: Optional[int], block: int, num_warp
         sig = {"src_ptr": ptr_ty, "dst_ptr": ptr_ty, "n": "i32", "BLOCK": "constexpr"}
         cexpr = {"BLOCK": int(block)}
         kernel = _compile(_copy_kernel, sig, cexpr, None, num_warps, "copy")
+    elif kind == "relu":
+        sig = {"a_ptr": ptr_ty, "out_ptr": ptr_ty, "n": "i32",
+               "BLOCK": "constexpr", "OUT_DTYPE": "constexpr"}
+        cexpr = {"BLOCK": int(block), "OUT_DTYPE": out_dt}
+        kernel = _compile(_relu_kernel, sig, cexpr, dtype, num_warps, "relu")
+    elif kind == "rsqrt":
+        sig = {"a_ptr": ptr_ty, "out_ptr": ptr_ty, "n": "i32",
+               "BLOCK": "constexpr", "OUT_DTYPE": "constexpr"}
+        cexpr = {"BLOCK": int(block), "OUT_DTYPE": out_dt}
+        kernel = _compile(_rsqrt_kernel, sig, cexpr, dtype, num_warps, "rsqrt")
+    elif kind == "gelu":
+        # ``op`` 槽位装 MODE（0=erf 精确版 / 1=tanh 近似版），两种形式共用一条内核。
+        sig = {"a_ptr": ptr_ty, "out_ptr": ptr_ty, "n": "i32",
+               "BLOCK": "constexpr", "OUT_DTYPE": "constexpr", "MODE": "constexpr"}
+        cexpr = {"BLOCK": int(block), "OUT_DTYPE": out_dt, "MODE": int(op)}
+        kernel = _compile(_gelu_kernel, sig, cexpr, dtype, num_warps,
+                          f"gelu(mode={int(op)})")
+    elif kind == "masked_fill":
+        sig = {"a_ptr": ptr_ty, "mask_ptr": "*i8", "out_ptr": ptr_ty, "n": "i32",
+               "value": "fp32", "BLOCK": "constexpr", "OUT_DTYPE": "constexpr"}
+        cexpr = {"BLOCK": int(block), "OUT_DTYPE": out_dt}
+        kernel = _compile(_masked_fill_kernel, sig, cexpr, dtype, num_warps, "masked_fill")
     else:
         raise ValueError(f"未知内核种类 {kind!r}")
     return kernel
@@ -487,6 +586,91 @@ def copy(src_ptr, dst_ptr, n: int, dtype: str, *,
     _triton.launch(kernel, _grid(n, block), src_ptr, dst_ptr, int(n), stream=stream)
 
 
+def _run_unary(kind: str, op: Optional[int], a_ptr, out_ptr, n: int, dtype: str,
+               block: Optional[int], num_warps: Optional[int],
+               stream: Optional[int]) -> None:
+    """一元算子的公共实现（relu / rsqrt / gelu 共用）。"""
+    _check_n(n)
+    dtype_info(dtype)
+    if n == 0:
+        return
+    blk = int(block or DEFAULT_BLOCK)
+    kernel = _get_kernel(kind, dtype, op, blk, int(num_warps or DEFAULT_NUM_WARPS))
+    _triton.launch(kernel, _grid(n, blk), a_ptr, out_ptr, int(n), stream=stream)
+
+
+def relu(a_ptr, out_ptr, n: int, dtype: str, *,
+         block: Optional[int] = None, num_warps: Optional[int] = None,
+         stream: Optional[int] = None) -> None:
+    """``out = max(x, 0)``（``aten::relu`` / ``aten::relu_``）。
+
+    原地就是传 ``out_ptr == a_ptr``（``relu_`` 直接这么调），每个 lane 只读自己那个元素，
+    跨 lane 无依赖，安全。判据是**逐字节相等**：``max`` 没有舍入。
+    """
+    _run_unary("relu", None, a_ptr, out_ptr, n, dtype, block, num_warps, stream)
+
+
+def rsqrt(a_ptr, out_ptr, n: int, dtype: str, *,
+          block: Optional[int] = None, num_warps: Optional[int] = None,
+          stream: Optional[int] = None) -> None:
+    """``out = 1/sqrt(x)``（``aten::rsqrt`` / ``aten::rsqrt.out``）。
+
+    **不承诺逐字节相等**：实现是 ``1.0 / tl.sqrt(x)``（``sqrt.approx`` + ``div.rn``，约 2 ulp），
+    与 CPU 的 ``1/sqrt`` 有 1e-7 量级的相对差。探针按 max_rel 判。
+    （``tl.math.rsqrt`` 在这张卡上走不通——落在未登记的 ``nvvm.rsqrt.approx.ftz`` 上，
+    见 ``_rsqrt_kernel`` 的注释。）
+    """
+    _run_unary("rsqrt", None, a_ptr, out_ptr, n, dtype, block, num_warps, stream)
+
+
+#: ``gelu`` 的两种近似方式 → 内核里的 ``MODE``。
+GELU_MODES = {"erf": 0, "tanh": 1}
+
+
+def gelu(a_ptr, out_ptr, n: int, dtype: str, mode: str = "erf", *,
+         block: Optional[int] = None, num_warps: Optional[int] = None,
+         stream: Optional[int] = None) -> None:
+    """``aten::gelu`` / ``aten::gelu.out``。
+
+    Args:
+        mode: ``"erf"``（默认，aten 的 ``approximate="none"``，用 ``tl.math.erf``）或
+            ``"tanh"``（``approximate="tanh"``）。两种形式共用一条内核，靠 constexpr 分叉。
+
+    **不承诺逐字节相等**：两种形式都要算超越函数（``erf`` 经 libdevice、tanh 经
+    ``ex2.approx`` 现推），探针按 max_abs/max_rel 判，并**分别对各自的数学形式**取参照
+    （tanh 版不与精确 GELU 比，否则测的是近似误差而不是实现误差）。
+    """
+    if mode not in GELU_MODES:
+        raise ValueError(f"gelu 的 mode 只支持 {sorted(GELU_MODES)}，收到 {mode!r}")
+    _run_unary("gelu", GELU_MODES[mode], a_ptr, out_ptr, n, dtype,
+               block, num_warps, stream)
+
+
+def masked_fill(a_ptr, mask_ptr, out_ptr, n: int, dtype: str, value: float, *,
+                block: Optional[int] = None, num_warps: Optional[int] = None,
+                stream: Optional[int] = None) -> None:
+    """``out = where(mask, value, x)``（``aten::masked_fill_.Scalar`` / ``masked_fill.Scalar``）。
+
+    Args:
+        mask_ptr: **bool 张量**的指针（每元素 1 字节，torch 里 bool 的 element_size 就是 1）。
+            这里固定按 ``*i8`` 读、``m != 0`` 判真，所以上层不需要传 mask 的 dtype。
+        value: 标量，fp32 传入（与 aten 的 ``Scalar`` 提升一致）。
+        out_ptr: 可与 ``a_ptr`` 相同（``masked_fill_`` 就地改，原地安全）。
+
+    判据：**逐字节相等**（选值不是算术，没有舍入；bf16/fp16 的 ``value`` 收窄是唯一的
+    转换，且与 torch 的 ``static_cast<bf16>(value)`` 同一次 RNE）。
+    """
+    _check_n(n)
+    dtype_info(dtype)
+    if n == 0:
+        return
+    blk = int(block or DEFAULT_BLOCK)
+    kernel = _get_kernel("masked_fill", dtype, None, blk,
+                         int(num_warps or DEFAULT_NUM_WARPS))
+    _triton.launch(kernel, _grid(n, blk), a_ptr, mask_ptr, out_ptr, int(n),
+                   float(value), stream=stream)
+
+
 # --------------------------------------------------------------------------- #
 # 自省（探针用；不属于 aten 契约）
 # --------------------------------------------------------------------------- #
@@ -503,9 +687,9 @@ def clear_cache() -> None:
 
 
 __all__ = [
-    "DTYPES", "DEFAULT_BLOCK", "DEFAULT_NUM_WARPS",
+    "DTYPES", "DEFAULT_BLOCK", "DEFAULT_NUM_WARPS", "GELU_MODES",
     "add", "sub", "mul", "div",
     "add_scalar", "sub_scalar", "mul_scalar", "div_scalar",
-    "fill", "silu", "copy",
+    "fill", "silu", "copy", "relu", "rsqrt", "gelu", "masked_fill",
     "dtype_info", "itemsize", "traffic_bytes", "cache_info", "clear_cache",
 ]

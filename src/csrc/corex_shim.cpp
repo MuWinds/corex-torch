@@ -821,6 +821,9 @@ struct KernelEntry {
   void* function = nullptr;
   std::string spec;   ///< 逐字符：`p`=设备指针(int64) `f`=float `i`=int32 `I`=int64
   std::string name;
+  /// 动态 shared 字节数。**不能想当然给 0**：Triton 的 `tl.dot` 会为布局转换申请 shared，
+  /// 少给会让内核读写到「它以为存在」的 shared，结果错但不报错（2026-11-07 非方阵 mm 就是这么错的）。
+  int64_t shared = 0;
 };
 
 std::mutex g_kernel_mutex;
@@ -981,12 +984,13 @@ void check_cu(const char* what, int code) {
 /// @param spec 实参类型串：`p`=设备指针 `f`=float `i`=int32 `I`=int64，按内核形参顺序。
 /// @return 句柄（>0），传给 `launch`。
 int64_t load_kernel(const std::string& cubin, const std::string& kernel_name,
-                    const std::string& spec) {
+                    const std::string& spec, int64_t shared_bytes) {
   TORCH_CHECK(!cubin.empty(), "corex_shim: load_kernel 收到空 cubin");
   TORCH_CHECK(!kernel_name.empty(), "corex_shim: load_kernel 收到空内核名");
   size_t key = fnv1a(cubin.data(), cubin.size(), static_cast<size_t>(1469598103934665603ULL));
   key = fnv1a(kernel_name.data(), kernel_name.size(), key);
   key = fnv1a(spec.data(), spec.size(), key);
+  key = fnv1a(&shared_bytes, sizeof(shared_bytes), key);
 
   std::lock_guard<std::mutex> lock(g_kernel_mutex);
   auto found = g_kernels.find(key);
@@ -999,6 +1003,7 @@ int64_t load_kernel(const std::string& cubin, const std::string& kernel_name,
   auto* entry = new KernelEntry();
   entry->spec = spec;
   entry->name = kernel_name;
+  entry->shared = shared_bytes;
   check_cu("cuModuleLoadData", api_ref.cuModuleLoadData(&entry->module, cubin.data()));
   check_cu("cuModuleGetFunction",
            api_ref.cuModuleGetFunction(&entry->function, entry->module, kernel_name.c_str()));
@@ -1133,6 +1138,10 @@ struct MmKernel {
   int64_t block_n = 0;    ///< 分块列数。
   int64_t block_k = 0;    ///< 分块归约深度。
   int64_t num_warps = 1;  ///< 每块 warp 数（blockDim = warps*32）。
+  /// 动态 shared 字节数；`-1` = 用装载时记下的那个值。
+  /// 为什么允许在这里覆盖：Python 侧可能忘了给 `load_kernel` 传 metadata.shared，
+  /// 而 shared 给 0 会让内核读写到「它以为存在」的 shared，**结果错但不报错**。
+  int64_t shared = -1;
 };
 
 std::mutex g_mm_mutex;
@@ -1147,7 +1156,7 @@ std::unordered_map<int, MmKernel> g_mm_kernels;   ///< c10::ScalarType → 内�
 /// @param block_m/block_n/block_k 分块参数，必须与编译内核时用的 constexpr 一致。
 /// @param num_warps 每块 warp 数；`blockDim = num_warps * 32`。
 void set_mm_kernel(int64_t dtype_code, int64_t handle, int64_t block_m, int64_t block_n,
-                   int64_t block_k, int64_t num_warps) {
+                   int64_t block_k, int64_t num_warps, int64_t shared) {
   TORCH_CHECK(handle != 0, "corex_shim: set_mm_kernel 收到 0 句柄（先 load_kernel）");
   TORCH_CHECK(block_m > 0 && block_n > 0 && block_k > 0 && num_warps > 0,
               "corex_shim: set_mm_kernel 的分块参数必须为正");
@@ -1158,7 +1167,22 @@ void set_mm_kernel(int64_t dtype_code, int64_t handle, int64_t block_m, int64_t 
   kernel.block_n = block_n;
   kernel.block_k = block_k;
   kernel.num_warps = num_warps;
+  kernel.shared = shared;
   g_mm_kernels[static_cast<int>(dtype_code)] = kernel;
+}
+
+/// 已登记的 (dtype, block_m, block_n, block_k, num_warps, shared) 明细（诊断用）。
+std::vector<std::vector<int64_t>> mm_kernel_info() {
+  std::lock_guard<std::mutex> lock(g_mm_mutex);
+  std::vector<std::vector<int64_t>> out;
+  for (const auto& entry : g_mm_kernels) {
+    const auto* kernel = reinterpret_cast<const KernelEntry*>(static_cast<intptr_t>(entry.second.handle));
+    out.push_back({static_cast<int64_t>(entry.first), entry.second.block_m,
+                  entry.second.block_n, entry.second.block_k, entry.second.num_warps,
+                  kernel != nullptr ? kernel->shared : 0});
+  }
+  std::sort(out.begin(), out.end());
+  return out;
 }
 
 /// 已登记的 dtype 列表（探针与错误信息用）。
@@ -1213,16 +1237,33 @@ at::Tensor mm_impl(const at::Tensor& a, const at::Tensor& b) {
   if (M <= 0 || N <= 0 || K <= 0) {
     return out;                       // 空矩阵：分配即可，不启动内核（与 aten 语义一致）
   }
+  const auto* entry = reinterpret_cast<const KernelEntry*>(static_cast<intptr_t>(kernel.handle));
+  TORCH_CHECK(entry != nullptr, "corex 的 aten::mm 收到无效内核句柄");
+
+  // 参数类型串必须与这份 C++ 实现的固定布局对齐。这是**踩过的坑**：
+  // Triton 3.4 把 global scratch 指针追加在参数表**最后**（不是中间），早先把 scratch
+  // 放在第 4 位会让内核拿到的 M == 0，于是网格里所有 block 的掩码全假、一个元素都不写，
+  // 而 `cuLaunchKernel` 返回 0——表面完全正常。
+  const std::string& spec = entry->spec;
+  TORCH_CHECK(spec == "pppiii" || spec == "pppiiip",
+              "corex 的 aten::mm 要求内核 spec 为 \"pppiii\"（内核不带 global scratch）"
+              "或 \"pppiiip\"（scratch 指针在**最后**），实际收到 \"", spec, "\"");
+
   const int64_t grid_x = (M + kernel.block_m - 1) / kernel.block_m;
   const int64_t grid_y = (N + kernel.block_n - 1) / kernel.block_n;
   std::vector<int64_t> ptr_args{
       reinterpret_cast<int64_t>(a.data_ptr()),
       reinterpret_cast<int64_t>(b.data_ptr()),
       reinterpret_cast<int64_t>(out.data_ptr()),
-      0,                              // global scratch 指针（mm 不需要，但要占位）
   };
-  launch(kernel.handle, {grid_x, grid_y, 1}, {kernel.num_warps * 32, 1, 1}, 0, 0, ptr_args, {},
-         {M, N, K}, {});
+  if (spec == "pppiiip") {
+    ptr_args.push_back(0);          // global scratch 指针：mm 不需要，位置在最后
+  }
+  // shared：登记时显式给的优先，否则用装载时记下的 metadata.shared。
+  // 给 0 的后果同样是「结果错但不报错」（tl.dot 的布局转换要用 shared）。
+  const int64_t shared = kernel.shared >= 0 ? kernel.shared : entry->shared;
+  launch(kernel.handle, {grid_x, grid_y, 1}, {kernel.num_warps * 32, 1, 1}, shared, 0,
+         ptr_args, {}, {M, N, K}, {});
   return out;
 }
 
@@ -1249,6 +1290,7 @@ using corex_shim::kernel_count;
 using corex_shim::last_error;
 using corex_shim::launch;
 using corex_shim::mm_kernel_dtypes;
+using corex_shim::mm_kernel_info;
 using corex_shim::load_kernel;
 using corex_shim::reserved_bytes;
 using corex_shim::set_mm_kernel;
@@ -1276,8 +1318,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("empty_cache", &empty_cache, "把空闲的板/大块还给驱动");
   m.def("slab_alignment", &slab_alignment, "首次分配观测到的 slab 基址对齐（字节）");
   m.def("load_kernel", &load_kernel, pybind11::arg("cubin"), pybind11::arg("kernel_name"),
-        pybind11::arg("spec"),
-        "装载 cubin 里的内核并返回句柄（内容哈希缓存）；spec 见 launch");
+        pybind11::arg("spec"), pybind11::arg("shared_bytes") = 0,
+        "装载 cubin 里的内核并返回句柄（内容哈希缓存）；spec 见 launch；"
+        "shared_bytes 传 metadata.shared，不能省（tl.dot 要 shared）");
   m.def("launch", &launch, pybind11::arg("handle"), pybind11::arg("grid"),
         pybind11::arg("block"), pybind11::arg("shared"), pybind11::arg("stream"),
         pybind11::arg("ptr_args"), pybind11::arg("f32_args"), pybind11::arg("i32_args"),
@@ -1287,7 +1330,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("kernel_count", &kernel_count, "已装载（缓存）的内核数");
   m.def("set_mm_kernel", &set_mm_kernel, pybind11::arg("dtype_code"), pybind11::arg("handle"),
         pybind11::arg("block_m"), pybind11::arg("block_n"), pybind11::arg("block_k"),
-        pybind11::arg("num_warps") = 1,
-        "登记 aten::mm 用的内核（按 dtype）；未登记时 aten::mm 会明确报错");
+        pybind11::arg("num_warps") = 1, pybind11::arg("shared") = -1,
+        "登记 aten::mm 用的内核（按 dtype）；shared 传 metadata.shared（-1 = 用 load_kernel 记的）");
   m.def("mm_kernel_dtypes", &mm_kernel_dtypes, "已登记 mm 内核的 dtype 列表");
+  m.def("mm_kernel_info", &mm_kernel_info,
+        "已登记 mm 内核明细 [[dtype, bm, bn, bk, warps, shared], ...]");
 }

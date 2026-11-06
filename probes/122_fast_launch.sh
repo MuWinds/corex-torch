@@ -57,19 +57,19 @@ print(f"内核 {name}  cubin {len(cubin)} B")
 # 少传这一个会让内核从栈上读到垃圾指针 → 段错误，2026-11-07 实测）+ M/N/K 三个 i32。
 scratch_bytes = int(getattr(kernel.metadata, "global_scratch_size", 0) or 0)
 print(f"global_scratch_size = {scratch_bytes}")
-SPEC = "ppppiii"
-handle = shim.load_kernel(cubin, name, SPEC)
-handle2 = shim.load_kernel(cubin, name, SPEC)
+# spec：3 个设备指针 + 3 个 i32 + 末尾 1 个 global scratch 指针（Triton 3.4 把它排在最后）
+SPEC = "pppiiip"
+SHARED = int(getattr(kernel.metadata, "shared", 0) or 0)
+print(f"metadata.shared = {SHARED}（动态 shared，必须传给 load_kernel/launch）")
+handle = shim.load_kernel(cubin, name, SPEC, SHARED)
+handle2 = shim.load_kernel(cubin, name, SPEC, SHARED)
 print(f"load_kernel 句柄={handle} 二次装载复用同一句柄={handle == handle2} "
       f"已缓存内核数={shim.kernel_count()}")
-# 登记给 C++ 的 aten::mm（fp32 = c10::ScalarType 6）。若 `_aten_kernels.register()` 已经登记过，
-# 这里就**不重复登记**——重复会把「Lead 的链路是否真的通」这件事盖住。
-if 6 in shim.mm_kernel_dtypes():
-    print("fp32 已由 _aten_kernels 在注册期登记，探针不重复登记")
-else:
-    shim.set_mm_kernel(6, handle, 16, 16, 16, 1)
-    print("fp32 **未**被注册期登记，探针自行补登记（说明 Lead 的链路未生效）")
-print("最终已登记 mm 内核的 dtype:", shim.mm_kernel_dtypes())
+# 登记给 C++ 的 aten::mm（fp32=6）。这里**总是**用探针自己算的 spec/shared 覆盖登记：
+# `_aten_kernels` 目前还用 spec "ppppiii" + shared=0，那两个都是错的（probes/123 定位），
+# 覆盖之后才能量到真实的性能。
+shim.set_mm_kernel(6, handle, 16, 16, 16, 1, SHARED)
+print("登记明细 [dtype,bm,bn,bk,warps,shared]:", shim.mm_kernel_info())
 
 
 def bench(label: str, fn, iters: int = 200):
@@ -99,7 +99,7 @@ t_py16 = bench("Triton Python 启动（_ops_matmul.mm）",
                lambda: _ops_matmul.mm(a16.data_ptr(), b16.data_ptr(), c16.data_ptr(),
                                       16, 16, 16, "fp32"))
 t_cc16 = bench("shim.launch（C++ 快路径）",
-               lambda: shim.launch(handle, grid16, block, 0, 0,
+               lambda: shim.launch(handle, grid16, block, SHARED, 0,
                                    [a16.data_ptr(), b16.data_ptr(), c16.data_ptr(), 0],
                                    [], [16, 16, 16], []))
 
@@ -112,7 +112,7 @@ t_py = bench("Triton Python 启动（_ops_matmul.mm）",
              lambda: _ops_matmul.mm(a.data_ptr(), b.data_ptr(), c.data_ptr(), n, n, n, "fp32"),
              iters=100)
 t_cc = bench("shim.launch（C++ 快路径）",
-             lambda: shim.launch(handle, grid, block, 0, 0,
+             lambda: shim.launch(handle, grid, block, SHARED, 0,
                                  [a.data_ptr(), b.data_ptr(), c.data_ptr(), 0],
                                  [], [n, n, n], []),
              iters=100)
@@ -139,7 +139,7 @@ bench("a @ b                               ", lambda: a @ b, iters=100)
 def alloc_then_launch():
     """模拟 aten 路径：每轮新分配输出 + 直调快路径（不经分发器）。"""
     tmp = shim.empty_strided([n, n], [n, 1], DT, 0)
-    shim.launch(handle, grid, block, 0, 0, [a.data_ptr(), b.data_ptr(), tmp.data_ptr(), 0],
+    shim.launch(handle, grid, block, SHARED, 0, [a.data_ptr(), b.data_ptr(), tmp.data_ptr(), 0],
                 [], [n, n, n], [])
     return tmp
 
@@ -149,7 +149,8 @@ bench("分配 + 直调快路径（模拟 aten）       ", alloc_then_launch, ite
 bench("shim.is_initialized()（pybind 地板） ", lambda: shim.is_initialized(), iters=1000)
 # 16³ 走 aten：内核几乎为 0，量到的就是「分发 + 分配 + 发射」的全部开销。
 k16 = _ops_matmul._get_kernel("fp32", 16, 16, 16, False, 1, 1)
-shim.set_mm_kernel(6, shim.load_kernel(k16.asm["cubin"], k16.name, SPEC), 16, 16, 16, 1)
+shim.set_mm_kernel(6, shim.load_kernel(k16.asm["cubin"], k16.name, SPEC,
+                                     int(k16.metadata.shared)), 16, 16, 16, 1)
 bench("aten mm 16³（分发地板）             ", lambda: torch.mm(a16, b16), iters=200)
 try:
     bench("torch.mm(a, b, out=c) 复用输出      ", lambda: torch.mm(a, b, out=c), iters=100)
@@ -160,7 +161,7 @@ print("\n=== 3. 数值一致性：两条路径算出来的 c 必须完全相等 
 # 先让快路径写一遍，读回；再让 Python 路径写一遍，读回；两者逐元素比。
 back_cc = torch.empty(n, n, dtype=torch.float32)
 corex_torch._device._copy_from_impl(c, back_cc)
-shim.launch(handle, grid, block, 0, 0, [a.data_ptr(), b.data_ptr(), c.data_ptr(), 0],
+shim.launch(handle, grid, block, SHARED, 0, [a.data_ptr(), b.data_ptr(), c.data_ptr(), 0],
             [], [n, n, n], [])
 rt.synchronize()
 back_cc2 = torch.empty(n, n, dtype=torch.float32)

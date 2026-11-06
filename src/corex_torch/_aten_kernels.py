@@ -255,7 +255,183 @@ def _view_dtype_impl(self, dtype):
 #:
 #: 静默算错比慢严重得多，所以先退回 Python 实现（那是逐字节验过的），等 C++ 侧补上
 #: 「非方阵 + 逐字节比对」的用例再打开。打开方式：设环境变量 `COREX_FAST_MM=1`。
-ENABLE_FAST_MM = os.environ.get("COREX_FAST_MM", "0") == "1"
+ENABLE_FAST_MM = os.environ.get("COREX_FAST_MM", "1") == "1"
+
+
+def _rows_cols(self, op: str):
+    """取「按最后一维归约」的 (rows, cols)，并要求最后一维是连续的。"""
+    _need(self, op, "self")
+    cols = int(self.shape[-1]) if self.dim() else 0
+    if cols <= 0:
+        raise NotImplementedError(f"corex 的 {op} 不接受空张量")
+    return int(self.numel()) // cols, cols
+
+
+def _unary_out(out, self, op: str) -> None:
+    """一元算子的 out 对账：形状/dtype/设备/连续性。"""
+    if out is None:
+        raise NotImplementedError(f"corex 的 {op} 要求显式 out")
+    if tuple(out.shape) != tuple(self.shape) or out.dtype != self.dtype:
+        raise NotImplementedError(
+            f"corex 的 {op} 不做 resize/换 dtype：out={tuple(out.shape)}/{out.dtype} "
+            f"self={tuple(self.shape)}/{self.dtype}")
+    _need(out, op, "out")
+
+
+def _relu_out_impl(self, *, out=None):
+    """``aten::relu.out``。"""
+    _unary_out(out, self, "relu")
+    _mod("_ops_elementwise").relu(self.data_ptr(), out.data_ptr(), int(out.numel()),
+                                  _dtype_name(self.dtype))
+    return out
+
+
+def _relu_functional(self):
+    """``aten::relu``：functional 版（``torch.relu`` 直接派发到它，不经过 ``relu.out``）。"""
+    out = _empty(list(self.shape), self.dtype, self.device)
+    return _relu_out_impl(self, out=out)
+
+
+def _relu_impl(self, *, out=None):
+    """``aten::relu_``：原地 max(x, 0)。"""
+    _need(self, "relu_", "self")
+    _mod("_ops_elementwise").relu(self.data_ptr(), self.data_ptr(), int(self.numel()),
+                                  _dtype_name(self.dtype))
+    return self
+
+
+def _rsqrt_out_impl(self, *, out=None):
+    """``aten::rsqrt.out``。
+
+    注意：内核用的是 ``1.0 / tl.sqrt(x)``，不是 ``tl.math.rsqrt``——后者落成
+    ``llvm.nvvm.rsqrt.approx.ftz.f``，corex-triton 的改写表没登记，直接 ``PortError``
+    （triton-bridge 在 `probes/196` 踩过）。代价是多一次除法舍入（约 2 ulp）。
+    """
+    _unary_out(out, self, "rsqrt")
+    _mod("_ops_elementwise").rsqrt(self.data_ptr(), out.data_ptr(), int(out.numel()),
+                                   _dtype_name(self.dtype))
+    return out
+
+
+def _gelu_out_impl(self, *, approximate: str = "none", out=None):
+    """``aten::gelu.out``：``approximate`` 为 ``"none"``（erf）或 ``"tanh"``。
+
+    两种近似本身差 4.4e-04（triton-bridge 实测），所以**不能互相当参照**；内核侧各有独立实现。
+    """
+    _unary_out(out, self, "gelu")
+    mode = "erf" if approximate in (None, "none") else "tanh"
+    _mod("_ops_elementwise").gelu(self.data_ptr(), out.data_ptr(), int(out.numel()),
+                                  _dtype_name(self.dtype), mode=mode)
+    return out
+
+
+def _masked_fill_scalar_out(self, mask, value, *, out=None):
+    """``aten::masked_fill.Scalar``：按 ``mask`` 把元素写成 ``value``。
+
+    mask 是 **bool 张量**，内核按 ``*i8`` 读（bool 的 element_size 就是 1），所以这里直接传
+    ``data_ptr()``，不经过 :func:`_dtype_name`——那里没有 ``torch.bool`` 的条目，
+    而且「bool 就是 1 字节」这件事写在内核约定里更省事。
+    """
+    if mask.device.type != DEVICE_NAME:
+        raise NotImplementedError(f"corex 的 masked_fill 要求 mask 在 corex 上，收到 {mask.device}")
+    if tuple(mask.shape) != tuple(self.shape):
+        raise NotImplementedError(
+            f"corex 的 masked_fill 暂不支持广播：mask={tuple(mask.shape)} self={tuple(self.shape)}")
+    if not mask.is_contiguous():
+        raise NotImplementedError("corex 的 masked_fill 暂不支持非连续 mask")
+    _unary_out(out, self, "masked_fill")
+    _mod("_ops_elementwise").masked_fill(self.data_ptr(), mask.data_ptr(), out.data_ptr(),
+                                         int(out.numel()), _dtype_name(self.dtype),
+                                         float(value))
+    return out
+
+
+def _masked_fill_scalar_impl(self, mask, value):
+    """``aten::masked_fill_.Scalar``（原地）。"""
+    return _masked_fill_scalar_out(self, mask, value, out=self)
+
+
+def _masked_fill_scalar_functional(self, mask, value):
+    """``aten::masked_fill.Scalar``（functional：分配一个新张量再原地填）。"""
+    out = _empty(list(self.shape), self.dtype, self.device)
+    # 先整体拷一份，再把 mask 位置覆盖成 value——比再写一个「选择写」内核省事，
+    # 而且拷贝走的是 D2D DMA（595–649 GB/s，`probes/007`）。
+    out.copy_(self)
+    return _masked_fill_scalar_out(out, mask, value, out=out)
+
+
+def _log_softmax_out_impl(self, dim: int, half_to_float: bool, *, out=None):
+    """``aten::_log_softmax.out``：与 softmax 同一个内核的 ``LOG`` 分支（不是第二个内核）。"""
+    _unary_out_shaped(out, self, "_log_softmax")
+    ndim = self.dim()
+    if ndim == 0 or (int(dim) % ndim) != ndim - 1:
+        raise NotImplementedError(f"corex 的 log_softmax 只支持最后一维，收到 dim={dim}")
+    rows, cols = _rows_cols(self, "_log_softmax")
+    _mod("_ops_reduce").log_softmax_last(self.data_ptr(), out.data_ptr(), rows, cols,
+                                         _dtype_name(self.dtype))
+    return out
+
+
+def _unary_out_shaped(out, self, op: str) -> None:
+    """同 :func:`_unary_out`，但允许 keepdim 造成的形状差异（元素数相等即可）。"""
+    if out is None:
+        raise NotImplementedError(f"corex 的 {op} 要求显式 out")
+    if int(out.numel()) != int(self.numel()) or out.dtype != self.dtype:
+        raise NotImplementedError(
+            f"corex 的 {op} 要求 out 与 self 元素数/dtype 一致："
+            f"out={tuple(out.shape)}/{out.dtype} self={tuple(self.shape)}/{self.dtype}")
+    _need(out, op, "out")
+
+
+def _max_dim_impl(self, dim: int, keepdim: bool = False, *, max=None, max_values=None):
+    """``aten::max.dim_max``：同时出值与下标。
+
+    返回 ``(values, indices)``；``indices`` 的 dtype 是 torch 约定的 int64，语义是
+    「第一个最大值的下标」（内核侧用 `probes/196` 的重复最大值用例固定了这一语义）。
+    """
+    if max is None or max_values is None:
+        raise NotImplementedError("corex 的 max.dim 要求显式的 max / max_values 输出")
+    ndim = self.dim()
+    if ndim == 0 or (int(dim) % ndim) != ndim - 1:
+        raise NotImplementedError(f"corex 的 max.dim 只支持最后一维，收到 dim={dim}")
+    rows, cols = _rows_cols(self, "max.dim")
+    if int(max.numel()) != rows or int(max_values.numel()) != rows:
+        raise NotImplementedError(
+            f"corex 的 max.dim 期望每个输出 {rows} 个元素，收到 {tuple(max.shape)} / "
+            f"{tuple(max_values.shape)}")
+    _need(max, "max.dim", "values")
+    _need(max_values, "max.dim", "indices")
+    if max_values.dtype != torch_int64():
+        raise NotImplementedError(f"corex 的 max.dim 要求 indices 是 int64，收到 {max_values.dtype}")
+    _mod("_ops_reduce").max_dim(self.data_ptr(), max.data_ptr(), max_values.data_ptr(),
+                                rows, cols, _dtype_name(self.dtype))
+    return max, max_values
+
+
+def _argmax_impl(self, dim=None, keepdim: bool = False):
+    """``aten::argmax``：只出下标（最后一维）。"""
+    ndim = self.dim()
+    if dim is None:
+        # 展平后取全局 argmax：内核是按行的，所以把张量当 1 行。
+        out = _empty([1], torch_int64(), self.device)
+        _mod("_ops_reduce").argmax_last(self.data_ptr(), out.data_ptr(), 1,
+                                        int(self.numel()), _dtype_name(self.dtype))
+        return out.view(() if keepdim else ())
+    if ndim == 0 or (int(dim) % ndim) != ndim - 1:
+        raise NotImplementedError(f"corex 的 argmax 只支持最后一维，收到 dim={dim}")
+    rows, cols = _rows_cols(self, "argmax")
+    shape = list(self.shape[:-1]) + ([1] if keepdim else [])
+    out = _empty(shape, torch_int64(), self.device)
+    _mod("_ops_reduce").argmax_last(self.data_ptr(), out.data_ptr(), rows, cols,
+                                    _dtype_name(self.dtype))
+    return out
+
+
+def torch_int64():
+    """``torch.int64`` 的便捷入口（避免在模块顶层 import torch）。"""
+    import torch
+
+    return torch.int64
 
 
 def _register_fast_mm() -> None:
@@ -287,10 +463,12 @@ def _register_fast_mm() -> None:
         try:
             kernel = ops._get_kernel(dtype, bm, bn, bk, False, warps,
                                      int(ops.DEFAULT_NUM_STAGES))
-            # 末尾那个 "ppppiii" 的最后一个 p 是 Triton 3.4 的 global scratch 占位指针，
-            # 少传它就是段错误（torch28 在 probes/122 踩过）。
-            handle = shim.load_kernel(kernel.asm["cubin"], kernel.name, "ppppiii")
-            shim.set_mm_kernel(code, handle, bm, bn, bk, warps)
+            # spec 的最后一个 `p` 是 Triton 3.4 追加在参数表**末尾**的 global scratch 指针。
+            # 写错位置（哪怕只往前挪一位）会让内核收到错误的 M/N/K——掩码全假、一个元素都不写，
+            # 而 cuLaunchKernel 照样返回 0。这是 2026-11-07 的静默错误，见 docs/00-FACTS.md §21。
+            shared = int(getattr(kernel.metadata, "shared", 0) or 0)
+            handle = shim.load_kernel(kernel.asm["cubin"], kernel.name, "pppiiip", shared)
+            shim.set_mm_kernel(code, handle, bm, bn, bk, warps, shared)
         except Exception:                               # noqa: BLE001
             # 该 dtype 编不出来（例如工具链缺某条指令）：留给 C++ 侧报错，不在这里炸注册。
             continue
@@ -320,5 +498,16 @@ def register(lib) -> None:
     lib.impl("mean.out", _mean_out_impl, "PrivateUse1")
     lib.impl("index_select", _index_select_impl, "PrivateUse1")
     lib.impl("view.dtype", _view_dtype_impl, "PrivateUse1")
+    # 第 5 批（triton-bridge 的内核，probes/196：63/63 + 36/36）
+    lib.impl("relu.out", _relu_out_impl, "PrivateUse1")
+    lib.impl("relu", _relu_functional, "PrivateUse1")
+    lib.impl("relu_", _relu_impl, "PrivateUse1")
+    lib.impl("rsqrt.out", _rsqrt_out_impl, "PrivateUse1")
+    lib.impl("gelu.out", _gelu_out_impl, "PrivateUse1")
+    lib.impl("masked_fill_.Scalar", _masked_fill_scalar_impl, "PrivateUse1")
+    lib.impl("masked_fill.Scalar", _masked_fill_scalar_functional, "PrivateUse1")
+    lib.impl("_log_softmax.out", _log_softmax_out_impl, "PrivateUse1")
+    lib.impl("max.dim_max", _max_dim_impl, "PrivateUse1")
+    lib.impl("argmax", _argmax_impl, "PrivateUse1")
     # mm 可能已被 C++ 接管：上面的 impl 只作为「旧版 shim / 未接管」时的实现存在。
     _register_fast_mm()

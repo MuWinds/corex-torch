@@ -511,6 +511,7 @@ def install() -> None:
 | `193_bf16_reduce_diag.sh` | 沙箱（卡） | 定位改写层漏了什么：把真实 biir 里 `fpext/fptrunc` 的原文打出来 | 找到 `fpext <8 x bfloat>` 向量形式漏改（见 §8.2） |
 | `194_bf16_vector_ir.sh` | 沙箱（卡） | 向量 intrinsic 有哪些拼写可用（**只看 llc，结论已被 195 更正**） | ⚠ 误判「`.v8bf16` 可用」，保留作证据 |
 | `195_bf16_link_verdict.sh` | 沙箱（卡） | **链接判据**（llc + `lld --no-undefined`）三级对照 | V1 `llc=FAIL` / V2 `llc=OK lld=FAIL` / V3 标量化 `llc=OK lld=OK`（见 §8.2） |
+| `196_new_ops.sh` | 沙箱（卡） | **第 5 批算子**：relu/rsqrt/gelu/masked_fill/max.dim+argmax/log_softmax × 3 dtype × 尾块 | **PASS**，63/63 + 36/36，bf16 命中 130（见 §9） |
 
 载荷约定（两个沙箱探针都要）：
 
@@ -1050,3 +1051,95 @@ K 从 256 涨到 1024，我们的相对误差基本不动（3.67e-03 → 3.62e-0
 | 5 | 向量重载**只认声明没实现**，必须标量化；判据必须是 `llc` + `lld --no-undefined` 两级（`probes/194` 的「可用」结论是错的，`probes/195` 已更正） |
 | 6 | 内核侧不要自己用位运算造转换：那会把「一条缺指令」换成 `trunc nuw` + `splat` 两条上游新语法（§8.4） |
 | 7 | 性能：逐元素 bf16 快 33%（流量减半，但启动地板不变，所以 GB/s 不翻倍）；矩阵乘 bf16 无收益（算力受限，不是带宽受限） |
+
+---
+
+## 9. 第 5 批算子：relu / rsqrt / gelu / masked_fill / max.dim+argmax / log_softmax
+
+`probes/196_new_ops.sh` **PASS**：§1 **63/63**、§2 **36/36**、bf16 改写命中 **130**、改写后可疑语法 **0**。
+
+### 9.1 接口
+
+```python
+relu(a_ptr, out_ptr, n, dtype)                       # relu_ 就是 out_ptr == a_ptr
+rsqrt(a_ptr, out_ptr, n, dtype)
+gelu(a_ptr, out_ptr, n, dtype, mode="erf"|"tanh")
+masked_fill(a_ptr, mask_ptr, out_ptr, n, dtype, value)   # mask_ptr 按 *i8 读，m != 0 判真
+max_dim(a_ptr, val_ptr, idx_ptr, rows, cols, dtype)      # 值 + int64 下标
+argmax_last(a_ptr, idx_ptr, rows, cols, dtype)           # 只出下标（与 max_dim 共用内核）
+log_softmax_last(x_ptr, out_ptr, rows, cols, dtype)      # 与 softmax_last 共用内核
+```
+
+### 9.2 判据表（口径按"能不能逐字节"分类，不搞一刀切）
+
+| 算子 | 判据 | 实测 | 为什么这个判据 |
+| --- | --- | --- | --- |
+| `relu` / `relu_` | **逐字节相等** | 9/9 组（3 dtype × 3 长度）全等 | `max(x,0)` 没有舍入 |
+| `masked_fill` / `masked_fill_` | **逐字节相等** | 9/9 全等 | 选值不是算术；bf16/fp16 的 `value` 收窄是与 torch 同一次 RNE |
+| `max_dim` 的值 | **逐字节相等** | 9/9 全等 | 输出就是输入里的某个元素，没有运算 |
+| `max_dim` / `argmax` 的下标 | **完全相等** | 9/9 全对（含**重复最大值**用例） | 专门造了 `row[0] = row[1]`、`row[cols-1] = row[1]` 来验 aten 的「取第一个」语义 |
+| `rsqrt` | max_rel | fp32 **0.000e+00**、fp16/bf16 0 | 见 §9.3 的说明（测试值特殊，别当普遍结论） |
+| `gelu(erf)` | max_abs/max_rel | fp32 max_abs **5.960e-08**（≈1 ulp）、max_rel 1.020e-06；fp16/bf16 max_abs 0 | 走 libdevice `erf`，是超越函数，不能要求逐字节 |
+| `gelu(tanh)` | max_abs/max_rel，**参照同一条公式** | fp32 max_abs **3.168e-08**、max_rel 2.037e-06 | 若拿精确 erf 版当参照，测到的是**近似误差**（实测 4.399e-04）而不是实现误差——这两件事必须分开 |
+| `log_softmax` | max_abs + `exp` 回代的行和 | fp32 **1.036e-06**（行和偏离 1 仅 2.7e-07）；fp16 6.5e-3；bf16 5.7e-2 | 累加 + 超越函数；另加一条 `exp(log_softmax) == softmax` 的一致性检查（max_abs 3.9e-09 / 8.8e-06 / 2.4e-04） |
+
+### 9.3 两个「换了实现」的决定（都是被工具链逼的，记在这里免得下次重试）
+
+**① `rsqrt` 不能用 `tl.math.rsqrt`** —— 它在 Triton 3.4 里落成
+
+```
+%59 = tail call float @llvm.nvvm.rsqrt.approx.ftz.f(float %43)
+```
+
+而 corex-triton 的改写表**没有登记**这个 NVVM intrinsic，直接抛
+`PortError: 未登记的 NVVM intrinsic 调用`。所以实现改成 `1.0 / tl.sqrt(x)`：`tl.sqrt` 是本仓库
+`rms_norm`/`layernorm` 一直在用、已验证的路径（`probes/180`/`182`/`192`），代价是多一次
+`div.rn` 舍入。**要更快的 rsqrt 必须给 corex-triton 补一条 `nvvm.rsqrt.approx.ftz.f` 模板。**
+
+> ⚠ 数据提醒：本次 `rsqrt` 测出 `max_rel = 0`，但测试值只有 `[0.25,0.5,1,2,4,8,16,32]` 这类
+> 特殊值（其中 `1/√2`、`√2` 只有两个无理数），**不能**据此说 `1/sqrt` 普遍与正确舍入值逐位相同。
+> 它说明的是：在这组值上没观测到 `sqrt.approx` 的偏差（疑似 `sqrt` 在这张卡上是正确舍入的
+> `sqrt.rn`，未单独验证）。
+
+**② `gelu` 的 tanh 版不能调 `tl.math.tanh`** —— Triton 3.4 的 `tl.math` 里**没有** `tanh`
+（实测 `hasattr(tl.math,"tanh")==False`，而 `erf`/`rsqrt`/`log` 都有）。所以 tanh 用
+`tanh(z) = 2/(1+exp(-2z)) − 1` 现推：只依赖已经验证过的 `tl.exp`（`ex2.approx.f32`），
+不必再赌 `libdevice` 模块在 jit 作用域里能否解析。多出的两次舍入被 tanh 近似本身
+（4.4e-04）完全盖住。
+
+### 9.4 `_log_softmax` 为什么加 constexpr 而不是第二个内核
+
+`aten::_log_softmax` 与 `aten::_softmax` 只差**最后一遍写什么**：
+`x - m - log(denom)` vs `exp(x−m)/denom`。前三遍（行最大值、`sum(exp)`）完全相同。
+所以 `_softmax_kernel` 加一个 `LOG: tl.constexpr` 分叉，**共用一条内核**；`op` 槽位借来区分
+（0=softmax，1=log-softmax），缓存键天然分开。两份内核会让「改一处忘一处」变成必然
+（比如以后换 online 算法要改两处）。
+
+`log_softmax` 用的是 aten 的**稳定形式**（先减行最大值再取 log），**不是** `log(softmax(x))`
+——后者会先把小概率下溢到 0 再取 log，得到 `-inf`。
+
+### 9.5 bf16 体检（本轮新增内核）
+
+```
+('gelu','bf16',0)        cubin=10448  bf16_conversions=16  改写后可疑语法={}
+('gelu','bf16',1)        cubin= 7264  bf16_conversions=16  改写后可疑语法={}
+('masked_fill','bf16')   cubin= 7288  bf16_conversions= 1  改写后可疑语法={}
+('relu','bf16')          cubin= 5984  bf16_conversions=16  改写后可疑语法={}
+('rsqrt','bf16')         cubin= 6376  bf16_conversions=16  改写后可疑语法={}
+('max_dim','bf16',0/1)   cubin= 6896/7064  bf16_conversions= 6/7
+('softmax','bf16',0/1)   cubin=13000/13264 bf16_conversions=26/26
+新内核 bf16_conversions 合计 130，改写后可疑语法 0
+```
+
+bf16 在这批算子上**全部真支持**（没有一条走 `NotImplementedError`）：`relu`/`masked_fill` 逐字节，
+`gelu`/`rsqrt` 在 bf16 粒度内精确（max_abs ≤ 5.9e-09），`max_dim`/`argmax` 的值与下标都精确。
+
+### 9.6 结论
+
+| # | 结论 |
+| --- | --- |
+| 1 | 6 组算子全部在真机跑通，`probes/196` PASS（63/63 + 36/36），覆盖 fp32/fp16/bf16 × 1000/4096/4097 |
+| 2 | 「能逐字节就逐字节」：`relu`/`masked_fill`/`max_dim` 的值与下标、`argmax` 的下标**全部逐字节** |
+| 3 | 「不能逐字节就说清为什么」：`gelu` 的两种形式各自对各自的公式比（精确版 max_abs 5.96e-08；tanh 版的近似误差 4.4e-04 单列，不混进实现误差） |
+| 4 | 两个工具链坑：`tl.math.rsqrt` → 未登记的 `nvvm.rsqrt.approx.ftz.f`；`tl.math` 里**没有** `tanh`。两者都绕开了，但都值得回填 corex-triton/FACTS |
+| 5 | `_log_softmax` 与 `_softmax` **共用一条内核**（`LOG` constexpr），`max.dim`/`argmax` 也共用一条（`WRITE_VAL` constexpr）——batch 越大越不该复制内核 |
