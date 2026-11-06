@@ -133,8 +133,14 @@ def cmd_pushdir(args: argparse.Namespace) -> int:
             client.upload(local_tar, remote_tar)
         finally:
             local_tar.unlink(missing_ok=True)
+        # **每次推完必须清 `__pycache__`**：tar 会保留本机（Windows）的 mtime，而它通常比远端
+        # 已有的 .pyc **更旧**，于是 CPython 认为 .pyc 仍然有效、继续用旧字节码。
+        # 症状是「改了代码但行为没变」——2026-11-07 就是这样让 `probes/008` 连续三轮报
+        # 一条源码里已经不存在的错误信息，白查了两小时。
         cmd = (f"mkdir -p '{args.remote}' && tar xzf '{remote_tar}' -C '{args.remote}' "
-               f"&& rm -f '{remote_tar}' && ls -1 '{args.remote}' | head -20")
+               f"&& rm -f '{remote_tar}' "
+               f"&& find '{args.remote}' -name __pycache__ -type d -exec rm -rf {{}} + 2>/dev/null; "
+               f"ls -1 '{args.remote}' | head -20")
         out, code = client.run_full(cmd)
         print(out)
         print(f"pushdir {src} -> {args.remote} ({len(payload)} B) rc={code}")

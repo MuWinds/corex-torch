@@ -195,26 +195,51 @@ def _copy_from_impl(src, dst, non_blocking: bool = False) -> Any:
     #      再写一份只会两边不一致）。`clone()` 在本版本走 `at::_copy_from` 而不是 `copy_`，
     #      所以这条路必须在这里接住，否则 `clone`/`contiguous` 直接报错；
     #   2) 卡 → 主机且卡侧非连续 → 先搬进一块连续暂存，再线性 D2H（同样用 1 的分段搬）；
-    #   3) 主机 → 卡且主机侧非连续 → 主机上 `.contiguous()` 是原生实现，直接物化；
-    #   4) 目的非连续 → 明确报错：写进「一个马上被丢弃的连续副本」比报错恶劣得多。
+    #   3) 主机 → 卡且**主机侧非连续** → 主机上 `.contiguous()` 是原生实现，直接物化；
+    #   4) 主机 → 卡且**目的非连续** → 先线性 H2D 到连续暂存，再按 stride 写进目的。
+    #      （这条原来是直接报错，`probes/008` 因此一直 PARTIAL 9/10——而 `from_blob`
+    #      造出来的转置视图正是这种形态，属于设备层该支持的正常用法。）
     if not (src.is_contiguous() and dst.is_contiguous()):
         if dst_dev and src_dev:
             from . import _aten_extra
 
             return _aten_extra._copy_impl(dst, src)
         if src_dev and not dst_dev and not src.is_contiguous():
-            from . import _aten_extra
-
-            stage = _empty_impl(list(src.shape), dtype=src.dtype, device=src.device)
-            _aten_extra._copy_impl(stage, src)
-            src = stage
+            # 卡 → 主机且卡侧非连续：`.contiguous()` 会走「设备→设备 + 非连续源」那条路
+            # （`_aten_extra._copy_impl`，`probes/020` 验过逐字节正确），比我们在这里
+            # 再造一份分段搬稳。**不要**自己分配暂存再直接调 `_copy_impl`——
+            # 那条路上 `_copy_impl` 会把主机张量当设备张量（`probes/027` 的报错）。
+            src = src.contiguous()
         elif not src_dev and not src.is_contiguous():
             src = src.contiguous()
         if not dst.is_contiguous():
-            raise NotImplementedError(
-                "corex 的 _copy_from 暂不支持非连续的目的张量（写进连续副本会丢数据）："
-                f"dst.stride()={tuple(dst.stride())}"
-            )
+            from . import _aten_extra
+
+            if not src_dev:
+                # H2D + 非连续目的：先线性搬到连续暂存，再按 stride 写进去。
+                stage = _empty_impl(list(dst.shape), dtype=dst.dtype, device=dst.device)
+                _runtime.set_device(int(dst.device.index or 0))
+                nbytes_stage = int(stage.numel()) * int(stage.element_size())
+                _host_to_device(stage.data_ptr(), src.data_ptr(), nbytes_stage,
+                                int(src.is_pinned()))
+                _aten_extra._copy_impl(dst, stage)
+                return dst
+            if not dst_dev:
+                # 非连续**主机**目的：`torch.Tensor.cpu()` 会按源的 stride 分配 CPU 张量
+                # （`probes/027` 实测 dst.stride()=(1,2)），所以这条必须支持，否则
+                # 「非连续的卡上视图读回主机」直接失败（`probes/008` 的非连续 strides 用例）。
+                # 做法：线性 D2H 到连续暂存，再用 CPU 原生的 copy_ 写进带 stride 的目的。
+                import torch as _torch
+
+                src_c = src.contiguous()
+                stage = _torch.empty(list(dst.shape), dtype=dst.dtype)
+                _runtime.set_device(int(src.device.index or 0))
+                _device_to_host(stage.data_ptr(), src_c.data_ptr(),
+                                int(stage.numel()) * int(stage.element_size()),
+                                int(stage.is_pinned()))
+                dst.copy_(stage)                 # CPU→CPU，原生实现，尊重 stride
+                return dst
+            return _aten_extra._copy_impl(dst, src)
 
     nbytes = int(dst.numel()) * int(dst.element_size())
     if nbytes == 0:
