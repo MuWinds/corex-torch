@@ -150,6 +150,12 @@ for name, dtype, code in DTYPES:
     b2 = safe_b.to("corex")
     check(f"{name} div.out(tensor)", lambda: torch.div(a, b2, out=out), a_cpu / safe_b)
 
+    view_d = torch.empty(N, dtype=dtype, device="corex")
+    # 对照：直接点名 op（绕开 Python 的 `torch.add` 包装），用来拆「C++ 实现慢」还是「包装慢」
+    check(f"{name} aten::add.out 直调", lambda: torch.ops.aten.add.out(a, b, alpha=1, out=out),
+          a_cpu + b_cpu)
+    check(f"{name} aten::add_.Tensor 直调", lambda: torch.ops.aten.add_.Tensor(view_d, b, alpha=1),
+          a_cpu + b_cpu)
     # inplace（tensor）：每个用例用独立副本。**拷贝必须在计时之外**——
     # 之前把 copy_from 放进 lambda 里，量到的是「拷贝 + 算子」，会把 C++ 的收益算丢一半。
     view_t = torch.empty(N, dtype=dtype, device="corex")

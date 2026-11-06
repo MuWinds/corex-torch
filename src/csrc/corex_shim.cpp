@@ -1599,14 +1599,22 @@ namespace {
 ///   2. 只有 `dim()==0 && numel()==1` 才允许走这里，其它形状不匹配一律报错。
 ///   3. D2H 会打断流水，所以它只出现在这一个分支里，不给其它路径加同步。
 double read_scalar_from_device(const at::Tensor& t) {
-  TORCH_CHECK(t.device().is_privateuseone(), "corex: 0 维张量不在 corex 上（", t.device(), "）");
   TORCH_CHECK(t.is_contiguous(), "corex: 0 维张量不连续");
-  bind_runtime_device(t.device().index());
   const size_t nbytes = static_cast<size_t>(t.element_size());
   alignas(8) unsigned char buffer[16] = {0};
   TORCH_CHECK(nbytes <= sizeof(buffer), "corex: 0 维张量的元素大小异常（", nbytes, " 字节）");
-  check_rc("cudaMemcpy(D2H 标量)",
-           api().cudaMemcpy(buffer, t.const_data_ptr(), nbytes, /*kind=*/2));
+  if (t.device().is_cpu()) {
+    // **最常见的情形**：`view.add_(2.5)` 造出来的 0 维标量张量在 CPU 上，值本来就在 host
+    // 内存里 —— 直接读，不做 D2H、不打断流水。这是 Lead 说的「Python float 标量不要付 D2H」。
+    std::memcpy(buffer, t.const_data_ptr(), nbytes);
+  } else if (t.device().is_privateuseone()) {
+    // 设备上的 0 维张量：只有这一种情形要一次 4/8 字节 D2H，作为最后手段。
+    bind_runtime_device(t.device().index());
+    check_rc("cudaMemcpy(D2H 标量)",
+             api().cudaMemcpy(buffer, t.const_data_ptr(), nbytes, /*kind=*/2));
+  } else {
+    TORCH_CHECK(false, "corex: 0 维张量必须在 CPU 或 corex 上（", t.device(), "）");
+  }
   switch (t.scalar_type()) {
     case at::kHalf:
       return static_cast<float>(*reinterpret_cast<const c10::Half*>(buffer));
@@ -1656,8 +1664,8 @@ at::Tensor& elementwise_run(int op_code, ElemVariant variant, const char* op_nam
       TORCH_CHECK(b.dim() == 0 && b.numel() == 1,
                   "corex 的 ", op_name, " 的 C++ 快路径只支持同形或 0 维标量（不做广播）：",
                   a.sizes(), " vs ", b.sizes());
-      TORCH_CHECK(b.device().is_privateuseone(), "corex 的 ", op_name,
-                  " 的 0 维张量必须在 corex 上（", b.device(), "）");
+      TORCH_CHECK(b.device().is_cpu() || b.device().is_privateuseone(), "corex 的 ", op_name,
+                  " 的 0 维张量必须在 CPU 或 corex 上（", b.device(), "）");
       const double value = read_scalar_from_device(b);
       // add/sub 的语义是 `self ± alpha * other`，alpha 折进标量；mul/div 没有 alpha。
       const double folded = (op_code == 0 || op_code == 1) ? alpha * value : value;

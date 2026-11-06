@@ -1117,3 +1117,33 @@ shim.load_fast_op(op, variant, dtype, cubin, num_warps, num_stages,
    - (a) C++ 支持 0-dim 张量：要把它读成标量，得做一次 4 字节 D2H（约 10 µs），收益打折；
    - (b) 标量这 4 个 schema 留给 Python 实现（`_aten_extra` 已经能处理），
          即从 `elementwise_op_names()` 里去掉 `*.Scalar`。
+
+### 16.5 补测（2026-11-07 03:18）：0 维张量走 host 读值，scalar 变体也进 C++
+
+按 Lead 的选择 (a) 实现，但把「付 D2H 代价」的形态压到最小——实测 `view.add_(2.5)` 造出来的
+0 维张量**在 CPU 上**，值本来就在 host 内存里，所以直接 `memcpy` 读，**一次 D2H 都不做**：
+
+| 形态 | 处理 | p50（fp32） |
+| --- | --- | --- |
+| Tensor，同形连续 | tensor 变体内核 | **1.82–1.96 µs** |
+| Python float 标量（`add_.Scalar` 等） | scalar 变体内核，值在 host | **11.2–11.8 µs** |
+| Tensor 但 0 维（`view.add_(2.5)` → `add_.Tensor`） | 0 维在 CPU → 直接读 host；在 corex → 一次 D2H | 同 scalar 变体 |
+
+三条纪律都落实在 `read_scalar_from_device()`：按 `other.scalar_type()` 解释字节（`add_(2.5)` 常见
+是 0 维 fp32 配 fp16 self）、`n` 仍是输出 `numel`、读不了就报错不猜。
+
+### 16.6 `.out` 为什么还是 42 µs —— 不是 C++ 慢，是**它根本没走 C++**
+
+`probes/127` 的 dispatch 表是决定性证据：
+
+```
+aten::add.out   → PrivateUse1: registered at /dev/null:639 [kernel]          ← 走了 Python 注册
+aten::add_.Tensor → PrivateUse1: registered at .../corex_shim.cpp:1793 [kernel]  ← 走了 C++
+```
+
+`/dev/null:<行号>` 是 `torch.library.Library.impl()`（Python 侧）注册的标志，`corex_shim.cpp:<行号>`
+才是 `.so` 里的 `TORCH_LIBRARY_IMPL`。也就是说 `_device._out_binary` 仍把 4 个 `.out` 注册成
+Python 实现，C++ 被盖住。量到的同一个 op 两条路径差 10 倍（48.0 µs vs 4.5 µs）就是它。
+
+**排查这类问题的通用手法**：`torch._C._dispatch_dump_table("aten::xxx")` 看那一行的注册来源，
+不要靠猜「是不是 C++ 里有额外开销」。

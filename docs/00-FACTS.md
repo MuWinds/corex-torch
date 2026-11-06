@@ -725,3 +725,44 @@ Python 传来的 float 标量不该有同步。
 **异常不能再静默吞**：`_register_fast_ops()` 里原来的 `except: continue` 让「cubin 里读不出函数符号」
 变成「注册表空着、上层只看到没登记」，白查一轮。现在每个 (op, dtype, variant) 警告一次，并写明
 「该算子回落 Python、每次多约 50 µs」。
+
+## 35. 「谁在提供实现」的唯一硬判据：dispatch 表（`probes/026`）
+
+时间会被上下几层掩盖，只有 dispatch 表能直接说清谁在服务。判断规则：
+
+* `PrivateUse1: registered at /dev/null:<行号>` → **Python** 注册（`torch.library.Library.impl`）；
+* `PrivateUse1: registered at .../corex_shim.cpp:<行号>` → **C++** 注册（`TORCH_LIBRARY_IMPL`）。
+
+`probes/026` 实测（shim 21 个导出，C++ 声明接管 12 个 schema）：
+
+```
+aten::add.out      → /dev/null:639                        ← 仍是我们 Python 的（有意为之）
+aten::add_.Tensor  → .../corex_shim.cpp:1793              ← C++
+aten::mm           → .../corex_shim.cpp:1793              ← C++
+C++ 声明的 12 个：add/sub/mul/div × {.out, _.Tensor, _.Scalar}
+hasattr elementwise_supports_broadcast = False            ← 所以 .out 还没让位
+```
+
+**为什么 `.out` 还留着 Python**：C++ 的 `.out` 目前只做「同形、连续、同 dtype」。第一次全让位时
+`x1 * 2.0` 直接抛「只支持同形」，把 decode 的 `x1 * cos[:, None, :]` 从「能算但慢」变成「不能算」。
+现在用 `elementwise_supports_broadcast()` 做闸门：C++ 声明支持广播后自动让位，不需要改代码。
+
+同一份探针的三种形态（p50/500，空循环基线 0.2 µs）：
+
+| 形态 | p50 | 说明 |
+| --- | --- | --- |
+| `a.mul_(2.0)`（C++ inplace + 标量） | **3.1 µs** | 快路径真的在跑 |
+| `aten::add.out` 直调 | 48.0 µs | Python 实现（`.out` 未让位） |
+| `a + b`（composite：分配 + `.out`） | 62.1 µs | 1.4 分配 + 48 out + composite |
+| `a * 2.0` | 67.8 µs | 同上 |
+| `a * small`（广播） | 150.8 µs | `expand().contiguous()` 物化 |
+
+**结论**：`.out` 一旦让位，`a + b` 应该从 62 掉到 ~15–20 µs（分配 1.4 + out 12 + composite），
+这是 decode 里残差加（每层 2 次、每步 4 次）的直接收益。前提是 C++ 先补广播物化——
+否则 150 µs 的广播形态会变成「直接报错」。
+
+**另外两条已记档的事实**（torch28 的 `probes/125`、`127`）：
+
+* `view.add_(2.5)` 的 0 维张量在 **CPU** 上，读 host 即可、**零 D2H**——纠正了我「0 维要付 D2H」的估计；
+* 「带分配的形式」比「原地形式」贵 20 倍（62 vs 3.1 µs），差的不是内核而是 `aten::<op>.Tensor`
+  的 composite 路径（会分配 + 调到 `.out`）。所以**能让模型用原地就用原地**，这条对 coffin 集成有用。
