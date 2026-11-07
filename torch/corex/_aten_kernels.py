@@ -77,7 +77,12 @@ def _mm_impl(mat1, mat2):
 def _bmm_impl(self, mat2):
     """``aten::bmm``。"""
     _need(self, "bmm", "self")
-    _need(mat2, "bmm", "mat2")
+    if mat2.device.type != DEVICE_NAME:
+        raise NotImplementedError(f"corex 的 bmm 要求 mat2 在 corex 上，收到 {mat2.device}")
+    # 非连续的操作数自己物化一份：多一次拷贝，好过让调用方在 Python 层到处写 .contiguous()。
+    # 注意力里 `k.transpose(-2,-1)` 这种视图是常态，不物化就完全跑不了。
+    if not mat2.is_contiguous():
+        mat2 = mat2.contiguous()
     if self.dim() != 3 or mat2.dim() != 3 or self.shape[0] != mat2.shape[0]:
         raise NotImplementedError(
             f"corex 的 bmm 只处理同 batch 的三维，收到 {tuple(self.shape)} 与 {tuple(mat2.shape)}")
@@ -544,7 +549,12 @@ def _single_dim(dim, ndim: int, op: str) -> int:
 
 def _sum_dim_impl(self, dim, keepdim: bool = False, *, dtype=None):
     """``aten::sum.dim_IntList``：全归约 / 最后一维 / **单中间维**三种走不同内核。"""
-    _need(self, "sum.dim", "self")
+    if self.device.type != DEVICE_NAME:
+        raise NotImplementedError(f"corex 的 sum.dim 要求 self 在 corex 上，收到 {self.device}")
+    # 归约内核按连续内存算 (outer, red, inner)，所以非连续输入先物化。
+    # 兜底用 contiguous 而不是报错：`x.expand(...).sum(1)` 这类写法在模型里到处都是。
+    if not self.is_contiguous():
+        self = self.contiguous()
     if dtype is not None and dtype != self.dtype:
         raise NotImplementedError(f"corex 的 sum 暂不支持累加 dtype 提升（要求 {dtype}）")
     ndim = self.dim()
@@ -603,10 +613,20 @@ def _mean_dim_impl(self, dim, keepdim: bool = False, *, dtype=None):
     raise NotImplementedError(f"corex 的 mean 暂不支持多维组合 dim={list(dim)}，请逐维调用")
 
 
-def _var_correction_impl(self, dim, *, correction=1, keepdim: bool = False):
-    """``aten::var.correction``（dim 的 schema 是 ``int[1]?``，所以可能是 list）。"""
+def _var_correction_impl(self, dim=None, *, correction=1, keepdim: bool = False):
+    """``aten::var.correction``（dim 的 schema 是 ``int[1]?``，所以可能是 list、也可能是 None）。
+
+    ``dim=None`` 是 ``x.var()`` 的形态（对整个张量求方差）：内核是按「行 × 最后一维」写的，
+    这里把张量摊成一行再算，语义等价（全体元素）。
+    """
     _need(self, "var", "self")
     ndim = self.dim()
+    if dim is None:
+        flat = self.reshape(1, int(self.numel()))
+        out = _empty([] if not keepdim else [1] * ndim, self.dtype, self.device)
+        _mod("_ops_reduce").row_var(flat.data_ptr(), out.data_ptr(), 1, int(self.numel()),
+                                    _dtype_name(self.dtype), float(correction))
+        return out
     if ndim == 0 or _single_dim(dim, ndim, "var") != ndim - 1:
         raise NotImplementedError(f"corex 的 var 只支持最后一维，收到 dim={dim}")
     rows, cols = _rows_cols(self, "var")
@@ -625,10 +645,16 @@ def _var_dim_impl(self, dim, *, correction=1, keepdim: bool = False):
     return _var_correction_impl(self, dims[0], correction=correction, keepdim=keepdim)
 
 
-def _std_correction_impl(self, dim, *, correction=1, keepdim: bool = False):
-    """``aten::std.correction``：与 var 共用内核（``SQRT_OUT`` 分支）。"""
+def _std_correction_impl(self, dim=None, *, correction=1, keepdim: bool = False):
+    """``aten::std.correction``：与 var 共用内核（``SQRT_OUT`` 分支）。``dim=None`` 同 var。"""
     _need(self, "std", "self")
     ndim = self.dim()
+    if dim is None:
+        flat = self.reshape(1, int(self.numel()))
+        out = _empty([] if not keepdim else [1] * ndim, self.dtype, self.device)
+        _mod("_ops_reduce").row_std(flat.data_ptr(), out.data_ptr(), 1, int(self.numel()),
+                                    _dtype_name(self.dtype), float(correction))
+        return out
     if ndim == 0 or _single_dim(dim, ndim, "std") != ndim - 1:
         raise NotImplementedError(f"corex 的 std 只支持最后一维，收到 dim={dim}")
     rows, cols = _rows_cols(self, "std")
