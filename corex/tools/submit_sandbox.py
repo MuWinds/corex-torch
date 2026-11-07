@@ -1,12 +1,14 @@
-"""提交一个「常驻沙箱」作业：占住 gpu-node-07 的 8 张卡，循环跑队列里的脚本。
+"""提交一个「常驻沙箱」作业：占住一台节点的 8 张卡，循环跑队列里的脚本。
 
 为什么要有这个工具：沙箱作业有**寿命**，到点容器就没了，队列里没跑完的东西全部作废。
-而节点 6 的卡全坏、只有节点 7 有两张好的，所以作业必须**钉节点**——REST 接口没有节点约束
-字段，只能走 ``cbatch -w NODE``。``platform/scow/tools/run_pinned.py`` 能做这件事，但它
-**会一直等到作业结束**（对 1440 分钟的作业等于挂住 24 小时），所以这里只发不等。
+同一机箱里每次卡死的是哪张、哪个节点更健康，都是**会话级**事实，不能按节点名判断；
+所以作业必须**钉节点**——REST 接口没有节点约束字段，只能走 ``cbatch -w NODE``。
+``platform/scow/tools/run_pinned.py`` 能做这件事，但它**会一直等到作业结束**
+（对 4320 分钟上限的作业等于挂住 3 天），所以这里只发不等。
 
-一次发两个作业（``-t 1440`` 各 24 小时）的用法：第一个跑完、容器消失后，第二个被调度起来
-接着吃同一个队列目录 ``coffin-work/base/sandbox``，于是**队列跨容器连续**，中间不留空档。
+一次发两个作业的用法：第一个跑完、容器消失后，第二个被调度起来接着吃同一个队列目录
+``coffin-work/base/sandbox``，于是**队列跨容器连续**，中间不留空档。
+作业时长上限是平台 QoS 的 4320 分钟（3 天），超过会被 500 拒掉。
 
 用法（本机，能连 SCOW 的登录节点）::
 
@@ -17,7 +19,8 @@ Constraints:
     * ``command`` 只能是一行，所以载荷是 base64 编码后塞进 ``cbatch --wrap``；
     * 脚本内容不能含字面量 ``#!/bin/bash``（SCOW 网关会把它过滤成 0 字节）；
     * 必须带 ``--gres gpu:8``：不带的话作业不持有加速卡，``torch.cuda`` 会报
-      「No CUDA GPUs are available」——看起来像卡坏了，其实只是没申请。
+      「No CUDA GPUs are available」——看起来像卡坏了，其实只是没申请；
+    * 8 卡作业必须显式给 ``coreCount``（门户默认 14*8=112 超过单节点 110 核）。
 """
 
 from __future__ import annotations
@@ -34,8 +37,8 @@ sys.path.insert(0, str(_PLATFORM))
 
 from scow import ScowClient  # noqa: E402
 
-#: 远程 runner 脚本的来源（corex-triton 的沙箱运行器，与队列协议是同一份实现）。
-RUNNER_SRC = pathlib.Path(__file__).resolve().parents[3] / "corex-triton" / "tools" / "sandbox.sh"
+#: 远程 runner 脚本的来源（沙箱的唯一运行器，队列协议只此一份）。
+RUNNER_SRC = pathlib.Path(__file__).resolve().parents[3] / "corex_drive_re" / "sandbox" / "sandbox.sh"
 
 
 def main(api: argparse.Namespace) -> int:

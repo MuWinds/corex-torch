@@ -2,7 +2,7 @@ set -u
 # 目的：验收 corex-torch 自己的设备层（src/corex_torch/_runtime.py），而不是再写一遍 ctypes 探针。
 # 它要回答三件事：
 #   1. 我们的封装在真机上能不能拿到设备属性、分配、往返拷贝；——设备层成立的前提
-#   2. 事件能不能「同时挂起多个」——GRAPH-REPLAY.md §2.5 说每个队列只有 4 个 user fence 槽，
+#   2. 事件能不能「同时挂起多个」——docs/corex_drive/GRAPH-CHANNEL.md 说每个队列只有 4 个 user fence 槽，
 #      这决定了 torch 侧 Event 的实现能不能随手创建（docs/05-DRIVER-CONSTRAINTS.md R3）；
 #   3. cudaMalloc / cudaEventRecord 的固定开销——torch 会频繁申请小块，分配器要不要做缓存池。
 # 编译/算子还没接，这一段刻意只测设备层。

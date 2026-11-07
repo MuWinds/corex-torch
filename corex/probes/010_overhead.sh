@@ -1,6 +1,6 @@
 set -u
 # 目的：定位「torch 端到端 341 µs vs 内核本身 178 µs」那 163 µs 差额花在哪。
-# 为什么值得单独一个探针：coffin 的 decode 每 token 有六百多次发射（GRAPH-REPLAY.md §17.1），
+# 为什么值得单独一个探针：coffin 的 decode 每 token 有六百多次发射（docs/corex_drive/GRAPH-CHANNEL.md），
 # 若每次多 163 µs，一步就是 100 ms 量级——比 kernel 本身还贵。所以差额必须在接引擎前算清。
 #
 # 拆成四段分别计时：

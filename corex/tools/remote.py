@@ -11,9 +11,10 @@ Module: ``corex-torch/tools``。在 Windows 侧运行，经 ``platform/scow`` �
 Constraints:
     * 上传的脚本正文里不能出现字面量 ``#!/bin/bash``：SCOW 网关会把含该串的文件整份过滤成
       0 字节并返回成功（``platform/scow/README.md`` §5.2）。脚本一律以 ``set -u`` 开头。
-    * 队列文件名就是日志名与完成标记名，重名会互相覆盖；重跑同一个名字前先 ``sbx-reset``。
-    * 远端沙箱根目录写死成 ``coffin-work/base/sandbox``，与 ``corex-triton/tools/sandbox.sh``
-      的 ``SANDBOX=`` 一致；改一处就要改两处。
+    * 队列文件名就是日志名与完成标记名，重名会互相覆盖；重跑同名脚本前先 ``sbx-reset``，
+      并确认 ``done/<name>.running.sh`` 不存在（runner 的 ``mv`` 遇到它就不执行，静默跳过）。
+    * 远端沙箱根目录写死成 ``coffin-work/base/sandbox``，与沙箱唯一运行器
+      ``corex_drive_re/sandbox/sandbox.sh`` 的 ``SANDBOX=`` 一致；改一处就要改两处。
 """
 
 from __future__ import annotations
