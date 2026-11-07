@@ -764,3 +764,26 @@ mini decoder 全局相对误差 **6.631e-06**、argmax 一致率 **1.000**、热
 **已知性能缺口（不影响正确性）**：`sub` 与部分 `add/mul/div` 变体的热路径内核没登记给 C++
 （警告 `No module named 'triton_corex.compiler'`），每次多约 50 µs。根因待查：某些编译路径上
 `triton` 被解析成了 venv 里那个**没有 corex 后端**的安装，于是 `activate()` 掉回插件分支。
+
+## 27. 编 fork 的 torch 本体：六个卡点（2026-11-07）
+
+目标是把「torch/corex 覆盖进已装 wheel」升级成「fork 自己编出来的 wheel」。纯 CPU 构建
+（`USE_CUDA=0`），不需要卡，但平台环境有几处必须知道：
+
+| 卡点 | 现象 | 做法 |
+| --- | --- | --- |
+| CMake 版本 | `no cmake >= 3.27.0 found: [3.22.0, 3.22.0]` | torch 2.8 要求 ≥3.27；`pip install "cmake>=3.27"` 到 `~/venvs/torchbuild`，**并且把它的 bin 放进 PATH**（`tools/setup_helpers/cmake.py` 是 `which cmake` 找的） |
+| 子模块 | `Submodule initialization failed` | tar 包没有 `.git` → 在登录节点 `git clone --depth 1 --branch v2.8.0 --recurse-submodules`（2.3 GB，含 third_party） |
+| NCCL | `git clone https://github.com/NVIDIA/nccl` 失败 | `USE_NCCL=0 USE_DISTRIBUTED=0` |
+| NNPACK | `ModuleNotFoundError: No module named 'six'` | `USE_NNPACK=0`（顺带 `pip install six`） |
+| **locale / 编码** | `UnicodeDecodeError: 0xe0 in position ...`（读 `CMakeCache.txt`） | 这台机器的 CMake 会按本地 locale 写缓存，而 torch 按 UTF-8 读。解法：**删掉旧缓存 + 用 `LC_ALL=C.UTF-8`** 重新配置，让缓存本身就是 UTF-8（给 `cmake.py` 的 `open` 加 `errors="replace"` 只能兜住一处调用，不彻底） |
+| 并发 | `cc1plus: fatal error: Killed signal terminated` | 内存/ulimit 都不是瓶颈（1 TB 空闲、unlimited），是瞬时竞争；把 `MAX_JOBS` 从 48 降到 12 才稳 |
+
+另外两个环境事实（与构建无关但会浪费时间）：
+
+* **计算节点没有外网**：pip 在 gpu-node 上会一直重试然后失败。装依赖一律在登录节点做。
+* **登录节点被别人压满时编译极慢**（实测 10 分钟只编 4 个文件）。编译放计算节点，
+  `$HOME` 共享，不用搬数据。
+
+进度：`~/work/torchfork2/pytorch`（上游 v2.8.0 + 我们的 `torch/corex` + `torch/__init__.py` 接入）。
+清缓存后重编 1568 个目标，然后 `setup.py bdist_wheel` 产出 `dist/torch-2.8.0-cp310-*.whl`。
