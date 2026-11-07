@@ -108,6 +108,11 @@ def activate():
     # ``triton.backends.<name>``），所以「把 fork 的 python 目录挂进 PYTHONPATH」只能让
     # ``import triton.backends.corex`` 成功，``backends`` 字典里仍然是空的。这里补登记一次，
     # 否则会掉回插件分支并报 `No module named 'triton_corex'`。
+    if os.environ.get("COREX_DEBUG"):
+        import triton as _t
+
+        print(f"[corex-triton] activate: triton={_t.__file__} backends={sorted(backends)} "
+              f"fork={_is_fork_backend()}", flush=True)
     if "corex" not in backends and _is_fork_backend():
         from triton.backends.corex.compiler import CorexBackend as _ForkCompiler
         from triton.backends.corex.driver import CorexDriver as _ForkDriver
