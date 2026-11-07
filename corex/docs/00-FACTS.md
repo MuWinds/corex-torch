@@ -787,3 +787,21 @@ mini decoder 全局相对误差 **6.631e-06**、argmax 一致率 **1.000**、热
 
 进度：`~/work/torchfork2/pytorch`（上游 v2.8.0 + 我们的 `torch/corex` + `torch/__init__.py` 接入）。
 清缓存后重编 1568 个目标，然后 `setup.py bdist_wheel` 产出 `dist/torch-2.8.0-cp310-*.whl`。
+
+### 27.1 进展：wheel 编出来了（先 cp312，再 py310）
+
+`python setup.py bdist_wheel` 在计算节点跑通，产物：
+
+```
+torch-2.8.0a0+gitba56102-cp312-cp312-linux_x86_64.whl   86 MB
+```
+
+装进干净 venv 后验证：`VERSION 2.8.0a0+gitba56102`、**`HAS_COREX_SUBMODULE True`**
+（`torch/corex` 确实被打进 wheel）、CPU 矩阵乘正常、`torch.backends.mkldnn.is_available()`
+为 False（我们构建时关了 MKLDNN）。
+
+但登录节点默认 `python3` 是 3.12，而目标运行时是 **py310**（厂商 torch 2.1 基线、
+`corex28` 环境、以及我们那个 py310 ABI 的 shim 都在 py310 上）。于是又用
+`/data/software/Anaconda3/.../envs/py310` 建了 `~/venvs/torchbuild310` 重编：
+把 cp312 的 `build/` 挪成 `build-cp312`、清掉 `CMakeCache.txt`、`LC_ALL=C.UTF-8`、
+`MAX_JOBS=12`，全量 5881 个目标。
