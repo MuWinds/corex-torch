@@ -698,3 +698,31 @@ torch.corex.Stream / Event / current_stream / stream / synchronize   全部就�
 
 顺带确认：`$W/ops/corex-torch/src` 是**另一份 checkout**（torch28 的工作目录），它的 `_device.py`
 确实还留着旧文案——所以「哪份在生效」必须靠打印 `corex_torch.__file__` 来确认（`probes/029`）。
+
+## 25. torch 2.8 适配现状：一条前向通、算子矩阵 37/65（2026-11-07）
+
+**新栈**：torch 2.8.0+cpu（fork 树里的 `torch/corex`，由 `torch/__init__.py` 自动注册）
++ triton fork（`triton.backends.corex`，bf16 改写仍由 torch 侧包一层）。真机 gpu-node-07。
+
+端到端（`probes/157`，payload 与 `probes/018` 同一份代码）：
+mini decoder 全局相对误差 **6.631e-06**、argmax 一致率 **1.000**、热态 6.0 ms/步。
+
+算子矩阵（`probes/161`，65 条 torch 语义）：**37/65**。缺口按原因分三类：
+
+1. **`.out` 变体没注册（最大一块，约 18 条）**：`abs/tanh/sigmoid/reciprocal/sign/pow.Tensor_Scalar
+   /clamp/gt/lt/addcmul/cumsum/addmm/gather/flip/unfold/masked_select` 都卡在
+   `aten::X.out` 上。根因是 `_ops_elementwise` 只有 add/sub/mul/div/标量/fill/silu/copy，
+   没有通用一元内核，所以这些算子连 Python 实现都没有。
+2. **只支持最后一维的归约**：`max.dim/argmax/sum` 在 `dim=0` 上直接 `NotImplementedError`。
+   正解是把「非最后一维」用 permute→算→permute 回来的通用外壳兜住（多一次拷贝但语义完整）。
+3. **广播相关**：`layer_norm` 带 bias 曾经全挂（`materialize_broadcast` 的 memcpy2D 源 pitch=0，
+   已修）；这一轮矩阵里它仍失败的记录来自**旧 shim**，修好的 .so 在 `probes/156` 里编出来了。
+
+另外两条待办，与算子无关但影响"真 fork"：
+
+* 本轮开始编 fork 的 torch 本体（CPU-only）。第一次失败在两个地方：CMake 必须 ≥3.27
+  （系统 3.26.4，已用 `pip install "cmake>=3.27"` 进 `~/venvs/torchbuild`，且**必须放进 PATH**，
+  torch 的 `tools/setup_helpers/cmake.py` 是 `which cmake` 找的）；以及 tar 包没有 `.git`
+  → `setup.py` 初始化不了 `third_party` 子模块。正在登录节点重新 clone 带子模块的上游树。
+* 计算节点**没有外网**：pip 在 gpu-node 上会一直重试然后失败。装依赖一律在登录节点做，
+  计算节点只负责编/跑。
