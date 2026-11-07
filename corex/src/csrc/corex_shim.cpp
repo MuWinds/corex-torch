@@ -1780,6 +1780,20 @@ at::Tensor materialize_broadcast(const at::Tensor& src, const at::Tensor& proto,
     const int64_t block_bytes = run * item;
     const int64_t dst_pitch = dst_strides[ndim - run_dims - 1] * item;
     const int64_t src_pitch = src_strides[ndim - run_dims - 1] * item;
+    // src_pitch == 0 说明源在**这一维上是广播**（`bias.expand_as(out)` 这种：size 被 expand 成
+    // 目标大小，但 stride 仍是 0）。cudaMemcpy2D 的 pitch 传 0 直接 `invalid argument`，
+    // 所以这里退化成「每行都从同一块源搬」——行数就是 outer，成本一样是一次循环。
+    if (outer > 1 && src_pitch == 0) {
+      for (int64_t i = 0; i < outer; ++i) {
+        check_rc("cudaMemcpy(广播物化)",
+                 api().cudaMemcpy(
+                     reinterpret_cast<void*>(reinterpret_cast<int64_t>(tmp.data_ptr()) +
+                                             i * dst_pitch),
+                     reinterpret_cast<const void*>(src.const_data_ptr()),
+                     static_cast<size_t>(block_bytes), /*kind=*/3));
+      }
+      return tmp;
+    }
     memcpy2d(reinterpret_cast<int64_t>(tmp.data_ptr()), outer > 1 ? dst_pitch : block_bytes,
              reinterpret_cast<int64_t>(src.const_data_ptr()), outer > 1 ? src_pitch : block_bytes,
              block_bytes, outer, proto.device().index());

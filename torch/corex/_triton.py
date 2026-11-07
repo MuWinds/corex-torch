@@ -52,6 +52,21 @@ def corex_triton_src() -> Optional[str]:
     return guess if os.path.isdir(os.path.join(guess, "triton_corex")) else None
 
 
+
+def _is_fork_backend() -> bool:
+    """当前 ``triton.backends.corex`` 是不是 fork 自带的那个后端。
+
+    判别方式：后端 compiler 模块的 ``__file__`` 在 triton 包目录之内。插件形态下
+    ``triton_corex`` 在 triton 包外，路径里不会出现 ``/triton/backends/corex/``。
+    """
+    try:
+        import triton.backends.corex.compiler as _compiler
+    except Exception:
+        return False
+    path = getattr(_compiler, "__file__", "") or ""
+    return "triton/backends/corex" in path.replace("\\", "/")
+
+
 def _ensure_importable() -> None:
     """把 corex-triton 的源码目录挂进 ``sys.path``。"""
     path = corex_triton_src()
@@ -86,7 +101,46 @@ def activate():
     from triton.backends import Backend, backends
     from triton.runtime.driver import driver as _driver_config
 
-    import triton_corex  # noqa: F401  - 导入即把 backend 注册进 triton.backends.backends
+    # fork 形态优先：corex 后端就在 triton 树里（``triton.backends.corex``），bf16 改写也已经
+    # 搬进它自己的 ``backend/rewrite.py``，torch 这边不需要再包一层子类。
+    #
+    # 注意：Triton 3.4 的后端表来自 **entry point**（setup.py 里为每个 in-tree 后端生成
+    # ``triton.backends.<name>``），所以「把 fork 的 python 目录挂进 PYTHONPATH」只能让
+    # ``import triton.backends.corex`` 成功，``backends`` 字典里仍然是空的。这里补登记一次，
+    # 否则会掉回插件分支并报 `No module named 'triton_corex'`。
+    if "corex" not in backends and _is_fork_backend():
+        from triton.backends.corex.compiler import CorexBackend as _ForkCompiler
+        from triton.backends.corex.driver import CorexDriver as _ForkDriver
+
+        from . import _bf16
+
+        class _TorchCorexCompiler(_ForkCompiler):
+            """fork 的编译器 + 一层 bf16 转换改写。
+
+            为什么 fork 里还要包这一层：``corex-triton`` 的 ``backend/rewrite.py`` 目前只做
+            llir 的通用改写，**没有** bf16 转换（实测 ``llc -march=bi`` 直接
+            ``LLVM ERROR: Cannot select: bf16 = fp_round``）。这段改写应该搬进 fork 的
+            ``rewrite.py``，搬完这里就退化成一层空壳、可以直接删。
+            """
+
+            @staticmethod
+            def make_cubin(src, metadata, options) -> bytes:
+                rewritten, hits = _bf16.rewrite_bf16_conversions(src)
+                if hits:
+                    counts = dict(metadata.get("corex_rewrite_counts") or {})
+                    counts["bf16_conversions"] = hits
+                    metadata["corex_rewrite_counts"] = counts
+                return _ForkCompiler.make_cubin(rewritten, metadata, options)
+
+        backends["corex"] = Backend(_TorchCorexCompiler, _ForkDriver)
+
+    if "corex" in backends and _is_fork_backend():
+        if not _ACTIVATED:
+            _driver_config.set_active(backends["corex"].driver())
+            _ACTIVATED = True
+        return _driver_config.active
+
+    import triton_corex  # noqa: F401  - 插件形态：导入即注册 backend
     from triton_corex.compiler import CorexBackend
     from triton_corex.driver import CorexDriver
 
@@ -189,6 +243,11 @@ def launch(kernel, grid, *args, stream: Optional[int] = None) -> None:
 def synchronize() -> None:
     """等设备上所有工作完成（走的是 corex 后端自己的 ``cuCtxSynchronize``）。"""
     activate()
+    if _is_fork_backend():
+        from triton.backends import backends
+
+        backends["corex"].driver().get_device_interface().synchronize()
+        return
     from triton_corex.driver import CorexDeviceInterface
 
     CorexDeviceInterface.synchronize()

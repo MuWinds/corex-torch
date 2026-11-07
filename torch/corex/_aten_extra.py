@@ -491,10 +491,15 @@ def _copy_impl(self, src, non_blocking: bool = False):
             height = 1
             for dim in outer_dims:
                 height *= sizes[dim]
-            memcpy2d(dst_base, dst_stride[outer_dims[0]] * item,
-                     src_base, src_stride[outer_dims[0]] * item,
-                     run * item, height, device_index)
-            return self
+            dst_pitch = dst_stride[outer_dims[0]] * item
+            src_pitch = src_stride[outer_dims[0]] * item
+            # 三个参数都必须为正：pitch/width 为 0 时 cudaMemcpy2D 会返回
+            # `invalid argument`（rc=1）而不是安静地拷 0 字节——2026-11-07 在 layer_norm
+            # 的 weight 广播上踩到过。挡掉之后落到后面的逐元素路径，结果仍然对。
+            if dst_pitch > 0 and src_pitch > 0 and run > 0 and height > 0:
+                memcpy2d(dst_base, dst_pitch, src_base, src_pitch,
+                         run * item, height, device_index)
+                return self
 
     # 路径 B0：源是「均匀步长视图」（每个非 size-1 维的 stride 都等于 k × 该维之后的元素数），
     # 而目的连续。这时整个拷贝等价于「带源步长 k 的 1-D 拷贝」：一条 memcpy2D 就够
@@ -516,7 +521,9 @@ def _copy_impl(self, src, non_blocking: bool = False):
                     ok_uniform = False
                     break
             tail *= sizes[dim]
-        if ok_uniform and uniform_step is not None:
+        # uniform_step 为 0 说明源在这一维上是广播（stride==0）：memcpy2D 的源 pitch 会是 0，
+        # 直接 `invalid argument`。这种形状交给后面的路径逐元素处理。
+        if ok_uniform and uniform_step is not None and uniform_step > 0:
             memcpy2d(dst_base, item, src_base, uniform_step * item, item, total, device_index)
             return self
 
