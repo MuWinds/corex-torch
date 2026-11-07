@@ -602,6 +602,49 @@ def _make_all_any(kind: str):
     return out_impl, functional
 
 
+def _host_reduce_then_back(kind: str, self, dim: int, **kwargs):
+    """把「排序类」算子放到主机上算，再搬回卡。
+
+    为什么不在卡上实现：``sort``/``topk`` 需要一条带比较的排序内核（或基数排序），
+    而**没实现时 torch 的分解会直接把进程搞崩**（probes/182：`topk` 没有 traceback，
+    是 segfault——比报错危险得多）。采样、argmax 后的 top-k 都是几十万元素量级，
+    一次 D2H + H2D 在这个规模上是毫秒级，够用且绝不会崩。
+    """
+    import torch
+
+    host = self.detach().cpu()
+    if kind == "topk":
+        vals, idx = host.topk(int(kwargs["k"]), int(dim), bool(kwargs.get("largest", True)),
+                              bool(kwargs.get("sorted", True)))
+        return vals.to(self.device), idx.to(self.device)
+    if kind == "sort":
+        res = host.sort(int(dim), bool(kwargs.get("descending", False)))
+        return res.values.to(self.device), res.indices.to(self.device)
+    if kind == "argsort":
+        return host.argsort(int(dim), bool(kwargs.get("descending", False))).to(self.device)
+    raise NotImplementedError(kind)
+
+
+def _topk_impl(self, k, dim: int = -1, largest: bool = True, sorted: bool = True):
+    """``aten::topk.values``：主机回退（见 ``_host_reduce_then_back``）。"""
+    if os.environ.get("COREX_DEBUG"):
+        print("[corex] _topk_impl entered", flush=True)
+    _need(self, "topk", "self")
+    return _host_reduce_then_back("topk", self, dim, k=k, largest=largest, sorted=sorted)
+
+
+def _sort_impl(self, dim: int = -1, descending: bool = False):
+    """``aten::sort``：主机回退。"""
+    _need(self, "sort", "self")
+    return _host_reduce_then_back("sort", self, dim, descending=descending)
+
+
+def _argsort_impl(self, dim: int = -1, descending: bool = False):
+    """``aten::argsort``：主机回退。"""
+    _need(self, "argsort", "self")
+    return _host_reduce_then_back("argsort", self, dim, descending=descending)
+
+
 def _sdpa_impl(query, key, value, attn_mask=None, dropout_p: float = 0.0,
                is_causal: bool = False, scale=None, enable_gqa: bool = False):
     """``aten::scaled_dot_product_attention``：显式实现 ``softmax(q kᵀ scale + bias) v``。
@@ -1267,6 +1310,13 @@ def register(lib) -> None:
     lib.impl("any", _any_fn, "PrivateUse1")
     # sdpa 也是 CompositeImplicitAutograd：只挂 PrivateUse1 的话，带梯度的调用会停在
     # `Autogradcorex` 那层报「算子不存在」（probes/175 实测）。两个键都挂。
+    # 三个键都挂：`aten::topk` 在 ATen 里是 composite，实测只挂 `topk.values` 时
+    # 调用会在 C++ 里直接段错误（probes/185，没有 traceback），所以把外层名字也接住。
+    for _name in ("topk.values", "topk"):
+        lib.impl(_name, _topk_impl, "PrivateUse1")
+    lib.impl("sort", _sort_impl, "PrivateUse1")
+    lib.impl("sort.values_stable", _sort_impl, "PrivateUse1")
+    lib.impl("argsort", _argsort_impl, "PrivateUse1")
     for _key in ("PrivateUse1", "AutogradPrivateUse1"):
         lib.impl("scaled_dot_product_attention", _sdpa_impl, _key)
         lib.impl("_scaled_dot_product_attention_math", _sdpa_impl, _key)
