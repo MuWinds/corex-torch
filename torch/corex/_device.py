@@ -23,6 +23,7 @@ Constraints:
 from __future__ import annotations
 
 import importlib
+import sys
 import types
 from typing import Any, Optional, Sequence
 
@@ -729,7 +730,21 @@ def register(device_index: int = 0) -> None:
     # 而 device module 必须早于 C++ 的 lazy init（它会 import torch.corex）。
     torch.utils.rename_privateuse1_backend(DEVICE_NAME)
     module = _make_device_module()
-    torch._register_device_module(DEVICE_NAME, module)
+    try:
+        torch._register_device_module(DEVICE_NAME, module)
+    except RuntimeError as exc:
+        # fork 形态下本包就叫 `torch.corex`，与设备同名：rename 之后 torch 会把**已导入的**
+        # `torch.corex` 直接当成设备运行时模块登记掉，这里再登记一次就会报
+        # `The runtime module of 'corex' has already been registered`。
+        # 处理办法不是硬吞：把 torch 期望的那些接口（Stream/Event/manual_seed/...）补到
+        # 那个已被登记的模块上，保证两条路径下对外表现一致。
+        if "already been registered" not in str(exc):
+            raise
+        pkg = sys.modules[__package__]
+        for name in dir(module):
+            if name.startswith("__") or hasattr(pkg, name):
+                continue
+            setattr(pkg, name, getattr(module, name))
     shim().init(int(device_index))
     _register_ops()
     _state["registered"] = True
