@@ -29,13 +29,17 @@ __all__ = [
     "set_device",
     "synchronize",
     "properties",
+    "current_stream",
+    "empty_cache",
     "Stream",
     "Event",
     "register",
 ]
 
 #: 设备名。与 ``torch.utils.rename_privateuse1_backend`` 一致，也是用户写的那个字符串。
-DEVICE_NAME = "corex"
+# fork 形态下外部设备名是 "cuda"（客户习惯）；落点是 PrivateUse1，
+# 由 c10/core/Device.cpp 把 "cuda" 解析过来。triton 那边的后端名仍是 corex，两者别混。
+DEVICE_NAME = "cuda"
 
 #: 设备后端版本，写进 ``torch.corex`` 模块的属性，便于在报错信息里对账。
 __version__ = "0.1.0"
@@ -73,6 +77,22 @@ def synchronize() -> None:
 def properties(index: int = 0) -> dict:
     """设备属性字典（名字、warp 宽度、shared 上限、显存）。"""
     return _runtime.properties(index)
+
+
+def current_stream():
+    """当前流。``torch.cuda.current_stream()`` 的委托目标。"""
+    from . import _device
+
+    return _device.current_stream()
+
+
+def empty_cache() -> None:
+    """释放缓存池里没人用的块（``torch.cuda.empty_cache()`` 的委托目标）。"""
+    from . import _device
+
+    fn = getattr(_device, "empty_cache", None)
+    if fn is not None:
+        fn()
 
 
 def register() -> None:

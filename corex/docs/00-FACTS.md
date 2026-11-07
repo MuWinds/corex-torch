@@ -805,3 +805,37 @@ torch-2.8.0a0+gitba56102-cp312-cp312-linux_x86_64.whl   86 MB
 `/data/software/Anaconda3/.../envs/py310` 建了 `~/venvs/torchbuild310` 重编：
 把 cp312 的 `build/` 挪成 `build-cp312`、清掉 `CMakeCache.txt`、`LC_ALL=C.UTF-8`、
 `MAX_JOBS=12`，全量 5881 个目标。
+
+## 28. 客户习惯要 `torch.cuda`：厂商怎么做的、我们怎么做的（2026-11-07）
+
+**厂商 torch 2.1 的做法**（`torch-2.1.0+corex.3.2.1`，静态查证）：
+
+```
+torch/version.py : cuda = '10.2'
+torch/lib/       : libtorch_cuda.so, libc10_cuda.so, libtorch_cuda_linalg.so, ...
+```
+
+即他们是 **`USE_CUDA=1` 编出来的真 CUDA 后端**，只是底层 CUDA 兼容层来自 CoreX。
+`torch/cuda/__init__.py` 里唯一的厂商补丁是 `is_bf16_supported()` 里一句 `if torch.corex: return True`。
+
+**这条路 torch 2.8 走不通**：`cmake/public/cuda.cmake:72` 有
+`if(CUDA_VERSION VERSION_LESS 11.0)` 直接报错退出，而 CoreX 兼容层声明 10.2；
+就算绕过这道检查，2.8 的 CUDA 后端还用到 11.x 才有的 API（cudaMemPool、cuMemMap 多播、
+新版 cuBLAS 接口），会变成成片的 `#if CUDA_VERSION` 补丁。
+
+**我们的做法：设备名别名**（3 处 C++ + 4 处 Python，合计 ~128 行）：
+
+| 文件 | 改动 | 作用 |
+| --- | --- | --- |
+| `c10/core/Device.cpp` | 字符串表里 `{"cuda", DeviceType::PrivateUse1}` | `torch.device("cuda")`、`.to("cuda")`、`model.cuda()` 全部落到我们的后端 |
+| `c10/core/DeviceType.cpp` | 保留名单去掉 `"cuda"` | 允许 `rename_privateuse1_backend("cuda")`（上游会以「in-tree device name」拒绝） |
+| `c10/core/Device.h` | `Device::is_cuda()` 对 PrivateUse1 也返回 true | 客户代码里大量的 `if x.is_cuda:` 才走对的支路 |
+| `torch/cuda/__init__.py` | 末尾把 `is_available/device_count/current_device/set_device/synchronize/Stream/Event/...` 委托给 `torch.corex` | `torch.cuda.*` 这套 API 可用 |
+| `torch/backends/cuda/__init__.py` | `is_built()` 在 corex 可用时返回 True | 生态里 `torch.backends.cuda.is_built()` 的判断 |
+| `torch/__init__.py` | `torch.version.cuda = "10.2"`（与厂商同口径） | `torch.version.cuda is None` 会让不少库走错分支 |
+| `torch/corex/*` | `DEVICE_NAME = "cuda"` | 后端注册名与上面一致；triton 那边的后端名仍是 `corex`，两者别混 |
+
+这样做的好处：客户代码一行不改（`model.cuda()`、`device="cuda"`、`torch.cuda.synchronize()`），
+而底层仍是已经验证过的 PrivateUse1 后端，不需要把 CUDA 后端编进来。
+代价：`torch.cuda.amp`、`torch.cuda.CUDAGraph` 这类「必须真有 CUDA」的功能没有实现
+（后者本来就在平台的禁用清单里）。

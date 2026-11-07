@@ -36,8 +36,9 @@ def _ops_mod():
     return _ops_elementwise
 
 
-#: 设备名。写到 ``torch.device(...)`` 里就是这个名字。
-DEVICE_NAME = "corex"
+#: 设备名。**fork 形态下叫 ``cuda``**：客户代码写 ``torch.cuda`` / ``device="cuda"``，
+#: 由 ``c10/core/Device.cpp`` 把 "cuda" 解析到 PrivateUse1（见 docs/00-FACTS.md §28）。
+DEVICE_NAME = "cuda"
 
 #: C++ shim 的模块名（``tools/build_shim.py`` 的产物，落在包目录里）。
 SHIM_MODULE = "torch.corex._corex_shim"

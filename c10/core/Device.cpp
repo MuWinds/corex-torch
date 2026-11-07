@@ -16,7 +16,8 @@ DeviceType parse_type(const std::string& device_string) {
       static_cast<size_t>(DeviceType::COMPILE_TIME_MAX_DEVICE_TYPES)>
       types = {{
           {"cpu", DeviceType::CPU},
-          {"cuda", DeviceType::CUDA},
+          // corex fork: this build has no CUDA backend (USE_CUDA=0); "cuda" means our card.
+          {"cuda", DeviceType::PrivateUse1},
           {"ipu", DeviceType::IPU},
           {"xpu", DeviceType::XPU},
           {"mkldnn", DeviceType::MKLDNN},

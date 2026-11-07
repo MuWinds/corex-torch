@@ -1930,3 +1930,79 @@ __all__ = [
     "tunable",
     "utilization",
 ]
+
+
+# ---------------------------------------------------------------------------
+# corex fork：把 `torch.cuda` 接到本平台的卡上。
+#
+# 为什么这样做，而不是照厂商 torch 2.1 那样 `USE_CUDA=1` 直接编 CUDA 后端：
+# 厂商那版声明 `torch.version.cuda = "10.2"`，而 torch 2.8 的 CUDA 后端在
+# `cmake/public/cuda.cmake` 里就要求 >= 11.0，且代码里大量使用 11.x 才有的 API
+# （cudaMemPool、cuMemMap 多播、新的 cuBLAS 接口）。CoreX 的兼容层停在 10.2，
+# 照抄会在 configure 阶段就被拒，硬改则是成片的 `#if CUDA_VERSION` 补丁。
+#
+# 因此这里走「设备名别名」：`c10/core/Device.cpp` 把字符串 "cuda" 解析到 PrivateUse1，
+# `c10/core/DeviceType.cpp` 放开 "cuda" 这个保留名；本文件再把 torch.cuda 的常用入口
+# 委托给 `torch.corex`。客户代码（`model.cuda()`、`device="cuda"`、`torch.cuda.synchronize()`）
+# 一行不用改，底层仍然是我们的 PrivateUse1 后端。
+#
+# 只在「没有编 CUDA 后端」时接管：真有 CUDA 后端时这些函数保持上游语义。
+if not hasattr(torch._C, "_cuda_getDeviceCount"):  # 本 fork 是 USE_CUDA=0
+    try:
+        from torch import corex as _corex_backend
+
+        if _corex_backend.is_available():
+
+            def is_available() -> bool:  # noqa: F811
+                r"""本平台上恒为 True（卡在、运行时在）。"""
+                return bool(_corex_backend.is_available())
+
+            def device_count() -> int:  # noqa: F811
+                r"""可用卡数。"""
+                return int(_corex_backend.device_count())
+
+            def current_device() -> int:  # noqa: F811
+                return int(_corex_backend.current_device())
+
+            def set_device(device: "int | torch.device") -> None:  # noqa: F811
+                _corex_backend.set_device(_as_index(device))
+
+            def synchronize(device: "int | torch.device | None" = None) -> None:  # noqa: F811
+                _corex_backend.synchronize()
+
+            def _as_index(device) -> int:
+                if isinstance(device, torch.device):
+                    return int(device.index or 0)
+                return int(device)
+
+            def _lazy_init() -> None:  # noqa: F811
+                """上游用它做「首次使用前初始化」；我们的 context 是惰性的，无需做事。"""
+                return None
+
+            def is_initialized() -> bool:  # noqa: F811
+                return True
+
+            def manual_seed(seed: int) -> None:  # noqa: F811
+                """卡上没有 RNG：与 torch.corex 的口径一致，只在 CPU 上生效。"""
+                return None
+
+            def manual_seed_all(seed: int) -> None:  # noqa: F811
+                return None
+
+            def empty_cache() -> None:  # noqa: F811
+                """释放缓存池里没人用的块。"""
+                try:
+                    _corex_backend.empty_cache()
+                except AttributeError:
+                    return None
+
+            Stream = _corex_backend.Stream  # noqa: F811
+            Event = _corex_backend.Event  # noqa: F811
+
+            def current_stream(device=None):  # noqa: F811
+                return _corex_backend.current_stream()
+
+            def default_stream(device=None):  # noqa: F811
+                return _corex_backend.current_stream()
+    except Exception:  # pragma: no cover - 没有 corex 的机器保持上游行为
+        pass

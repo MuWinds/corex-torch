@@ -148,8 +148,10 @@ void register_privateuse1_backend(const std::string& backend_name) {
       "torch.register_privateuse1_backend() has already been set! Current backend: ",
       privateuse1_backend_name);
 
-  static const std::array<std::string, 6> types = {
-      "cpu", "cuda", "hip", "mps", "xpu", "mtia"};
+  // corex fork: allow "cuda" as the PrivateUse1 alias, so customers keep using torch.cuda
+  // semantics on this card (see docs/00-FACTS.md 28).
+  static const std::array<std::string, 5> types = {
+      "cpu", "hip", "mps", "xpu", "mtia"};
   TORCH_CHECK(
       std::find(types.begin(), types.end(), backend_name) == types.end(),
       "Cannot register privateuse1 backend with in-tree device name: ",

@@ -43,6 +43,14 @@ def is_built():
     Note that this doesn't necessarily mean CUDA is available; just that if this PyTorch
     binary were run on a machine with working CUDA drivers and devices, we would be able to use it.
     """
+    # corex fork: 底层是 corex 后端，但对外就是 CUDA 环境；很多库用它判断走不走 CUDA 路径。
+    try:
+        from torch import corex as _corex
+
+        if _corex.is_available():
+            return True
+    except Exception:
+        pass
     return torch._C._has_cuda
 
 

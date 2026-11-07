@@ -79,7 +79,9 @@ struct C10_API Device final {
 
   /// Return true if the device is of CUDA type.
   bool is_cuda() const noexcept {
-    return type_ == DeviceType::CUDA;
+    // corex fork: our card is reached through PrivateUse1 with the "cuda" alias,
+    // so `tensor.is_cuda` / `module.is_cuda` must be true or customer code branches wrong.
+    return type_ == DeviceType::CUDA || type_ == DeviceType::PrivateUse1;
   }
 
   /// Return true if the device is of PrivateUse1 type.

@@ -23,7 +23,9 @@ from __future__ import annotations
 import os
 from typing import Any, Optional, Sequence
 
-DEVICE_NAME = "corex"
+# fork 形态下外部设备名是 "cuda"（客户习惯）；落点是 PrivateUse1，
+# 由 c10/core/Device.cpp 把 "cuda" 解析过来。triton 那边的后端名仍是 corex，两者别混。
+DEVICE_NAME = "cuda"
 
 
 def _mod(name: str):

@@ -2865,6 +2865,14 @@ def _as_tensor_fullprec(t):
 if _is_device_backend_autoload_enabled():
     _import_device_backends()
 
+try:
+    # corex fork: 厂商 torch 2.1 声明 cuda=10.2，生态里也是这么判断的。
+    # 不补的话，`torch.version.cuda is None` 会让很多库走错分支。
+    if torch.version.cuda is None:
+        torch.version.cuda = "10.2"
+except Exception:
+    pass
+
 # corex（天数智芯 天垓100）后端随 fork 一起发布：导入 torch 即完成 PrivateUse1 注册。
 # 为什么用 try/except 吞掉：文档、CI、没有 /usr/local/corex 的机器都要能 `import torch`，
 # 注册失败只是「这台机器上没有这张卡」，不应该让整个 torch 起不来。
