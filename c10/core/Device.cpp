@@ -18,6 +18,9 @@ DeviceType parse_type(const std::string& device_string) {
           {"cpu", DeviceType::CPU},
           // corex fork: this build has no CUDA backend (USE_CUDA=0); "cuda" means our card.
           {"cuda", DeviceType::PrivateUse1},
+          // corex fork: keep the old name working too, so existing probes/scripts
+          // that say device="corex" still resolve to the same backend.
+          {"corex", DeviceType::PrivateUse1},
           {"ipu", DeviceType::IPU},
           {"xpu", DeviceType::XPU},
           {"mkldnn", DeviceType::MKLDNN},
