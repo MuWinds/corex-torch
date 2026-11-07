@@ -726,3 +726,41 @@ mini decoder 全局相对误差 **6.631e-06**、argmax 一致率 **1.000**、热
   → `setup.py` 初始化不了 `third_party` 子模块。正在登录节点重新 clone 带子模块的上游树。
 * 计算节点**没有外网**：pip 在 gpu-node 上会一直重试然后失败。装依赖一律在登录节点做，
   计算节点只负责编/跑。
+
+## 26. 算子矩阵打到 64/64（2026-11-07）
+
+§25 那三类缺口都补掉了，并且挖出两个真 bug：
+
+| 补的东西 | 做法 |
+| --- | --- |
+| 一元数学算子（neg/abs/exp/log/sqrt/tanh/sigmoid/reciprocal/sign/floor/ceil） | 一条 `_math_kernel` + constexpr 分支，`aten::X` 与 `aten::X.out` **都注册**（torch 里这些是 structured kernel，`torch.abs(x)` 派发到 `abs.out`） |
+| 比较 gt/lt/ge/le/eq/ne、`all`/`any`、`isneginf` | 比较内核写 i8（torch 的 bool 就是 1 字节 0/1）；`all/any` 转 fp32 求和再比；`isneginf` = `== -inf` |
+| `where.self` | 支持广播（先物化成同形状再跑内核——内核按线性下标读写，stride 0 的视图会读错位置） |
+| clamp / addmm / flip / repeat / pow / unfold | 全部用已验证的内核组合，不新写内核 |
+| 非最后一维 `max.dim`/`argmax` | 目标维 permute 到最后再算，结果按目标形状写回（代价一次拷贝） |
+| `scaled_dot_product_attention` | 显式实现，见下 |
+
+**bug 1：卡上 dtype 转换是坏的。** `_copy_from` 的快路径按字节 memcpy，只在两侧同 dtype 时成立；
+`x.float()`（fp16→fp32）于是按**目的**的元素宽度读源缓冲，越界读、数值全错
+（`probes/167`：max_abs_diff **2.1**，而 `.to("cpu").float()` 是对的，所以只看 CPU 侧永远发现不了）。
+修法：新增 `_cast_kernel`，`_copy_from`/`copy_` 遇 dtype 不同分三种方向处理（卡内转换 /
+先主机转再 H2D / 先 D2H 再主机转）。修完双向 max_abs_diff 都是 0.0。
+
+**bug 2：sdpa 不能让 torch 自己分解。** 分解会走到 `Autogradcorex` 层报「算子不存在」；
+即使把 `isneginf`/`all`/`where` 补齐了，结果也是错的（`probes/173`：max_abs_diff 3.38，
+而同样三步手算在卡上只差 3.6e-07）。改成显式实现 `softmax(q kᵀ scale + bias) v`，
+掩码在 CPU 造好再搬。注意它是 **CompositeImplicitAutograd**，必须同时挂
+`PrivateUse1` 与 `AutogradPrivateUse1` 两个键（`probes/175` 实测）。
+
+实测（gpu-node-07，torch 2.8.0+cpu + triton fork）：
+
+```
+算子矩阵 64/64 OK        sdpa max_abs_diff 7.15e-07
+功能矩阵 12/12 OK        mini decoder 相对误差 6.631e-06、argmax 1.000、热态 5.1 ms/步
+耗时 p50：add_ 1.88 µs（C++ 快路径）、add 11.9 µs、mm 64³ 2.64 µs、
+          exp 70.2 µs、softmax 81.7 µs（后两个只走 Python 实现，没有 C++ 快路径）
+```
+
+**已知性能缺口（不影响正确性）**：`sub` 与部分 `add/mul/div` 变体的热路径内核没登记给 C++
+（警告 `No module named 'triton_corex.compiler'`），每次多约 50 µs。根因待查：某些编译路径上
+`triton` 被解析成了 venv 里那个**没有 corex 后端**的安装，于是 `activate()` 掉回插件分支。
