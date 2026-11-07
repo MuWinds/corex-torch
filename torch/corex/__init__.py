@@ -80,17 +80,20 @@ def properties(index: int = 0) -> dict:
 
 
 def current_stream():
-    """当前流。``torch.cuda.current_stream()`` 的委托目标。"""
-    from . import _device
+    """当前流。``torch.cuda.current_stream()`` / ``torch.cuda.Stream()`` 的委托目标。
 
-    return _device.current_stream()
+    注意：``_device.current_stream`` 是**设备模块工厂内部**的方法（给 torch 合成运行时模块用），
+    模块级没有这个名字——第一次写委托时踩过（probes/204：AttributeError）。
+    本后端只有一条 legacy null stream，所以这里直接返回 ``_runtime.Stream.default()``。
+    """
+    return _runtime.Stream.default()
 
 
 def empty_cache() -> None:
     """释放缓存池里没人用的块（``torch.cuda.empty_cache()`` 的委托目标）。"""
     from . import _device
 
-    fn = getattr(_device, "empty_cache", None)
+    fn = getattr(_device.shim(), "empty_cache", None)
     if fn is not None:
         fn()
 

@@ -839,3 +839,31 @@ torch/lib/       : libtorch_cuda.so, libc10_cuda.so, libtorch_cuda_linalg.so, ..
 而底层仍是已经验证过的 PrivateUse1 后端，不需要把 CUDA 后端编进来。
 代价：`torch.cuda.amp`、`torch.cuda.CUDAGraph` 这类「必须真有 CUDA」的功能没有实现
 （后者本来就在平台的禁用清单里）。
+
+### 28.1 落地结果（2026-11-07 20:05，fork 自编 wheel 上验证）
+
+产物：`torch-2.8.0a0+gitba56102-cp310-cp310-linux_x86_64.whl`（86.6 MB，装进干净 py310 venv）
+
+```
+CUDA_AVAILABLE True        CUDA_COUNT 2          VERSION_CUDA 10.2      IS_BUILT True
+X_CUDA cuda:0              IS_CUDA True          ZEROS_CUDA cuda:0      ADD_CUDA True
+CURRENT_DEVICE 0           STREAM Stream         EVENT Event            torch.device("corex").type == cuda
+算子矩阵 64/64 OK          mini decoder PASS（相对误差 6.858e-06、argmax 1.000）
+```
+
+补丁最终形态（9 个文件、约 150 行）：
+
+| 文件 | 作用 |
+| --- | --- |
+| `c10/core/Device.cpp` | `"cuda"` 与 `"corex"` 两个字符串都解析到 PrivateUse1（老写法继续可用） |
+| `c10/core/DeviceType.cpp` | 保留名单去掉 `"cuda"` |
+| `c10/core/Device.h` | `Device::is_cuda()` 对 PrivateUse1 为真 |
+| `c10/core/TensorImpl.h` | `TensorImpl::is_cuda()` 直接比枚举，**也必须改**（只改 Device.h 不够） |
+| `torch/cuda/__init__.py` | 委托 `is_available/device_count/current_device/set_device/synchronize/Stream/Event/current_stream`，并把 `Tensor.cuda()` 接到 `.to("cuda")`（C++ 的 `at::Tensor::cuda()` 用枚举，绕过字符串别名） |
+| `torch/backends/cuda/__init__.py` | `is_built()` 在 corex 可用时为真 |
+| `torch/__init__.py` | `torch.version.cuda = "10.2"`（与厂商同口径） |
+| `torch/corex/*` | `DEVICE_NAME = "cuda"`；`current_stream()` 走 `_runtime.Stream.default()` |
+
+两个踩过的坑记在这里：`torch.cuda.Stream()` 原来被后面一行 `Stream = _corex_backend.Stream`
+覆盖（我们的 Stream 需要 handle）；`torch.corex._device.current_stream` 是设备模块工厂内部的
+方法、模块级没有这个名字。
