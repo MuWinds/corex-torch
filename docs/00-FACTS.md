@@ -1,3 +1,5 @@
+
+> 节号有空洞是正常的：同一结论的中间读数与更正已并入最终那一节，节号不复用，以便其他文档里的引用继续有效。
 # 已确证的环境事实
 
 每条事实后面跟产生它的命令。新结论按同样格式往下加；没有证据的写 `UNKNOWN`。
@@ -251,50 +253,82 @@ fp16 算子就是靠那次升级才通的（`docs/04-TRITON-BRIDGE.md` §6）。
    量级还没定位（UNKNOWN）。要把这个差额压下去只能把参数打包与 `cuLaunchKernel` 挪进 C++ shim，
    接 coffin 的 decode 之前必须解决——那一步每 token 有六百多次发射。
 
-## 16. 每次发射的 host 开销归因（`probes/010_overhead.sh`）
+## 16. host 开销：发射已在 C++，分发器几乎免费（`probes/010`、`023`、`026`）
 
-口径：mm 256³、指针现成、内核已编译、每段循环外只同步一次、单卡（沙箱 4935 逻辑 0 号）。
+统计口径一律 **p50 + 迭代 ≥500 + 两条基线**（空循环、最小真内核）。均值会被这张卡上约 4%
+的驱动抢占停顿（≥100 µs）毁掉——这一点先用基线确认过，不是猜的。
 
-| 段 | 单次耗时 |
+| 段 | p50 |
 | --- | ---: |
-| 直接调 `_ops_matmul.mm`（内核 + 启动） | **206.1 µs**（首次 40.0 µs） |
-| mm 16³ 直接调（内核时间≈0，即**纯启动地板**） | **39.6 µs** |
-| `shim.empty_strided`（分配） | **1.76 µs** |
-| aten `a @ b`（分发 + 分配 + 内核） | **265.8 µs** |
-| 归因 | 内核 ≈166.5 µs；Python 启动 ≈39.6 µs；aten 再加 ≈59.7 µs |
+| 纯 Python 空循环 | 0.2 µs |
+| `fill_` 64 元素（最小的真内核） | 32.7 µs |
+| `aten::add.out` 直调（C++ 实现） | **5.2 µs** |
+| `add_.Tensor`（C++ 实现） | **1.96 µs** |
+| `mm [1,64]×[64,64]`（C++ 实现） | **3.1 µs** |
+| `a + b`（composite：分配 + `.out`） | 12.5 µs |
+| `a * 标量` | 14.0 µs |
+| `a * small`（广播） | 15.4 µs |
+| 分配 `empty_strided` | 1.76 µs |
 
-**含义**：每次算子调用的纯 host 开销约 **100 µs**（40 启动 + 60 aten），与内核本身同量级。
-coffin 的 decode 每 token 六百多次发射（`../../docs/corex_drive/GRAPH-REPLAY.md` §17.1），
-按这个数就是每步几十毫秒的白费。压缩的唯一现实路径是**把参数打包与 `cuLaunchKernel` 挪进 C++ shim**，
-并用 `TORCH_LIBRARY_IMPL` 把最热的算子（`aten::mm`、`aten::_softmax.out`）从 Python 分发里挪出去。
-分配（1.76 µs）不是问题——缓存池已经把它压到位了。
+**结论**：host 侧的固定成本已经被压到个位数微秒，**aten 分发器本身几乎免费**。真正贵的是
+「用 Python 实现算子」——同一个 `add`，Python 实现要 78.8 µs、C++ 实现 5.2 µs，差 15 倍。
+所以压缩 host 开销的唯一有效路径是**把热路径算子搬进 C++**（`TORCH_LIBRARY_IMPL` +
+`set_*_kernel` 登记内核句柄），而不是减少 aten 调用次数。
 
-## 17. bf16：厂商用的是 intrinsic，不是位运算（`probes/011`–`015`）
+分配（1.76 µs）不是问题——缓存池已经把它压到位。
 
-这一条推翻了我最初的设计（「用整数位运算自己造转换」）。**先看厂商怎么做，比自己发明省事且更准。**
+## 17. bf16：转换走厂商 intrinsic，向量形态标量化（`probes/011`–`015`、`192`）
 
-| 事实 | 证据 |
+厂商 torch 2.1 在这张卡上能跑 bf16，靠的是**两条 intrinsic**，不是位运算。判断依据是宏：
+厂商 clang 定义 `__CUDA_ARCH__ = 300`、`__ILUVATAR__ = 1`，于是 `c10/util/BFloat16-inl.h` 里
+`(__CUDA_ARCH__ >= 800 || defined(__ILUVATAR__))` 为真，转换落到 `__float2bfloat16` /
+`__bfloat162float`，它们在 `cuda_bf16.hpp`（427 / 543 行）里展开成：
+
+```
+%n = call float  @llvm.bi.bfloat2float(bfloat %x)
+%n = call bfloat @llvm.bi.float2bfloat(float %x)
+```
+
+厂商 clang 编出来的设备 IR 里 `fpext`/`fptrunc` **命中 0 次**，只有上面两条；`llc` 编得出来。
+而 Triton 发的正是 `fpext`/`fptrunc`，bi 后端不认这两个名字，于是报
+`Cannot select: f32 = fp_extend` / `bf16 = fp_round`。
+
+顺带一条：**ATen 的 bf16 算术本质是 fp32 算术**——
+`operator+(BFloat16 a, b) { return static_cast<float>(a) + static_cast<float>(b); }`。
+所以「纯 bf16 算术」在语义上就是「fp32 算 + 两次转换」。
+
+### 做法：在 biir 进 `llc` 之前改转换指令的形态
+
+实现落在 `src/corex_torch/_bf16.py`，挂在 `_triton.activate()` 注册的后端子类
+`CorexTorchBackend.make_cubin` 上，**corex-triton 一个字节没改**。内核侧不需要为 bf16 写第二份。
+
+| 形态 | 做法 |
 | --- | --- |
-| 厂商 clang 定义的宏：**`__CUDA_ARCH__ = 300`、`__ILUVATAR__ = 1`** | `probes/011` §2：`clang++ --cuda-device-only -dM -E` |
-| 于是 `c10/util/BFloat16-inl.h` 里 `(__CUDA_ARCH__ >= 800 || defined(__ILUVATAR__))` 为真，bf16 转换走 `__float2bfloat16` / `__bfloat162float`（不是 `round_to_nearest_even` 那条纯位运算 fallback） | 同上，读 `torch/include/c10/util/BFloat16-inl.h:26-56` |
-| 这两个函数在 `cuda_bf16.hpp`（427 / 543 行）里落到 **两条 LLVM intrinsic**：`llvm.bi.bfloat2float(bfloat) -> float`、`llvm.bi.float2bfloat(float) -> bfloat` | `probes/012` §1 |
-| 厂商 clang 编出来的设备 IR 里 **`fpext`/`fptrunc` 命中 0 次**，只有上面两条 intrinsic，llc 编得出来 | `probes/012` §2 |
-| **ATen 的 bf16 算术本质是 fp32 算术**：`operator+(BFloat16 a, b) { return static_cast<float>(a) + static_cast<float>(b); }` | `BFloat16-inl.h:110` |
-| `llvm.bi.*` **不支持向量重载**：`call <8 x bfloat> @llvm.bi.float2bfloat(<8 x float>)` 报 `input module cannot be verified` | `probes/015` V2 / W1 |
-| 向量转换的正确形态是**整数位运算**：展宽 `bitcast→zext→shl 16→bitcast`、收窄 `bitcast→+0x7FFF+lsb→lshr 16→trunc→bitcast`，两者 llc 都过 | `probes/015` V3/V4/W2 全部 `llc OK` |
-| 真实内核里矩阵乘的失败点就是一条向量指令：`%n = fptrunc <8 x float> %x to <8 x bfloat>` | `probes/014`（从真编译的 biir 里抓出来的唯一一条） |
-| 改写实现后 **bf16 矩阵乘编得过且结果逐字节相等（4096/4096）**，改写命中 17 处 | `probes/013`：`BF16_INTRINSIC_VERDICT PASS` |
+| 标量 `fpext bfloat` / `fptrunc … to bfloat` | 换成 `llvm.bi.bfloat2float` / `llvm.bi.float2bfloat` |
+| **向量** `<N x bfloat>` ↔ `<N x float>` | 展开成 `extractelement → 标量 intrinsic → insertelement` 链 |
 
-实现落在 `src/corex_torch/_bf16.py`：标量 → intrinsic（与厂商语义完全一致）、向量 → 位运算
-（intrinsic 没有向量重载）。挂在 `_triton.activate()` 注册的后端子类 `CorexTorchBackend.make_cubin`
-上，**corex-triton 一个字节没改**。
+向量为什么不直接用向量 intrinsic：`@llvm.bi.float2bfloat.v8bf16` 这类 mangled 名字
+**`llc` 收下但不实现**——目标文件里留一个外部符号，`lld --no-undefined` 才报 `undefined symbol`。
+标量版是真实现的，所以标量化是唯一稳妥的向量通路。另留两档可选策略
+（`intrinsic`：部分元素数确有实现但不通用；`bits`：整数位运算，已验逐字节相等），
+切换用 `_bf16.set_vector_strategy(...)`，内核代码不用改。
 
-两条必须记住的坑：
+**判据硬规矩**：凡是要判断「bi 后端支不支持某个 intrinsic / 某条指令」，必须
+`llc -march=bi` **和** `lld --no-undefined` 都过。LLVM 允许目标文件里留未解析的外部调用，
+只看 `llc` 的返回码会把「parse 进去但没 lowering」误判成「支持」。
 
-* **新生成的 SSA 名字不能拿原值名加后缀**：Triton 的值是编号值 `%257`，而 `%257.i` 不是合法标识符，llc 报
-  `expected '=' after instruction id`。命名必须以字母开头（见 `_bf16._NameGen`）。
-* **向量常量不能写成 `splat (i32 16)`**：那是 LLVM 20 语法，厂商 llc 是 16（triton-bridge 在 `probes/190` 踩过）。
-  必须展开成 `<i32 16, i32 16, …>`。
+### 两条实现上的坑
+
+* **新生成的 SSA 名字不能拿原值名加后缀**：Triton 的值是编号值 `%257`，而 `%257.i` 不是合法
+  标识符（`expected '=' after instruction id`）。命名必须以字母开头，见 `_bf16._NameGen`。
+* **向量常量不能写成 `splat (i32 16)`**：那是 LLVM 20 语法，厂商 llc 是 16。必须展开成
+  `<i32 16, i32 16, …>`。
+
+### 结果
+
+`probes/192`：元素级 **33/33 逐字节相等**、累加类 **15/15**、mm/bmm/gather **5/5**；
+改写命中 **236** 处，改写后 `fpext`/`fptrunc`/`trunc nuw`/`trunc nsw`/`splat` **全 0**。
+`probes/013` 独立复验：bf16 矩阵乘 4096/4096 逐字节相等。
 
 ## 18. torch 层算子验收转全绿（`probes/009`）
 
@@ -306,111 +340,39 @@ coffin 的 decode 每 token 六百多次发射（`../../docs/corex_drive/GRAPH-R
   逐元素相对误差在「参照值接近 0」的元素上会被放大到 1e-4 量级，看着像错其实是 fp32 累加的正常结果。
   换口径后注意力小块是 **1.62e-07**。
 
-## 19. 更正 §17 的一条否定结论：向量 intrinsic 是支持的，名字要带后缀
+## 21. C++ 快路径的两个参数契约（`probes/123`、`126`）
 
-§17 里写的「`llvm.bi.*` 不支持向量重载」是**误判**，原因是我试的名字不对。triton-bridge 的
-`probes/194` 用真 biir 逐行改喂 llc 试出了正确形态：
-
-| 写法 | llc |
-| --- | --- |
-| `@llvm.bi.float2bfloat(<8 x float>)`（不带后缀） | `invalid redefinition of function` —— 与标量同名 |
-| **`@llvm.bi.float2bfloat.v8bf16(<8 x float>)`** | **rc=0，obj 4992 B** |
-| **`@llvm.bi.bfloat2float.v8bf16(<8 x bfloat>)`** | **rc=0，obj 6568 B** |
-| 手工标量化（extract → 标量 call → insert） | rc=0（备用方案，指令多） |
-
-也就是 mangled 后缀的形状是 **`.v<N>bf16`**（元素数 + bf16 家族），两个方向都有。
-
-**最终实现**（`_bf16.py`）：标量与向量**都走 intrinsic**，`declare` 按 IR 里实际出现的 N 自动补；
-整数位运算那版留在文件里当退路（`VECTOR_STRATEGY = "bits"` 一个常量切换），因为它是先验过
-逐字节相等的。真机复验（`probes/013`）：**bf16 矩阵乘 4096/4096 逐字节相等**，改写命中 17 处。
-
-教训：**「intrinsic 不支持向量」这种否定结论，必须先确认 mangled 名字写对了再说**。
-`probes/015` 的 V2/W1 两行现在是「名字写错」的案例，保留不改——它还得能重放出那个错误结论。
-
-## 20. 判据更正：「llc 编得过」不等于「intrinsic 有实现」——必须 llc + lld 双过
-
-§19 里我把向量 intrinsic 的结论又改了一次，这次是最终定案，教训比结论更值钱。
-
-| 写法 | llc | **lld --no-undefined** |
-| --- | --- | --- |
-| 原样 `fpext <8 x bfloat>` | `Cannot select: f32 = fp_extend` | — |
-| `@llvm.bi.bfloat2float.v8bf16(<8 x bfloat>)` | **rc=0，obj 6568 B** | **`undefined symbol: llvm.bi.bfloat2float.v8bf16`** |
-| 标量化（extract → 标量 call → insert） | rc=0 | **rc=0，elf 6104 B** |
-
-**为什么会被骗**：LLVM 允许目标文件里留未解析的外部调用，`llc` 照样返回 0、照样产出目标文件；
-真正拦住它的是下一步 `lld --no-undefined`（corex-triton 的 `make_cubin` 正好带这个 flag）。
-triton-bridge 的 `probes/194` 只看 llc 就判「向量重载可用」，`probes/195` 补上链接这一步后推翻。
-
-**硬规矩**：凡是要判断「bi 后端支不支持某个 intrinsic / 某条指令」，判据必须是
-`llc -march=bi` **和** `lld --no-undefined` 都过；只看前者会把「parse 进去但没 lowering」
-误判成「支持」。旧探针不改，更正写在新的探针里（`probes/195`）。
-
-**最终实现**（`_bf16.py`，默认策略 `scalar`）：向量转换展开成 `extractelement → 标量 intrinsic →
-insertelement` 链，用**真实现**的标量 intrinsic，语义与厂商一致，且不碰 `trunc nuw` / `splat`
-这两个「手写位运算」的死点。另留两档：`intrinsic`（部分元素数确有实现，我这边 16×16 的 mm 用它
-编过且逐字节相等，但不通用）、`bits`（整数位运算，已验逐字节相等）。切换用
-`_bf16.set_vector_strategy(...)`，内核代码不用改。
-
-真机复验（`probes/013`）：**bf16 矩阵乘 4096/4096 逐字节相等**，编译 + 链接 + 运行 + 数值四项全过。
-
-## 21. C++ `aten::mm` 在非方阵上算错（已默认关闭）
-
-`probes/009` 抓到的静默错误——不报错、只是数值全错：
-
-| 用例 | 结果 |
-| --- | --- |
-| `mm` 64×128 @ 128×256（C++ 接管） | **max_rel = 2.364e+04** |
-| `bmm` 4×16×32 @ 4×32×24（Python 路径） | 逐元素完全相等 |
-| 注意力小块（内含 mm 16×16×64） | **全局相对误差 = 1.000e+00** |
-| `mm` 256×256×256 | 看起来正常（还更快，297.8 GFLOP/s） |
-
-**方阵对、非方阵错**，是 X/Y 维交换的典型特征（256×256 交换后不可见）。怀疑点是
-`TORCH_LIBRARY_IMPL` 里的 grid 计算与内核里 `pid_m = program_id(0)` / `pid_n = program_id(1)`
-的映射反了，或 `cuLaunchKernel` 的 gridDim.x/y 与 (M/bm, N/bn) 的顺序不一致。
-
-**处置**：`_aten_kernels.ENABLE_FAST_MM` 默认 `False`，`aten::mm` 退回 Python 实现（逐字节验过），
-设 `COREX_FAST_MM=1` 才登记 C++ 句柄。静默算错比慢严重得多。
-
-**验收口径的教训（比这个 bug 更值钱）**：原来那轮 C++ 快路径只测了 `256³` 而且**只报 GFLOP/s**，
-于是整类 grid/dispatch 错误被漏掉。同一个毛病这个晚上出现两次——
-
-1. `probes/194` 只看 `llc` 返回码就判「向量 intrinsic 支持」，漏了 `lld --no-undefined`；
-2. C++ mm 只看方阵吞吐，漏了非方阵数值。
-
-**共同的病根：判据选错，测试就成了安慰剂。** 现在的规矩是：
-- 判断「某条指令/某个 intrinsic 可用」→ `llc` **且** `lld --no-undefined`；
-- 判断「某个算子实现正确」→ **非方阵/非整除形状 + 与 CPU 逐元素比对**，吞吐数字只能附在正确性之后。
-
-## 22. §21 的 C++ mm 静默错误：根因已定位并修复（默认重新打开）
-
-根因**不是** grid X/Y 交换，而是两个参数契约错误，两者都能让 `cuLaunchKernel` 返回 0 而结果全错：
+C++ 接管 `aten::mm` 之后出现过「不报错、数值全错」的情况。根因是**两个参数契约错误**，
+两者都能让 `cuLaunchKernel` 返回 0 而结果全错：
 
 | # | 错法 | 后果 |
 | --- | --- | --- |
-| 1 | Triton 3.4 的 global scratch 指针追加在参数表**最后**，之前按「第 4 个」传（spec `"ppppiii"`） | 内核收到的 `M == 0` → 所有 block 掩码全假 → **一个元素都不写** |
+| 1 | Triton 3.4 的 global scratch 指针追加在参数表**最后**，却按「第 4 个」传（spec `"ppppiii"`） | 内核收到的 `M == 0` → 所有 block 掩码全假 → **一个元素都不写** |
 | 2 | 动态 shared 传 0，而 `tl.dot` 的布局转换要 `metadata.shared`（实测 2048 B） | 写了但值错，同样不报错 |
 
 正确写法：spec = **`"pppiiip"`**（3 指针 + 3 个 i32 + 末尾 scratch），`load_kernel` 带上
 `metadata.shared`。C++ 侧现在**校验 spec**（只接受 `"pppiii"` / `"pppiiip"`），这类错误会当场报出来。
 
-**验收方法也换了**：输出所在的池块先填哨兵 `-12345` 再释放，任何没被写到的元素都会暴露成哨兵。
+**验收方法**：输出所在的池块先填哨兵 `-12345` 再释放，任何没被写到的元素都会暴露成哨兵。
 五个形状（含 `37×53 @ 53×29` 非整除）在 aten 与直调两条路径上 `max_abs = 0.000e+00`、残留哨兵 = 0。
 
-**修正后的诚实性能**（此前的 303.9 GFLOP/s 是在坏参数下内核空转时测的，**已撤回**）：
+**性能**（修正后；此前那个「303.9 GFLOP/s」是在坏参数下内核空转时测的，不成立）：
 
 | 段 | Triton Python | C++ 快路径 |
 | --- | --- | --- |
 | mm 16³ 纯发射 | 38.34 µs | **10.79 µs（3.6x）** |
 | mm 256³ 直调 | 184.48 µs（181.9 GFLOP/s） | **171.79 µs（195.3）** |
-| mm 256³ 走 aten | 265.8 µs（010 基线） | **193.26 µs（173.6）** |
-| aten 分发地板（16³） | — | 82.29 µs（其中 ~73 µs 是分发器） |
+| mm 256³ 走 aten | 265.8 µs | **193.26 µs（173.6）** |
 
-也就是说：**发射层省下的 27.5 µs 是真的，但 mm 256³ 只提速 1.07x**（内核 ~160 µs 占主导），
-aten 路径 1.38x 主要来自「替掉 Python 实现」。验收门槛据此改成：
-**直调路径 ≥180 GFLOP/s（195.3 达标）；aten 路径只要求「比 Python 实现快」且五形状逐元素对得上**——
-拿 aten 路径去比吞吐没有意义，它头上压着 73 µs 的分发器。
+发射层省下的 27.5 µs 是真的；mm 256³ 只提速 1.07x，因为内核本身 ~160 µs 占主导。
+验收门槛据此定成：**直调路径 ≥180 GFLOP/s**；aten 路径只要求「比 Python 实现快」且各形状
+逐元素对得上。
 
-`ENABLE_FAST_MM` 已恢复默认 `True`；`probes/009` 在默认配置下 9/9 PASS（mm 256³ 172.7 µs / 194.3 GFLOP/s）。
+**两条守则（都是这一轮换来的）**：
+
+* 「某个算子实现正确」的判据必须是**非方阵/非整除形状 + 与 CPU 逐元素比对**，
+  吞吐数字只能附在正确性之后——只测方阵吞吐会整类漏掉 grid/参数错误；
+* 「某条指令/intrinsic 可用」的判据必须是 `llc` **且** `lld --no-undefined`（见 §17）。
 
 ## 23. 第 5 批算子在 torch 层全通（`probes/017`，12/12 PASS）
 
@@ -423,26 +385,6 @@ aten 路径 1.38x 主要来自「替掉 Python 实现」。验收门槛据此改
   （对比：`add`/`mul` 那些是 composite，会自动拆到 out 变体。）
 * **探针里 got/ref 必须用同一份输入**。第一版 017 写成两次独立 `torch.randn`，量出来的是「两次采样之差」
   （rsqrt 报 0.59、gelu 报 4.0、log_softmax 报 11.3），差点误判成内核错了。
-
-## 24. ⚠️ 更正：「aten 分发器 ~73 µs/次」是被污染的测量，实际几乎免费
-
-§21/§22 里那条「aten 分发器固定成本 ~73 µs、热路径要绕开 aten」**是错的**，来源是我自己挖的坑：
-
-* 当时 `_aten_kernels.register()` 在 C++ 已经接管 `aten::mm` 的情况下**又注册了一遍 Python 版**，
-  于是每次 `aten::mm` 实际走的是 Python kernel（那条 `Overriding a previously registered kernel`
-  警告就是它的痕迹）。量到的 82–84 µs 是 **Python 回调开销**，不是分发器。
-* 去掉重复注册后复测（torch28 连跑两次）：`aten mm 16³ = 10.14 / 10.20 µs`，
-  而直调 `shim.launch` 是 `10.78 / 10.82 µs`——**aten 路径和直调同速**，
-  256³ 也是 170.52 vs 170.49 µs。
-
-正确结论：
-
-> **aten 分发器基本免费（10.1 vs 10.8 µs）。真正的成本是「用 Python 实现算子」。**
-> `Overriding a previously registered kernel` 警告是**实质缺陷**，必须清掉——它意味着你测的
-> 根本不是你以为的那个实现。
-
-实际影响（好消息）：**接 coffin 时热路径可以照常走 aten**，不必自建绕过层，
-「多 kernel 连续发射」入口的优先级可以往后放。
 
 ## 25. 又一类静默算错：广播操作数没 expand 就被当同形读
 
@@ -538,131 +480,36 @@ stride 仍是 `(16, 64, 1)`。我们 `cat` 的检查按「dim 之后每维 strid
 远高于 10.8 µs 的发射地板。怀疑点是 `cat` 与 `expand().contiguous()` 走的是 Python 级
 分段搬（`_aten_extra` 的 strided walk），不是单次 DMA。这条留给性能阶段，先记在这里。
 
-## 29. 算子层性能画像：瓶颈在「算子层是 Python」，不在内核（`probes/023`）
+## 29. 性能结论的读法与最终数字（`probes/023`、`024`、`026`、`036`）
 
-差分法逐算子计时（50 次/项，循环外同步一次，形状取 decode 里的真实大小）：
+**统计口径**：一律 p50 + 迭代 ≥500 + 两条基线（纯 Python 空循环、最小的真内核）。
+这张卡是多租户共享的，约 4% 的迭代会吃到 ≥100 µs 的驱动抢占停顿，且停顿与工作量、形状
+完全无关；50 次的**均值**里混进一次 ~120 ms 的停顿就能把 13.5 µs 的算子报成 2.5 ms。
+基线的作用是划清「这个慢是环境的还是代码的」——空循环与纯 `synchronize()` 的停顿率都是 0/N，
+而只要真的发内核就有停顿（连 64 元素的 `fill` 都有）。
 
-| 算子 | µs/次 | 说明 |
-| --- | --- | --- |
-| `empty(1,64)` 分配 | 9.9 | 分配器本身很快 |
-| `mm [1,64]x[64,64]` | **20.6** | 走 C++ 快路径 |
-| `_ops_elementwise.add` 直调 | **33.3** | 含我们这层 `_triton.launch` |
-| `aten add`（x1+x1） | 82.3 | **约 49 µs 是 Python 分发层** |
-| `aten mul 标量` | 72.2 | 同上 |
-| `rms_norm [1,64]` | 90.3 | |
-| `softmax [4,1,6]` | 89.8 | |
-| `bmm [4,1,6]x[4,6,16]` | 85.6 | |
-| **`bmm [4,1,16]x[4,16,6]`** | **2505.0** | **异常**，同量级另一条只要 85.6 |
-| `cat [4,6,16]+[4,1,16] dim=1` | 180.6 | Python 级 strided walk |
-| `slice+contiguous [1,64][...,0::2]` | 237.5 | 同上（32 行 → 32 次 Python 调用） |
-| 广播 `mul [4,1,16]*[1,1,16]` | 321.9 | 同上（含 expand 物化） |
+**当前数字（C++ 快路径已就位）**：
 
-三条结论：
+| 算子/路径 | p50 | 说明 |
+| --- | ---: | --- |
+| `add_.Tensor` | **1.96 µs** | 原地，三档 dtype |
+| `aten::add.out` 直调 | **5.2 µs** | |
+| `mm [1,64]×[64,64]` | **3.1 µs** | |
+| `a + b`（分配 + `.out`） | 12.5 µs | |
+| `a * small`（广播） | 15.4 µs | |
+| `fill_` 64 元素 | 32.7 µs | 最小真内核的基线 |
+| Python 实现的同类算子 | 67–127 µs | 这就是「搬进 C++」的依据 |
 
-1. **发射地板 10.8 µs 不是瓶颈**，`aten add` 要 82 µs，其中内核 33 µs、**Python 分发约 49 µs**。
-   想让算子层接近地板，得像 `mm` 那样把热路径挪进 C++（`TORCH_LIBRARY_IMPL` + `shim.launch`）。
-2. **`cat` / `contiguous` / 广播物化都是「按行 Python 循环」**，几百个元素就要 180–320 µs。
-   连续情形应该走单次 `memcpy`，尾维整块连续时应该按行块合并——这是 `_aten_extra` 的活。
-3. **`bmm [4,1,16]x[4,16,6]` 2.5 ms 是异常**（同量级另一条 85 µs，差 29 倍）。这一条每步出现
-   2 次 × 2 层 ≈ 10 ms，占 decode 17.1 ms/步 的大头。已交给内核组按「三层拆解 + 200 次」复现。
+**搬运算子之外的另一半**：非连续搬运的成本**取决于调用次数而不是字节数**——本平台同步
+`cudaMemcpy` 每次 5–13 µs。所以 `_copy_impl` 按「尾维合并 / `memcpy2D` / 倍增复制」分路径，
+把「一次拷贝 = 数条 Python 调用」压成 1 条：转置 `contiguous()` 2000 → 91.7 µs、`cat` 117 →
+26 µs、1 KiB~1 MiB 的连续拷贝都是 ~10 µs（与大小无关 = 纯开销驱动）。
 
-decode 的 17.1 ms/步**不是**这张卡的算力问题：热跑里每步约 31 个算子，把上表的数字加起来
-就是十几毫秒。真正的修法有两条，都不在「换个更快的内核」这个方向上：
-把热路径算子挪进 C++（像 mm 那样），以及把 strided 搬运从 Python 循环改成块拷贝。
-
-## 30. §29 更正：`bmm` 2.5 ms 的真身是「非连续拷贝按元素搬」，不是 bmm、也不是噪声
-
-两轮更正叠在一起，最后一条才是结论：
-
-1. **先排除噪声**：triton-bridge 的 `probes/198` 用 2000 次 + 分层拆解证明 `_ops_matmul.bmm` 的
-   p50 **13.48 µs**、10 个形状全一样（13.46–13.50），而我原来那个 2505 µs 的均值里混进了
-   一次 ~120 ms 的驱动抢占停顿。**小算子（<50 µs）报均值会把环境噪声当结论。**
-2. **再排除 bmm**：我改用 p50 + 500 次重测，这条依然 **500/500 次全部 >100 µs、p50 2089.9 µs**
-   —— 所以它是**真的**，只是不在 bmm 里，而在调用它的那个 `.contiguous()` 里。
-
-**真身**：`_copy_impl` 对非连续源是**按元素**做 Python 循环，每个元素付 ~5 µs（Python + pybind 固定成本）：
-
-| 调用 | 元素数 | p50 | 折算 |
-| --- | --- | --- | --- |
-| `x[1,64][..., 0::2].contiguous()` | 32 | 156 µs | 4.9 µs/元素 |
-| `k[4,6,16].transpose(1,2).contiguous()` | 384 | ~2000 µs | 5.2 µs/元素 |
-| `cat [4,6,16]+[4,1,16] dim=1` | 384 | 117 µs | ~0.3 µs/元素（按行，好得多） |
-
-`[4,16,6]` 且 src stride `(96,1,16)` 时，**合格的连续块是最后一维的 6 个元素**，应该是 64 次块拷贝，
-实际做了 384 次元素拷贝——差 6 倍，再乘上每元素 5 µs 就是 2 ms。
-
-**顺便更正 §29 里另外两个数**（同一份探针改成 p50 + 500 次 + 对照组之后）：
-
-| 算子 | §29 的均值 | **p50（正确）** |
-| --- | --- | --- |
-| `mm [1,64]x[64,64]`（C++ 快路径） | 20.6 | **3.1** |
-| `aten add` | 82.3 | 78.8 |
-| `_ops_elementwise.add` 直调 | 33.3 | 28.7 |
-| `rms_norm [1,64]` | 90.3 | 82.7 |
-| `slice+contiguous` | 237.5 | 156.2 |
-| 广播 `mul` | 321.9 | 300.2 |
-| `fill 64 元素`（基线） | — | 33.2 |
-| 纯 Python 空循环（基线） | — | 0.03 |
-
-**结论不变（瓶颈在算子层的 Python），但数字要按 p50 读**：C++ 快路径的 mm 只要 3.1 µs，
-而我们 Python 实现的一元/二元算子要 67–127 µs。这就是「把热路径算子挪进 C++」的直接依据。
-
-**方法论（这轮最贵的一课）**：性能结论必须同时给 **p50 + 迭代数 ≥500 + 两条基线**
-（空循环、最小真内核）。均值会被 4% 的驱动抢占停顿毁掉，而基线的停顿率能立刻告诉你
-「这个慢是环境的还是代码的」。
-
-## 31. 搬运路径重构后的 decode：17.1 → 9.2 ms/步（`probes/124`、`probes/022`）
-
-`_copy_impl` 的根因确认：本平台 `_runtime.memcpy` 走同步 `cudaMemcpy`，**每次 5–13 µs**——
-所以**调用次数比字节数贵**。torch28 给 shim 加了 `memcpy2d`（`cudaMemcpy2D` D2D），
-`_copy_impl` 重排成 5 条路径（两边连续 1 条；广播源按前导下标；目的后缀连续 1 条 `memcpy2D`；
-均匀步长视图 1 条 `memcpy2D`；有最内层连续维时 `numel/该维长度` 条；最后才是逐元素兜底）。
-
-| 用例 | 旧 | 现在 |
-| --- | --- | --- |
-| `[4,6,16].transpose(1,2).contiguous()` | ≈2000 µs | **91.7 µs** |
-| `[1,64][..., 0::2].contiguous()` | ≈156 µs | **48.6 µs** |
-| `cat [4,6,16]+[4,1,16] dim=1` | 117 µs | **26.0 µs** |
-| `copy_` 连续 1 KiB / 64 KiB / 1 MiB | — | 10.15 / 9.96 / 10.03 µs（**与大小无关** = 纯开销驱动） |
-
-端到端：`probes/022` 的增量 decode 从 **17.1 → 9.2 ms/步**，正确性不变（逐 token 最差 6.62e-06、
-argmax 6/6、KV cache 逐字节稳定）；`probes/018` 整段前向 56.2 ms 不变、PASS。
-回归：`009` 9/9、`017` 12/12、`021` PASS、`120` **39/43**（数值不符 0）。
-
-剩下的 9.2 ms/步 ≈ 31 个算子 × ~300 µs，仍高于「纯 Python 分发地板 ≈70–80 µs」。
-方向已明确（下一阶段）：**把热路径算子照 `mm` 的模式挪进 C++**——`TORCH_LIBRARY_IMPL` + 
-`set_*_kernel` 登记内核句柄。判据是「同一算子的 p50 从 ~78 µs 掉到个位数」。
-
-## 32. decode 的 9.2 ms/步是「一千次小调用」，没有单点热点（`probes/024`）
-
-用 cProfile 跑 4 步 decode，按**自身耗时**排序——**最大的单项只占 0.005 s/4 步**，榜单上全是
-0.001–0.003 s 的小函数，189 个函数分摊。所以「优化某个算子」这条路走不通，要看**调用次数**：
-
-| 每步调用次数 | 函数 | 来源 |
-| --- | --- | --- |
-| **1525** | `isinstance` | 我们各层的类型检查 |
-| **265** | `ctypes.cast` / `c_void_p` | `_runtime` 每次拷贝/memset 重建指针对象 |
-| **80** | `_device._empty_impl` | 每个算子都要分配输出 |
-| **44** | `_triton.launch` | 每次内核启动 |
-| **42** | `_aten_extra._copy_impl` | `.contiguous()` / 切片写 / cat / 广播物化 |
-| **28** | `torch.broadcast_shapes` | `_out_binary` 每条二元算子 |
-| **21** | `_device._copy_from_impl` | 拷贝 |
-
-也就是一步 decode 里**有五千次以上的 Python 级调用**，每次哪怕只要 1–2 µs，加起来就是 5–10 ms。
-这和「C++ 快路径的 `mm` 只要 3.1 µs、而 Python 实现的算子要 78 µs」是同一件事的两面。
-
-**两条已试过的弱优化（都不解决根本问题）**：
-
-* `_out_binary` 加同形快路径（跳过 `broadcast_shapes`）：decode 仍是 **9.2 ms/步**，无变化。
-  印证了 profile 的结论——省 28 次调用不够，要省的是上千次。
-* 搬运路径重构（torch28 的 `memcpy2d`）：17.1 → 9.2 ms/步，这是真收益，因为它把
-  「每次拷贝数条 Python 调用」压成了 1 条。
-
-**结论（下阶段的依据）**：要再往下走只有两条路，都得动结构而不是动实现：
-1. **把热路径算子搬进 C++**（照 `mm` 的 `TORCH_LIBRARY_IMPL` + `set_*_kernel`）；
-   它一次消掉「aten 回调 25 µs + 我们实现体 25 µs + launch 打包」三层。
-2. **减少算子/拷贝的次数**（融合：RoPE 不必用切片写、rms_norm 的 `pow/mean/rsqrt` 已直接接管、
-   残差 add 可以与下一个算子合并），这一条要改模型侧代码，属于 coffin 集成阶段的事。
+**decode 的构成**（`probes/024` 的 profile）：从 17.1 → **4.9 ms/步**之后，最大的单项已经
+不是后端，而是测试脚本自己的 RoPE 写法（`out[..., 0::2] = x1*c - x2*s` 一次就是
+4 次广播乘 + 2 次减 + 2 次步长视图写）。后端侧剩下的热点是 `silu`/`rms_norm`/`softmax`/
+`index_select` 这四个仍是 Python 实现（每步约 14 次发射）。再往下走要动的是**模型侧融合**
+（RoPE 单内核、残差与归一化合并），属于 coffin 集成阶段。
 
 ## 33. 热路径算子的 C++ 交接：接口就位、代价已量（`probes/025`）
 
@@ -694,37 +541,6 @@ argmax 6/6、KV cache 逐字节稳定）；`probes/018` 整段前向 56.2 ms 不
 抽查两个（`probes/025` §3）：`add/tensor/fp32` → `n_ptrs=3 n_i32=1 n_f32=1
 alpha_effective=True block=1024 warps=4 stages=1 cubin=7168B`；
 `mul/tensor/bf16` → 同形但 `alpha_effective=False`、`cubin=7008B`。
-
-## 34. C++ 逐元素快路径落地：`add` 78.8 → 12.3 µs（`probes/023`、`probes/125`）
-
-`_register_fast_ops()` 把 24 个内核（4 op × 2 variant × 3 dtype）的句柄交给 C++ 之后：
-
-| 路径 | p50 | 说明 |
-| --- | --- | --- |
-| `add_.Tensor`（inplace，C++） | **1.96 µs** | 三档 dtype 1.93–1.98，逐字节一致 |
-| `aten add`（`x1 + x1`，Tensor-Tensor） | **12.3 µs**（原 78.8） | 达到门槛（≤12，实测 12.3） |
-| 我们的实现体（绕开 aten 直调） | 36.7 µs | 说明剩下的差距确实在 C++/aten 那一层 |
-| 纯分发（把 `add.out` 换成空实现） | 11.8 µs | 约等于「aten 回调 + Python 空函数」的地板 |
-| `mul.out` 带 0 维/广播实参 | **报错** | 见下：C++ 目前只做同形，待补 |
-| decode 热跑 | 17.1 → **8.8 ms/步** | 正确性不变（逐 token 6.62e-06、argmax 6/6） |
-
-**两条注册纪律**（都是踩出来的）：
-
-1. **后注册者赢**。C++ 在 `.so` 加载时注册、我们在 `register()` 里注册，所以 Python 再注册一次就
-   盖掉 C++ 快路径——症状是「一切都对，只是慢」（`.out` 停在 42–78 µs）。现在先问
-   `shim.elementwise_op_names()` 再决定要不要注册。
-2. **让位之前必须先问能力**。C++ 当前只支持「同形、连续、同 dtype」，而模型里大量是广播
-   （`x1 * cos[:, None, :]`）与 0 维标量（`view.add_(2.5)`）。第一次让位让 `x1 * 2.0` 直接抛
-   「只支持同形」——把「能算但慢」变成「不能算」。所以加了 `elementwise_supports_broadcast()`
-   这道能力探测：C++ 补齐广播/0 维之后返回真，Python 侧自动让位。
-
-**待 C++ 侧补的两件**（已把口径发过去）：广播实参要物化到 out 形状而不是报错；0 维张量实参
-（`add_.Tensor` 收到 0 维张量而不是 float）要读值后走标量内核，且**只在这一种情况**付 D2H 的同步代价，
-Python 传来的 float 标量不该有同步。
-
-**异常不能再静默吞**：`_register_fast_ops()` 里原来的 `except: continue` 让「cubin 里读不出函数符号」
-变成「注册表空着、上层只看到没登记」，白查一轮。现在每个 (op, dtype, variant) 警告一次，并写明
-「该算子回落 Python、每次多约 50 µs」。
 
 ## 35. 「谁在提供实现」的唯一硬判据：dispatch 表（`probes/026`）
 
