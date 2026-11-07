@@ -501,5 +501,42 @@ if(NOT ${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
   endif()
 endif()
 
+
+# ---------------------------------------------------------------------------
+# corex fork: build the PrivateUse1 shim (torch/corex/_corex_shim.so) as part of torch.
+#
+# Why in-tree instead of a post-install step: a wheel is a prebuilt artifact and pip
+# never compiles anything; on top of that the shim is a pybind11 module whose ABI must
+# match *this* torch exactly. Building it in the same CMake invocation guarantees both,
+# so `pip install torch-*.whl` yields a working device with zero extra steps.
+#
+# `install(... DESTINATION corex)` lands at ${CMAKE_INSTALL_PREFIX}/corex, and torch's
+# setup.py points CMAKE_INSTALL_PREFIX at <build>/.../torch, i.e. exactly
+# torch/corex/_corex_shim.so inside the wheel.
+if(BUILD_PYTHON AND EXISTS "${PROJECT_SOURCE_DIR}/corex/src/csrc/corex_shim.cpp")
+  add_library(corex_shim MODULE ${PROJECT_SOURCE_DIR}/corex/src/csrc/corex_shim.cpp)
+  set_target_properties(corex_shim PROPERTIES PREFIX "" OUTPUT_NAME "_corex_shim")
+  # torch/extension.h redefines PYBIND11_MODULE in terms of TORCH_EXTENSION_NAME, so the
+  # exported entry point is PyInit_<TORCH_EXTENSION_NAME>; without this define the symbol
+  # literally becomes PyInit_TORCH_EXTENSION_NAME and import fails with
+  # "dynamic module does not define module export function" (probes/219).
+  target_compile_definitions(corex_shim PRIVATE TORCH_EXTENSION_NAME=_corex_shim)
+  target_include_directories(corex_shim PRIVATE
+      ${PROJECT_SOURCE_DIR}/torch/csrc/api/include
+      ${PROJECT_SOURCE_DIR}/torch/csrc
+      ${PROJECT_SOURCE_DIR}/aten/src
+      ${CMAKE_BINARY_DIR}/aten/src
+      ${CMAKE_BINARY_DIR}
+      ${Python_INCLUDE_DIRS})
+  target_link_libraries(corex_shim PRIVATE torch_python)
+  add_dependencies(corex_shim torch_python)
+  # NB: no install() rule here on purpose. Under bdist_wheel the install prefix is the
+  # staging root and the effective destination turned out to be <prefix>/torch/torch/corex
+  # (one "torch" too many), while the wheel only packs <build_lib>/torch/**. setup.py's
+  # build_extensions() copies the artifact to <build_lib>/torch/corex instead — one
+  # place, no guessing.
+  message(STATUS "corex: _corex_shim.so will be built into the torch package")
+endif()
+
 set(TORCH_PYTHON_COMPILE_OPTIONS ${TORCH_PYTHON_COMPILE_OPTIONS} PARENT_SCOPE)
 set(TORCH_PYTHON_LINK_FLAGS ${TORCH_PYTHON_LINK_FLAGS} PARENT_SCOPE)

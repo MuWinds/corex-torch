@@ -867,3 +867,39 @@ CURRENT_DEVICE 0           STREAM Stream         EVENT Event            torch.de
 两个踩过的坑记在这里：`torch.cuda.Stream()` 原来被后面一行 `Stream = _corex_backend.Stream`
 覆盖（我们的 Stream 需要 handle）；`torch.corex._device.current_stream` 是设备模块工厂内部的
 方法、模块级没有这个名字。
+
+## 29. shim 编进 wheel：装完不用再编（2026-11-07）
+
+需求：`pip install torch-*.whl` 之后就该能用卡，不要再跑 `build_shim.py`。
+wheel 是预编译产物，pip 安装期不会编译，所以**shim 必须在编 torch 的同一趟里产出并打进包**。
+
+三处改动：
+
+| 位置 | 改动 |
+| --- | --- |
+| `torch/CMakeLists.txt` | 末尾加 `corex_shim` 目标（MODULE，`PREFIX ""`、`OUTPUT_NAME _corex_shim`），链 `torch_python` |
+| 同上 | `target_compile_definitions(... TORCH_EXTENSION_NAME=_corex_shim)` ← 见下面的坑 1 |
+| `setup.py` 的 `build_extensions()` | 把 `<build>/lib/_corex_shim.so` 拷到 `<build_lib>/torch/corex/_corex_shim.so` ← 见坑 2 |
+
+两个坑（都实测踩过）：
+
+1. **导出符号名不对**：`torch/extension.h` 把 `PYBIND11_MODULE` 重定义成依赖 `TORCH_EXTENSION_NAME`
+   的版本，不定义它就导出字面量 `PyInit_TORCH_EXTENSION_NAME`，import 报
+   `dynamic module does not define module export function (PyInit__corex_shim)`。
+   查法：`nm -D --defined-only _corex_shim.so | grep PyInit`。
+2. **不要用 CMake 的 `install()`**：bdist_wheel 下安装前缀是 staging 根，`install(TARGETS ...
+   DESTINATION torch/corex)` 实测落到 `<prefix>/torch/torch/corex`（多一层 torch），而 wheel
+   只打 `<build_lib>/torch/**`。在 `setup.py` 里直接拷，路径唯一确定。
+
+另外：从 Windows 打包上传时 tar 保留的 mtime 可能比节点的 `.o` 还旧，ninja 会认为不用重编，
+wheel 里还是旧二进制——装完必须 `touch` 改动过的 C++ 文件（本项目已经因为这条浪费过一轮）。
+
+验证（**全新 venv，只 pip install，不跑任何编译**，probes/224）：
+
+```
+SHIM_FROM_WHEEL=427064            # shim 来自 wheel 本身
+SYMBOL=PyInit__corex_shim
+CUDA_AVAILABLE True   CUDA_COUNT 2   X_CUDA cuda:0   IS_CUDA True   ADD_CUDA True
+STREAM Stream         VERSION_CUDA 10.2   IS_BUILT True
+算子矩阵 64/64 OK     mini decoder PASS（6.858e-06、argmax 1.000）
+```

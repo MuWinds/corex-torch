@@ -831,6 +831,18 @@ class build_ext(setuptools.command.build_ext.build_ext):
                     os.makedirs(dst_dir)
                 self.copy_file(src, dst)
 
+        # corex fork: 把 CMake 编出的 PrivateUse1 shim 放进包目录，
+        # 这样 wheel 装完就自带 torch/corex/_corex_shim.so，不需要再跑 build_shim.py。
+        # 为什么不用 CMake 的 install()：bdist_wheel 下安装前缀是 staging 根，
+        # 目标路径随它变化（实测落到 <prefix>/torch/torch/corex），而 wheel 只打包 <build_lib>/torch/**。
+        corex_shim_src = os.path.join("build", "lib", "_corex_shim.so")
+        if os.path.exists(corex_shim_src):
+            corex_shim_dst = os.path.join(
+                os.path.realpath(self.build_lib), "torch", "corex", "_corex_shim.so")
+            os.makedirs(os.path.dirname(corex_shim_dst), exist_ok=True)
+            report(f"corex: copying {corex_shim_src} -> {corex_shim_dst}")
+            self.copy_file(corex_shim_src, corex_shim_dst)
+
         setuptools.command.build_ext.build_ext.build_extensions(self)
 
     def get_outputs(self):
