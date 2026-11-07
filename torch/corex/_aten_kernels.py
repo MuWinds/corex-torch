@@ -602,6 +602,51 @@ def _make_all_any(kind: str):
     return out_impl, functional
 
 
+def _sdpa_impl(query, key, value, attn_mask=None, dropout_p: float = 0.0,
+               is_causal: bool = False, scale=None, enable_gqa: bool = False):
+    """``aten::scaled_dot_product_attention``：显式实现 ``softmax(q kᵀ scale + bias) v``。
+
+    为什么不让 torch 自己分解：分解会绕进 ``_scaled_dot_product_attention_math``，
+    里面用到 ``isneginf``/``all``/``where`` 那一串掩码判断——这些我们已经补上了，
+    但实测结果是**错**的（probes/173：max_abs_diff 3.38，而同样几步手算在卡上只差 3.6e-07）。
+    与其追 torch 内部的分解细节，不如给这条路径一个显式实现：语义就是三行矩阵乘，
+    每一步都走已经验过的内核。
+
+    掩码（``attn_mask`` / ``is_causal``）在 **CPU** 上造好再搬上去：
+    ``tril``/``logical_not``/布尔索引这些在卡上还没实现，而掩码是 O(L×S) 的小张量，
+    搬一次的开销远小于补齐这些算子。
+    """
+    import math
+
+    import torch
+
+    if enable_gqa:
+        raise NotImplementedError("corex 的 sdpa 暂不支持 enable_gqa")
+    if float(dropout_p or 0.0) > 0.0:
+        raise NotImplementedError("corex 的 sdpa 不支持 dropout（训练路径没覆盖）")
+
+    L = int(query.size(-2))
+    S = int(key.size(-2))
+    scale_factor = 1.0 / math.sqrt(int(query.size(-1))) if scale is None else float(scale)
+
+    bias = torch.zeros(L, S, dtype=torch.float32)
+    if is_causal:
+        keep = torch.ones(L, S, dtype=torch.bool).tril()
+        bias.masked_fill_(~keep, float("-inf"))
+    if attn_mask is not None:
+        m = attn_mask.detach().cpu()
+        if m.dtype == torch.bool:
+            bias.masked_fill_(~m, float("-inf"))
+        else:
+            bias = bias + m.float()
+    attn_bias = bias.to(query.device)
+
+    attn = (query * scale_factor) @ key.transpose(-2, -1)
+    attn = attn + attn_bias
+    attn = attn.softmax(-1)
+    return attn @ value
+
+
 def _isneginf_out_impl(self, *, out=None):
     """``aten::isneginf.out``：等价于 ``self == -inf``，复用标量比较内核（输出 bool）。
 
@@ -1220,6 +1265,11 @@ def register(lib) -> None:
     lib.impl("all", _all_fn, "PrivateUse1")
     lib.impl("any.out", _any_out, "PrivateUse1")
     lib.impl("any", _any_fn, "PrivateUse1")
+    # sdpa 也是 CompositeImplicitAutograd：只挂 PrivateUse1 的话，带梯度的调用会停在
+    # `Autogradcorex` 那层报「算子不存在」（probes/175 实测）。两个键都挂。
+    for _key in ("PrivateUse1", "AutogradPrivateUse1"):
+        lib.impl("scaled_dot_product_attention", _sdpa_impl, _key)
+        lib.impl("_scaled_dot_product_attention_math", _sdpa_impl, _key)
     lib.impl("isneginf.out", _isneginf_out_impl, "PrivateUse1")
     lib.impl("isneginf", _isneginf_functional, "PrivateUse1")
     lib.impl("where.self_out", _where_self_out_impl, "PrivateUse1")
