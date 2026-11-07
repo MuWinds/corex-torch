@@ -1115,7 +1115,10 @@ struct C10_API TensorImpl : public c10::intrusive_ptr_target {
     if (C10_UNLIKELY(device_policy_)) {
       return device_custom().is_cuda();
     }
-    return device_opt_.has_value() && device_opt_->type() == kCUDA;
+    // corex fork: our card lives on PrivateUse1 with the "cuda" alias, so tensors on it
+    // must report is_cuda == true (customer code branches on this everywhere).
+    return device_opt_.has_value() &&
+        (device_opt_->type() == kCUDA || device_opt_->type() == kPrivateUse1);
   }
 
   bool is_xpu() const {

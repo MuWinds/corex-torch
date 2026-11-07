@@ -1996,7 +1996,28 @@ if not hasattr(torch._C, "_cuda_getDeviceCount"):  # 本 fork 是 USE_CUDA=0
                 except AttributeError:
                     return None
 
-            Stream = _corex_backend.Stream  # noqa: F811
+            # `Tensor.cuda()` / `Module.cuda()` 走的是 C++ 的
+            # `at::Tensor::cuda()`，它用枚举
+            # `at::kCUDA` 而不是字符串，所以绕过了我们�"Device.cpp 别名，抛
+            # `PyTorch is not linked with support for cuda devices`。
+            # 在 Python 层把它接到
+            # `.to("cuda")`（字符串路径已经是我们的"后端）。
+            def _tensor_cuda(self, device=None, non_blocking=False,
+                             memory_format=torch.preserve_format):
+                target = "cuda" if device is None else (
+                    device if isinstance(device, str) else f"cuda:{int(device)}")
+                return self.to(device=target, non_blocking=non_blocking,
+                               memory_format=memory_format, copy=False)
+
+            try:
+                torch.Tensor.cuda = _tensor_cuda
+            except Exception:
+                pass
+
+            def Stream(device=None, priority=0, **kwargs):  # noqa: F811
+                """我们的 Stream 需要 handle；客户写 `torch.cuda.Stream()` 时给当前流。"""
+                return _corex_backend.current_stream()
+
             Event = _corex_backend.Event  # noqa: F811
 
             def current_stream(device=None):  # noqa: F811
