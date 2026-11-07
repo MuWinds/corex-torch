@@ -1,11 +1,11 @@
-"""把 ``src/csrc/corex_shim.cpp`` 编成一个能被 ``corex_torch`` 直接 import 的扩展模块。
+"""把 ``corex/src/csrc/corex_shim.cpp`` 编成一个能被 ``corex_torch`` 直接 import 的扩展模块。
 
 为什么要有这个脚本，而不是手敲 ``torch.utils.cpp_extension.load``：
 
 * **编译必须发生在登录节点**（没有 ``/usr/local/corex``、没有 GPU 驱动），所以命令行必须能在
   一台「只有 torch + g++」的机器上复现；把 include/lib 路径、C++17、``-ldl`` 这些一次性钉死，
   比每次回忆参数可靠。
-* 产物要落在 ``src/corex_torch/_corex_shim.so``：``_device.py`` 用 ``from . import _corex_shim``
+* 产物要落在 ``torch/corex/_corex_shim.so``：``_device.py`` 用 ``from . import _corex_shim``
   取它，包内相对导入只看文件位置，不看构建目录。
 * ``*.so`` 已在 ``.gitignore`` 里——它是构建产物，不进仓库。
 
@@ -14,7 +14,7 @@
 
 用法（一台有 torch 2.8 + g++ 的机器）::
 
-    ~/venvs/corex28/bin/python tools/build_shim.py            # 默认产物进 src/corex_torch/
+    ~/venvs/corex28/bin/python tools/build_shim.py            # 默认产物进 torch/corex/
     ~/venvs/corex28/bin/python tools/build_shim.py --verbose  # 打印 ninja 的完整编译命令
     ~/venvs/corex28/bin/python tools/build_shim.py --out /tmp/_corex_shim.so --clean
 
@@ -35,18 +35,18 @@ import time
 #: C++ 侧的命名空间仍叫 `corex_shim`，只有**模块/文件名**带下划线前缀（表示私有）。
 MODULE_NAME = "_corex_shim"
 
-#: 仓库根目录：本文件在 ``<repo>/tools/`` 下。
-REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
+#: 仓库根目录：本文件在 ``<fork>/corex/tools/`` 下，parents[2] 才是 fork 根。
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 def _default_src() -> pathlib.Path:
     """shim 源码默认路径。"""
-    return REPO_ROOT / "src" / "csrc" / "corex_shim.cpp"
+    return REPO_ROOT / "corex" / "src" / "csrc" / "corex_shim.cpp"
 
 
 def _default_out() -> pathlib.Path:
     """产物默认路径：包内，供 ``from . import _corex_shim`` 使用。"""
-    return REPO_ROOT / "src" / "corex_torch" / "_corex_shim.so"
+    return REPO_ROOT / "torch" / "corex" / "_corex_shim.so"
 
 
 def _default_build_dir() -> pathlib.Path:

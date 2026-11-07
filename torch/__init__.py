@@ -2864,3 +2864,13 @@ def _as_tensor_fullprec(t):
 # an autoloaded backend are defined
 if _is_device_backend_autoload_enabled():
     _import_device_backends()
+
+# corex（天数智芯 天垓100）后端随 fork 一起发布：导入 torch 即完成 PrivateUse1 注册。
+# 为什么用 try/except 吞掉：文档、CI、没有 /usr/local/corex 的机器都要能 `import torch`，
+# 注册失败只是「这台机器上没有这张卡」，不应该让整个 torch 起不来。
+try:
+    from . import corex as _corex  # noqa: F401
+
+    _corex.register()
+except Exception:  # pragma: no cover - 取决于机器上有没有 CoreX 运行时
+    pass
