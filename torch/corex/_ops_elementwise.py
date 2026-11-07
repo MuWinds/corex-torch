@@ -67,6 +67,9 @@ DTYPES: Dict[str, Tuple[str, int, str]] = {
     "fp32": ("*fp32", 4, "float32"),
     "fp16": ("*fp16", 2, "float16"),
     "bf16": ("*bf16", 2, "bfloat16"),
+    # i8 只用于**比较结果**（torch 的 bool 在内存里就是 1 字节 0/1），
+    # 不当成普通数值 dtype 用，见 _cmp_kernel。
+    "i8": ("*i8", 1, "int8"),
 }
 
 #: 「已知编不过」的 dtype 集合。命中时按 ``NotImplementedError`` 报（契约要求），而不是当成
@@ -186,8 +189,12 @@ if triton is not None:
             v = a - scalar
         elif OP == 2:
             v = a * scalar
-        else:
+        elif OP == 3:
             v = a / scalar
+        elif OP == 4:
+            v = tl.maximum(a, scalar)          # clamp 的下界（OP=4）/ 上界（OP=5）就靠这两条
+        else:
+            v = tl.minimum(a, scalar)
         tl.store(out_ptr + off, v.to(OUT_DTYPE), mask=mask)
 
     @triton.jit
@@ -228,6 +235,98 @@ if triton is not None:
         v = tl.load(src_ptr + off, mask=mask)
         tl.store(dst_ptr + off, v, mask=mask)
 
+
+    @triton.jit
+    def _cast_kernel(src_ptr, dst_ptr, n, BLOCK: tl.constexpr,
+                     IN_DTYPE: tl.constexpr, OUT_DTYPE: tl.constexpr):
+        """逐元素 dtype 转换：``dst = src.to(OUT_DTYPE)``。
+
+        为什么必须有这条：`_copy_from` 的快速路径是**按字节 memcpy**，只在两侧同 dtype 时成立。
+        之前没有 dtype 分支，`x.float()`（fp16→fp32）就直接按目的的元素宽度读了源缓冲，
+        越界读、数值全错（2026-11-07 用 probes/167 抓到：max_abs_diff 2.1）。
+        """
+        off = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+        mask = off < n
+        v = tl.load(src_ptr + off, mask=mask)
+        tl.store(dst_ptr + off, v.to(OUT_DTYPE), mask=mask)
+
+    @triton.jit
+    def _cmp_kernel(a_ptr, out_ptr, n, scalar, BLOCK: tl.constexpr, OP: tl.constexpr):
+        """标量比较：``out = a <op> scalar``，结果是 i8 存 0/1（torch 的 bool 张量布局）。
+
+        ``OP``：0 gt / 1 lt / 2 ge / 3 le / 4 eq / 5 ne。
+        """
+        off = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+        mask = off < n
+        a = tl.load(a_ptr + off, mask=mask).to(tl.float32)
+        if OP == 0:
+            v = a > scalar
+        elif OP == 1:
+            v = a < scalar
+        elif OP == 2:
+            v = a >= scalar
+        elif OP == 3:
+            v = a <= scalar
+        elif OP == 4:
+            v = a == scalar
+        else:
+            v = a != scalar
+        tl.store(out_ptr + off, v.to(tl.int8), mask=mask)
+
+    @triton.jit
+    def _where_kernel(c_ptr, a_ptr, b_ptr, out_ptr, n, BLOCK: tl.constexpr,
+                      OUT_DTYPE: tl.constexpr):
+        """``out = where(c, a, b)``：条件按 i8 读（torch 的 bool 布局）。"""
+        off = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+        mask = off < n
+        c = tl.load(c_ptr + off, mask=mask)
+        a = tl.load(a_ptr + off, mask=mask)
+        b = tl.load(b_ptr + off, mask=mask)
+        v = tl.where(c != 0, a, b)
+        tl.store(out_ptr + off, v.to(OUT_DTYPE), mask=mask)
+
+    @triton.jit
+    def _math_kernel(a_ptr, out_ptr, n, BLOCK: tl.constexpr, OP: tl.constexpr,
+                     OUT_DTYPE: tl.constexpr):
+        """一元数学算子：``out = f(x)``，``OP`` 选具体是哪个 f。
+
+        为什么用一条内核 + constexpr 分支，而不是每个算子一条内核：这些算子的访存形状完全一样，
+        差别只在中间那几行表达式；合成一条可以让 `_KERNEL_CACHE` 的键只多一个 ``OP``，
+        编译产物按 constexpr 特化，性能与分开写一致。
+
+        ``tanh`` 用 ``exp`` 手写而不是 ``tl.math.tanh``：后者落成 libdevice 调用，
+        corex-triton 的改写表不一定登记（``rsqrt`` 就踩过同样的坑，见本文件 ``_rsqrt_kernel``
+        的注释）。手写版只用 ``tl.exp`` 与四则运算，已在本平台验证过。
+        """
+        off = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+        mask = off < n
+        a = tl.load(a_ptr + off, mask=mask)
+        x = a.to(tl.float32)
+        if OP == 0:                                  # neg
+            v = -x
+        elif OP == 1:                                # abs
+            v = tl.abs(x)
+        elif OP == 2:                                # exp
+            v = tl.exp(x)
+        elif OP == 3:                                # log
+            v = tl.log(x)
+        elif OP == 4:                                # sqrt
+            v = tl.sqrt(x)
+        elif OP == 5:                                # tanh
+            e = tl.exp(-2.0 * tl.abs(x))
+            v = (1.0 - e) / (1.0 + e)
+            v = tl.where(x < 0.0, -v, v)
+        elif OP == 6:                                # sigmoid
+            v = 1.0 / (1.0 + tl.exp(-x))
+        elif OP == 7:                                # reciprocal
+            v = 1.0 / x
+        elif OP == 8:                                # sign
+            v = tl.where(x > 0.0, 1.0, tl.where(x < 0.0, -1.0, 0.0))
+        elif OP == 9:                                # floor
+            v = tl.math.floor(x)
+        else:                                        # ceil
+            v = tl.math.ceil(x)
+        tl.store(out_ptr + off, v.to(OUT_DTYPE), mask=mask)
 
     @triton.jit
     def _relu_kernel(a_ptr, out_ptr, n, BLOCK: tl.constexpr, OUT_DTYPE: tl.constexpr):
@@ -407,6 +506,29 @@ def _signature(kind: str, dtype: str, op: Optional[int], block: int):
     if kind == "copy":
         sig = {"src_ptr": ptr_ty, "dst_ptr": ptr_ty, "n": "i32", "BLOCK": "constexpr"}
         return sig, {"BLOCK": int(block)}, _copy_kernel, "copy", None
+    if kind == "cast":
+        # ``op`` 槽位装的是输入 dtype 的下标；输出 dtype 由 kind 之后的 OUT_DTYPE 决定。
+        in_ptr, _, in_tl = dtype_info(_CAST_DTYPES[int(op)])
+        sig = {"src_ptr": in_ptr, "dst_ptr": ptr_ty, "n": "i32",
+               "BLOCK": "constexpr", "IN_DTYPE": "constexpr", "OUT_DTYPE": "constexpr"}
+        return sig, {"BLOCK": int(block), "IN_DTYPE": in_tl, "OUT_DTYPE": out_dt}, \
+            _cast_kernel, f"cast({_CAST_DTYPES[int(op)]}->{dtype})", dtype
+    if kind == "cmp":
+        # 输出固定 i8：torch 的 bool 张量就是 1 字节 0/1。
+        sig = {"a_ptr": ptr_ty, "out_ptr": "*i8", "n": "i32", "scalar": "fp32",
+               "BLOCK": "constexpr", "OP": "constexpr"}
+        return sig, {"BLOCK": int(block), "OP": int(op)}, _cmp_kernel, f"cmp(op={int(op)})", dtype
+    if kind == "where":
+        sig = {"c_ptr": "*i8", "a_ptr": ptr_ty, "b_ptr": ptr_ty, "out_ptr": ptr_ty,
+               "n": "i32", "BLOCK": "constexpr", "OUT_DTYPE": "constexpr"}
+        return sig, {"BLOCK": int(block), "OUT_DTYPE": out_dt}, _where_kernel, "where", dtype
+    if kind == "math":
+        # ``op`` 槽位装的是 OP 码（0 neg / 1 abs / 2 exp / 3 log / 4 sqrt / 5 tanh /
+        # 6 sigmoid / 7 reciprocal / 8 sign / 9 floor / 10 ceil）。
+        sig = {"a_ptr": ptr_ty, "out_ptr": ptr_ty, "n": "i32",
+               "BLOCK": "constexpr", "OP": "constexpr", "OUT_DTYPE": "constexpr"}
+        return sig, {"BLOCK": int(block), "OP": int(op), "OUT_DTYPE": out_dt}, \
+            _math_kernel, f"math(op={int(op)})", dtype
     if kind == "relu":
         sig = {"a_ptr": ptr_ty, "out_ptr": ptr_ty, "n": "i32",
                "BLOCK": "constexpr", "OUT_DTYPE": "constexpr"}
@@ -467,6 +589,65 @@ def _run_scalar(op: int, a_ptr, out_ptr, n: int, dtype: str, scalar: float,
     kernel = _get_kernel("scalar", dtype, op, block, int(num_warps or DEFAULT_NUM_WARPS))
     _triton.launch(kernel, _grid(n, block), a_ptr, out_ptr, int(n), float(scalar),
                    stream=stream)
+
+
+#: 转换内核能接受的输入 dtype（下标进 constexpr，避免在签名里拼字符串）。
+_CAST_DTYPES = ("fp32", "fp16", "bf16", "i8")
+
+
+def cast(src_ptr, dst_ptr, n: int, src_dtype: str, dst_dtype: str, *,
+         block: Optional[int] = None, num_warps: Optional[int] = None,
+         stream: Optional[int] = None) -> None:
+    """逐元素 dtype 转换：``dst = src.to(dst_dtype)``（两侧都是连续设备缓冲）。"""
+    _check_n(n)
+    dtype_info(src_dtype)
+    dtype_info(dst_dtype)
+    if n == 0:
+        return
+    if src_dtype not in _CAST_DTYPES:
+        raise NotImplementedError(f"corex 的 cast 还不支持输入 dtype={src_dtype}")
+    block = int(block or DEFAULT_BLOCK)
+    kernel = _get_kernel("cast", dst_dtype, _CAST_DTYPES.index(src_dtype), block,
+                         int(num_warps or DEFAULT_NUM_WARPS))
+    _triton.launch(kernel, _grid(n, block), src_ptr, dst_ptr, int(n), stream=stream)
+
+
+def cmp_scalar(op: int, a_ptr, out_ptr, n: int, dtype: str, scalar: float, *,
+               block: Optional[int] = None, num_warps: Optional[int] = None,
+               stream: Optional[int] = None) -> None:
+    """标量比较：``out = a <op> scalar``（``out`` 是 bool 张量，按 i8 写）。"""
+    _check_n(n)
+    dtype_info(dtype)
+    if n == 0:
+        return
+    block = int(block or DEFAULT_BLOCK)
+    kernel = _get_kernel("cmp", dtype, int(op), block, int(num_warps or DEFAULT_NUM_WARPS))
+    _triton.launch(kernel, _grid(n, block), a_ptr, out_ptr, int(n), float(scalar), stream=stream)
+
+
+def where_self(c_ptr, a_ptr, b_ptr, out_ptr, n: int, dtype: str, *,
+               block: Optional[int] = None, num_warps: Optional[int] = None,
+               stream: Optional[int] = None) -> None:
+    """``out = where(c, a, b)``；``c`` 是 bool 张量（i8），``a``/``b`` 与 ``out`` 同 dtype。"""
+    _check_n(n)
+    dtype_info(dtype)
+    if n == 0:
+        return
+    block = int(block or DEFAULT_BLOCK)
+    kernel = _get_kernel("where", dtype, None, block, int(num_warps or DEFAULT_NUM_WARPS))
+    _triton.launch(kernel, _grid(n, block), c_ptr, a_ptr, b_ptr, out_ptr, int(n), stream=stream)
+
+
+def scalar_op(op: int, a_ptr, out_ptr, n: int, dtype: str, scalar: float, *,
+              block: Optional[int] = None, num_warps: Optional[int] = None,
+              stream: Optional[int] = None) -> None:
+    """通用「张量-标量」入口：``out = f(x, scalar)``。
+
+    ``op`` 见 ``_scalar_kernel``：0 add / 1 sub / 2 mul / 3 div / 4 max / 5 min。
+    单独开这个口子是为了让 clamp（``min(max(x, lo), hi)``）这类「组合算子」复用同一内核，
+    不必为它再写一条只差一个比较的内核。
+    """
+    _run_scalar(int(op), a_ptr, out_ptr, n, dtype, scalar, block, num_warps, stream)
 
 
 def add(a_ptr, b_ptr, out_ptr, n: int, dtype: str, alpha: float = 1.0, *,
@@ -559,6 +740,24 @@ def fill(out_ptr, n: int, dtype: str, value: float, *,
     block = int(block or DEFAULT_BLOCK)
     kernel = _get_kernel("fill", dtype, None, block, int(num_warps or DEFAULT_NUM_WARPS))
     _triton.launch(kernel, _grid(n, block), out_ptr, int(n), float(value), stream=stream)
+
+
+def math_unary(op: int, a_ptr, out_ptr, n: int, dtype: str, *,
+               block: Optional[int] = None, num_warps: Optional[int] = None,
+               stream: Optional[int] = None) -> None:
+    """一元数学算子：``out = f(x)``，``op`` 见 ``_math_kernel`` 的 OP 码。
+
+    精度口径：``exp``/``log``/``tanh``/``sigmoid`` 走的是近似指令（``tl.exp`` 落成
+    ``ex2.approx.f32``），与 CPU 不逐位相等，验收用相对误差；``neg``/``abs``/``sign``/
+    ``reciprocal``（除法本身）是精确的。
+    """
+    _check_n(n)
+    dtype_info(dtype)
+    if n == 0:
+        return
+    block = int(block or DEFAULT_BLOCK)
+    kernel = _get_kernel("math", dtype, int(op), block, int(num_warps or DEFAULT_NUM_WARPS))
+    _triton.launch(kernel, _grid(n, block), a_ptr, out_ptr, int(n), stream=stream)
 
 
 def silu(a_ptr, out_ptr, n: int, dtype: str, *,

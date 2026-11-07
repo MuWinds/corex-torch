@@ -305,6 +305,365 @@ def _relu_impl(self, *, out=None):
     return self
 
 
+#: 一元数学算子表：名字 → ``_ops_elementwise._math_kernel`` 的 OP 码。
+_MATH_OPS = {
+    "neg": 0,
+    "abs": 1,
+    "exp": 2,
+    "log": 3,
+    "sqrt": 4,
+    "tanh": 5,
+    "sigmoid": 6,
+    "reciprocal": 7,
+    "sign": 8,
+    "floor": 9,
+    "ceil": 10,
+}
+
+
+def _make_math_out(name: str, code: int):
+    """造一个 ``aten::<name>.out`` 的实现。"""
+
+    def impl(self, *, out=None):
+        _unary_out(out, self, name)
+        _mod("_ops_elementwise").math_unary(code, self.data_ptr(), out.data_ptr(),
+                                            int(out.numel()), _dtype_name(self.dtype))
+        return out
+
+    impl.__name__ = f"_{name}_out_impl"
+    impl.__doc__ = f"``aten::{name}.out``：落到 ``_ops_elementwise.math_unary({code})``。"
+    return impl
+
+
+def _make_math_functional(name: str, code: int):
+    """造一个 ``aten::<name>`` 的实现（自己开 out）。
+
+    不写成 `return getattr(torch, name)(self, out=out)`：那会绕回分发器，
+    在 corex 上再派发一次还是到我们自己，等于多一跳。
+    """
+    _out_impl = _make_math_out(name, code)
+
+    def impl(self):
+        out = _empty(list(self.shape), self.dtype, self.device)
+        return _out_impl(self, out=out)
+
+    impl.__name__ = f"_{name}_functional"
+    impl.__doc__ = f"``aten::{name}``：分配 out 后走 ``aten::{name}.out`` 的实现。"
+    return impl
+
+
+def _scalar_out_impl(op: int, self, scalar, out, name: str):
+    """张量-标量逐元素的公共落点（clamp 的两步就是 OP=4/5）。"""
+    _unary_out(out, self, name)
+    _mod("_ops_elementwise").scalar_op(op, self.data_ptr(), out.data_ptr(), int(out.numel()),
+                                       _dtype_name(self.dtype), float(scalar))
+    return out
+
+
+def _clamp_out_impl(self, min=None, max=None, *, out=None):
+    """``aten::clamp.out``：先夹下界再夹上界（两条标量内核，没有新的访存形状）。
+
+    为什么不做成一条内核：单边 clamp（只给 min 或只给 max）是常态，两遍实现天然覆盖
+    四种组合；两遍的代价是一次多读多写，相对 RoPE/MLP 里的用量可以忽略。
+    """
+    if min is None and max is None:
+        raise NotImplementedError("corex 的 clamp 至少要有 min 或 max 之一")
+    _unary_out(out, self, "clamp")
+    ops = _mod("_ops_elementwise")
+    if min is not None and max is not None:
+        tmp = _empty(list(self.shape), self.dtype, self.device)
+        ops.scalar_op(4, self.data_ptr(), tmp.data_ptr(), int(self.numel()),
+                      _dtype_name(self.dtype), float(min))
+        ops.scalar_op(5, tmp.data_ptr(), out.data_ptr(), int(self.numel()),
+                      _dtype_name(self.dtype), float(max))
+        return out
+    code = 4 if min is not None else 5
+    value = min if min is not None else max
+    ops.scalar_op(code, self.data_ptr(), out.data_ptr(), int(self.numel()),
+                  _dtype_name(self.dtype), float(value))
+    return out
+
+
+def _clamp_functional(self, min=None, max=None):
+    """``aten::clamp``（不带 out）。"""
+    out = _empty(list(self.shape), self.dtype, self.device)
+    return _clamp_out_impl(self, min, max, out=out)
+
+
+def _addmm_out_impl(self, mat1, mat2, beta=1, alpha=1, *, out=None):
+    """``aten::addmm.out``：``out = beta*self + alpha*(mat1@mat2)``。
+
+    mm 的内核已经验过，所以这里只做组合——不新写内核，避免重复踩 spec 的坑
+    （C++ mm 的实参契约见 docs/00-FACTS.md §21）。
+    """
+    _need(self, "addmm", "self")
+    product = mat1.mm(mat2)
+    if float(alpha) != 1.0:
+        product = product * float(alpha)
+    out.copy_(self)
+    if float(beta) != 1.0:
+        out.mul_(float(beta))
+    out.add_(product)
+    return out
+
+
+def _addmm_functional(self, mat1, mat2, beta=1, alpha=1):
+    out = _empty(list(self.shape), self.dtype, self.device)
+    return _addmm_out_impl(self, mat1, mat2, beta, alpha, out=out)
+
+
+def _flip_impl(self, dims):
+    """``aten::flip``：按维逐个 ``index_select``，索引在 CPU 上造好再搬上去。
+
+    为什么不做成内核：flip 只要「索引反序」这一件事，而 index_select 的内核已经验过；
+    索引本身很小（该维长度个 int64），CPU 造完一次 H2D 的花费远小于写一条新内核。
+    """
+    import torch  # 本模块顶层不 import torch（只在注册与少数组合算子里用）
+
+    _need(self, "flip", "self")
+    out = self
+    for dim in [int(d) for d in dims]:
+        d = dim % out.dim()
+        n = int(out.shape[d])
+        idx = torch.arange(n - 1, -1, -1, dtype=torch.int64, device="cpu").to(self.device)
+        # index_select 的内核只支持 dim=0，所以先把目标维换到最外层，选完再换回来。
+        out = out.transpose(0, d).contiguous()
+        out = torch.index_select(out, 0, idx)
+        out = out.transpose(0, d)
+    return out
+
+
+def _repeat_impl(self, repeats):
+    """``aten::repeat``：每一维 ``cat`` 若干份。
+
+    为什么不用 ``reshape + expand + reshape``：expand 出来的张量非连续，再 reshape 会
+    触发一次物化，而且我们的 reshape 对非连续输入会退到报错；逐维 cat 用的是已经验过的
+    cat 内核，语义直白。
+    """
+    import torch
+
+    _need(self, "repeat", "self")
+    reps = [int(r) for r in repeats]
+    if len(reps) < self.dim():
+        reps = [1] * (self.dim() - len(reps)) + reps
+    out = self
+    for d, r in enumerate(reps[: self.dim()]):
+        if r > 1:
+            out = torch.cat([out] * r, dim=d)
+    return out
+
+
+def _unfold_impl(self, dim: int, size: int, step: int):
+    """``aten::unfold``：纯视图（as_strided），不搬数据。
+
+    输出形状是 ``shape[:d] + [n_windows, size] + shape[d+1:]``，所以 strides 在 d 维插两项：
+    窗起点步进 ``stride[d]*step``、窗内步进 ``stride[d]``。
+    """
+    _need(self, "unfold", "self")
+    d = int(dim) % self.dim()
+    n = int(self.shape[d])
+    size = int(size)
+    step = int(step)
+    if size <= 0 or step <= 0 or size > n:
+        raise NotImplementedError(f"corex 的 unfold 参数不合法：size={size} step={step} n={n}")
+    n_windows = (n - size) // step + 1
+    sizes = list(self.shape[:d]) + [n_windows, size] + list(self.shape[d + 1:])
+    strides = list(self.stride()[:d]) + [self.stride(d) * step, self.stride(d)] + \
+        list(self.stride()[d + 1:])
+    return self.as_strided(sizes, strides, self.storage_offset())
+
+
+def _pow_scalar_out_impl(self, exponent, *, out=None):
+    """``aten::pow.Tensor_Scalar_out``：只接常见指数，其余明确报「不支持」。
+
+    支持的指数直接翻译成已验证的算子组合（``x**2 = x*x``、``x**0.5 = sqrt``、
+    ``x**-1 = reciprocal``、``x**3 = x*x*x``），不做 ``exp(y*log(x))`` 那种近似——
+    负数的整数次幂在近似式里会变 NaN，而模型里 ``x**2`` 出现在 RMSNorm 的分母那侧，
+    错了会静默算歪。
+    """
+    _unary_out(out, self, "pow")
+    e = float(exponent)
+    if e == 1.0:
+        out.copy_(self)
+        return out
+    if e == 2.0:
+        out.copy_(self * self)
+        return out
+    if e == 3.0:
+        out.copy_(self * self * self)
+        return out
+    if e == 0.5:
+        _mod("_ops_elementwise").math_unary(4, self.data_ptr(), out.data_ptr(),
+                                            int(out.numel()), _dtype_name(self.dtype))
+        return out
+    if e == -1.0:
+        _mod("_ops_elementwise").math_unary(7, self.data_ptr(), out.data_ptr(),
+                                            int(out.numel()), _dtype_name(self.dtype))
+        return out
+    raise NotImplementedError(f"corex 的 pow 只支持指数 1/2/3/0.5/-1，收到 {e}")
+
+
+def _pow_scalar_functional(self, exponent):
+    out = _empty(list(self.shape), self.dtype, self.device)
+    return _pow_scalar_out_impl(self, exponent, out=out)
+
+
+#: 标量比较表：名字 → ``_ops_elementwise._cmp_kernel`` 的 OP 码。
+_CMP_OPS = {"gt": 0, "lt": 1, "ge": 2, "le": 3, "eq": 4, "ne": 5}
+
+
+def _make_cmp_scalar_out(name: str, code: int):
+    """造一个 ``aten::<name>.Scalar_out`` 的实现（输出 bool 张量）。"""
+
+    def impl(self, other, *, out=None):
+        if out is None:
+            raise NotImplementedError(f"corex 的 {name}.Scalar 要求显式 out")
+        if int(out.numel()) != int(self.numel()) or out.dtype != torch_bool():
+            raise NotImplementedError(
+                f"corex 的 {name}.Scalar 只支持同形状 bool 输出，收到 {tuple(out.shape)}/{out.dtype}")
+        _need(self, f"{name}.Scalar", "self")
+        _mod("_ops_elementwise").cmp_scalar(code, self.data_ptr(), out.data_ptr(),
+                                            int(self.numel()), _dtype_name(self.dtype),
+                                            float(other))
+        return out
+
+    impl.__name__ = f"_{name}_scalar_out_impl"
+    return impl
+
+
+def _make_cmp_scalar_functional(name: str, code: int):
+    _out_impl = _make_cmp_scalar_out(name, code)
+
+    def impl(self, other):
+        out = _empty(list(self.shape), torch_bool(), self.device)
+        return _out_impl(self, other, out=out)
+
+    impl.__name__ = f"_{name}_scalar_functional"
+    return impl
+
+
+def _bool_to_f32(t):
+    """bool 张量转 fp32：求和/求积这类归约只有数值内核，先转过去再算。"""
+    out = _empty(list(t.shape), torch_float32(), t.device)
+    _mod("_ops_elementwise").cast(t.data_ptr(), out.data_ptr(), int(t.numel()), "i8", "fp32")
+    return out
+
+
+def torch_float32():
+    """``torch.float32`` 的便捷入口。"""
+    import torch
+
+    return torch.float32
+
+
+def _all_any_out_impl(kind: str, self, dim, keepdim: bool, out):
+    """``aten::all``/``aten::any`` 的公共实现。
+
+    实现方式：转 fp32 后求和，再与「参与元素的个数」比。为什么不写一条专用归约内核：
+    bool 张量在模型里只出现在 mask 上（sdpa 的整行 mask 判断），量级是 O(1) 次；
+    复用已验证的 sum 内核比新增一条容易错的归约稳。
+    """
+    if out is None:
+        raise NotImplementedError(f"corex 的 {kind} 要求显式 out")
+    if out.dtype != torch_bool():
+        raise NotImplementedError(f"corex 的 {kind} 输出必须是 bool，收到 {out.dtype}")
+    f = _bool_to_f32(self)
+    if dim is None:
+        total = float(f.sum().to("cpu"))
+        hit = total == float(self.numel()) if kind == "all" else total > 0.0
+        out.fill_(hit)
+        return out
+    dims = [int(dim)] if isinstance(dim, int) else [int(d) for d in dim]
+    if len(dims) != 1:
+        raise NotImplementedError(f"corex 的 {kind} 只支持单维或全归约，收到 dim={dims}")
+    d = dims[0] % self.dim()
+    s = f.sum(d, keepdim=keepdim)
+    size = float(self.shape[d])
+    out.copy_(s == size if kind == "all" else s > 0.0)
+    return out
+
+
+def _make_all_any(kind: str):
+    def out_impl(self, dim=None, keepdim: bool = False, *, out=None):
+        return _all_any_out_impl(kind, self, dim, keepdim, out)
+
+    def functional(self, dim=None, keepdim: bool = False):
+        shape = list(self.shape)
+        if dim is None:
+            shape = [1] * len(shape) if keepdim else []
+        else:
+            d = int(dim) % len(shape)
+            shape = shape[:d] + ([1] if keepdim else []) + shape[d + 1:]
+        out = _empty(shape, torch_bool(), self.device)
+        return out_impl(self, dim, keepdim, out=out)
+
+    out_impl.__name__ = f"_{kind}_out_impl"
+    functional.__name__ = f"_{kind}_functional"
+    return out_impl, functional
+
+
+def _isneginf_out_impl(self, *, out=None):
+    """``aten::isneginf.out``：等价于 ``self == -inf``，复用标量比较内核（输出 bool）。
+
+    谁在用：``scaled_dot_product_attention`` 的分解里用它做「整行都被 mask 掉」的判断
+    （probes/164 的 sdpa 就卡在这条上）。
+    """
+    if out is None:
+        raise NotImplementedError("corex 的 isneginf 要求显式 out")
+    _need(self, "isneginf", "self")
+    if out.dtype != torch_bool():
+        raise NotImplementedError(f"corex 的 isneginf 输出必须是 bool，收到 {out.dtype}")
+    _mod("_ops_elementwise").cmp_scalar(4, self.data_ptr(), out.data_ptr(), int(self.numel()),
+                                        _dtype_name(self.dtype), float("-inf"))
+    return out
+
+
+def _isneginf_functional(self):
+    out = _empty(list(self.shape), torch_bool(), self.device)
+    return _isneginf_out_impl(self, out=out)
+
+
+def _where_self_out_impl(condition, self, other, *, out=None):
+    """``aten::where.self_out``：``out = where(condition, self, other)``，支持广播。
+
+    广播的实现方式是「先物化成同形状再跑内核」：内核按线性下标读写，stride 0 的视图进去
+    会读错位置。sdpa 的分解里 ``where(mask, x, 0)`` 就是 ``(2,4,8,1)`` 对 0 维标量，
+    这种用法在注意力里到处都是，所以必须支持。
+    """
+    import torch
+
+    if out is None:
+        raise NotImplementedError("corex 的 where 要求显式 out")
+    _need(condition, "where", "condition")
+    _need(out, "where", "out")
+    shape = list(out.shape)
+    if not isinstance(other, torch.Tensor):
+        other = torch.full(shape, float(other), dtype=self.dtype, device=self.device)
+    _need(self, "where", "self")
+    _need(other, "where", "other")
+    total = int(out.numel())
+
+    def _flat(t):
+        return t if t.is_contiguous() and list(t.shape) == shape else t.expand(shape).contiguous()
+
+    cond = _flat(condition)
+    a = _flat(self)
+    b = _flat(other)
+    _mod("_ops_elementwise").where_self(cond.data_ptr(), a.data_ptr(), b.data_ptr(),
+                                        out.data_ptr(), total, _dtype_name(out.dtype))
+    return out
+
+
+def _where_self_functional(condition, self, other):
+    import torch
+
+    shape = torch.broadcast_shapes(tuple(condition.shape), tuple(self.shape),
+                                   tuple(other.shape) if isinstance(other, torch.Tensor)
+                                   else ())
+    out = _empty(list(shape), self.dtype, self.device)
+    return _where_self_out_impl(condition, self, other, out=out)
+
+
 def _rsqrt_out_impl(self, *, out=None):
     """``aten::rsqrt.out``。
 
@@ -397,8 +756,23 @@ def _max_dim_impl(self, dim: int, keepdim: bool = False, *, max=None, max_values
     if max is None or max_values is None:
         raise NotImplementedError("corex 的 max.dim 要求显式的 max / max_values 输出")
     ndim = self.dim()
-    if ndim == 0 or (int(dim) % ndim) != ndim - 1:
-        raise NotImplementedError(f"corex 的 max.dim 只支持最后一维，收到 dim={dim}")
+    if ndim == 0:
+        raise NotImplementedError("corex 的 max.dim 不接受 0 维张量")
+    d = int(dim) % ndim
+    if d != ndim - 1:
+        # 任意维的通用做法：把目标维挪到最后（其余维保持原有相对顺序），拷成连续张量再算。
+        # 为什么敢这么做：归约语义与维顺序无关，而 permute 出来的结果维序正好是「原形状去掉 d」，
+        # 可以直接 reshape 成 torch 要求的输出形状。代价是一次全量拷贝。
+        perm = [i for i in range(ndim) if i != d] + [d]
+        xt = self.permute(perm).contiguous()
+        rows_n = int(xt.numel()) // int(xt.shape[-1])
+        vals = _empty(list(xt.shape[:-1]), self.dtype, self.device)
+        idxs = _empty(list(xt.shape[:-1]), torch_int64(), self.device)
+        _mod("_ops_reduce").max_dim(xt.data_ptr(), vals.data_ptr(), idxs.data_ptr(),
+                                    rows_n, int(xt.shape[-1]), _dtype_name(self.dtype))
+        max.copy_(vals.reshape(max.shape))
+        max_values.copy_(idxs.reshape(max_values.shape))
+        return max, max_values
     rows, cols = _rows_cols(self, "max.dim")
     if int(max.numel()) != rows or int(max_values.numel()) != rows:
         raise NotImplementedError(
@@ -422,8 +796,18 @@ def _argmax_impl(self, dim=None, keepdim: bool = False):
         _mod("_ops_reduce").argmax_last(self.data_ptr(), out.data_ptr(), 1,
                                         int(self.numel()), _dtype_name(self.dtype))
         return out.view(() if keepdim else ())
-    if ndim == 0 or (int(dim) % ndim) != ndim - 1:
-        raise NotImplementedError(f"corex 的 argmax 只支持最后一维，收到 dim={dim}")
+    if ndim == 0:
+        raise NotImplementedError("corex 的 argmax 不接受 0 维张量")
+    d = int(dim) % ndim
+    if d != ndim - 1:
+        perm = [i for i in range(ndim) if i != d] + [d]
+        xt = self.permute(perm).contiguous()
+        rows_n = int(xt.numel()) // int(xt.shape[-1])
+        idxs = _empty(list(xt.shape[:-1]), torch_int64(), self.device)
+        _mod("_ops_reduce").argmax_last(xt.data_ptr(), idxs.data_ptr(), rows_n,
+                                        int(xt.shape[-1]), _dtype_name(self.dtype))
+        shape = list(self.shape[:d]) + ([1] if keepdim else []) + list(self.shape[d + 1:])
+        return idxs.reshape(shape)
     rows, cols = _rows_cols(self, "argmax")
     shape = list(self.shape[:-1]) + ([1] if keepdim else [])
     out = _empty(shape, torch_int64(), self.device)
@@ -437,6 +821,13 @@ def torch_int64():
     import torch
 
     return torch.int64
+
+
+def torch_bool():
+    """``torch.bool`` 的便捷入口（比较结果、掩码用）。"""
+    import torch
+
+    return torch.bool
 
 
 def _prod(values) -> int:
@@ -812,6 +1203,36 @@ def register(lib) -> None:
     lib.impl("index_select", _index_select_impl, "PrivateUse1")
     lib.impl("view.dtype", _view_dtype_impl, "PrivateUse1")
     # 第 5 批（triton-bridge 的内核，probes/196：63/63 + 36/36）
+    # ---- 通用一元数学算子：一条内核 + 一张表，避免为每个算子重复写一模一样的样板 ----
+    # 为什么必须同时注册 `.out` 与不带 `.out` 的名字：torch 里 `abs`/`tanh`/`sigmoid` 这些是
+    # **structured kernel**，`torch.abs(x)` 会派发到 `aten::abs.out`；只注册 functional 版
+    # 会报 `Could not run 'aten::abs.out'`（probes/161 的 18 条失败全是这个原因）。
+    for _name, _code in _MATH_OPS.items():
+        lib.impl(f"{_name}.out", _make_math_out(_name, _code), "PrivateUse1")
+        lib.impl(_name, _make_math_functional(_name, _code), "PrivateUse1")
+
+    for _cname, _ccode in _CMP_OPS.items():
+        lib.impl(f"{_cname}.Scalar_out", _make_cmp_scalar_out(_cname, _ccode), "PrivateUse1")
+        lib.impl(f"{_cname}.Scalar", _make_cmp_scalar_functional(_cname, _ccode), "PrivateUse1")
+    _all_out, _all_fn = _make_all_any("all")
+    _any_out, _any_fn = _make_all_any("any")
+    lib.impl("all.out", _all_out, "PrivateUse1")
+    lib.impl("all", _all_fn, "PrivateUse1")
+    lib.impl("any.out", _any_out, "PrivateUse1")
+    lib.impl("any", _any_fn, "PrivateUse1")
+    lib.impl("isneginf.out", _isneginf_out_impl, "PrivateUse1")
+    lib.impl("isneginf", _isneginf_functional, "PrivateUse1")
+    lib.impl("where.self_out", _where_self_out_impl, "PrivateUse1")
+    lib.impl("where.self", _where_self_functional, "PrivateUse1")
+    lib.impl("clamp.out", _clamp_out_impl, "PrivateUse1")
+    lib.impl("clamp", _clamp_functional, "PrivateUse1")
+    lib.impl("addmm.out", _addmm_out_impl, "PrivateUse1")
+    lib.impl("addmm", _addmm_functional, "PrivateUse1")
+    lib.impl("flip", _flip_impl, "PrivateUse1")
+    lib.impl("repeat", _repeat_impl, "PrivateUse1")
+    lib.impl("unfold", _unfold_impl, "PrivateUse1")
+    lib.impl("pow.Tensor_Scalar_out", _pow_scalar_out_impl, "PrivateUse1")
+    lib.impl("pow.Tensor_Scalar", _pow_scalar_functional, "PrivateUse1")
     lib.impl("relu.out", _relu_out_impl, "PrivateUse1")
     lib.impl("relu", _relu_functional, "PrivateUse1")
     lib.impl("relu_", _relu_impl, "PrivateUse1")

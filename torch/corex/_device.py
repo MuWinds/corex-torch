@@ -29,6 +29,13 @@ from typing import Any, Optional, Sequence
 
 from . import _runtime
 
+def _ops_mod():
+    """惰性取 ``_ops_elementwise``（本模块顶层不 import 它，避免 Triton 缺失时 import 失败）。"""
+    from . import _ops_elementwise
+
+    return _ops_elementwise
+
+
 #: 设备名。写到 ``torch.device(...)`` 里就是这个名字。
 DEVICE_NAME = "corex"
 
@@ -191,6 +198,31 @@ def _copy_from_impl(src, dst, non_blocking: bool = False) -> Any:
     dst_dev = dst.device.type == DEVICE_NAME
     src_dev = src.device.type == DEVICE_NAME
 
+    # dtype 不同 = 类型转换，**不能**按字节 memcpy（元素宽度不同会越界读，probes/167）。
+    # 分三种方向处理：卡内走转换内核；H2D 先在主机上转；D2H 先按原 dtype 搬回主机再转。
+    if dst.dtype != src.dtype:
+        if src_dev and dst_dev:
+            if int(dst.numel()) == 0:
+                return dst
+            src_c = src.contiguous()
+            if dst.is_contiguous():
+                _ops_mod().cast(src_c.data_ptr(), dst.data_ptr(),
+                                              int(dst.numel()), _dtype_name(src.dtype),
+                                              _dtype_name(dst.dtype))
+                return dst
+            stage = _empty_impl(list(dst.shape), dtype=dst.dtype, device=dst.device)
+            _ops_mod().cast(src_c.data_ptr(), stage.data_ptr(),
+                                          int(dst.numel()), _dtype_name(src.dtype),
+                                          _dtype_name(dst.dtype))
+            from . import _aten_extra
+
+            return _aten_extra._copy_impl(dst, stage)
+        if dst_dev and not src_dev:
+            return _copy_from_impl(src.to(dst.dtype), dst, non_blocking)
+        # D2H：同 dtype 搬回主机（不递归进本分支），再在主机上转
+        host = src.to("cpu")
+        return host.to(dst.dtype) if host.dtype != dst.dtype else host
+
     # 非连续怎么处理（线性 memcpy 只对「两侧都连续」成立；按字节扫转置视图不报错但数值错）：
     #   1) 两侧都在卡上 → 交给 `_aten_extra._copy_impl` 的按 stride 分段搬（它已经实现过一遍，
     #      再写一份只会两边不一致）。`clone()` 在本版本走 `at::_copy_from` 而不是 `copy_`，
@@ -349,8 +381,9 @@ def _dtype_name(dtype) -> str:
     """把 torch.dtype 翻成 Triton 签名用的类型串。"""
     import torch
 
+    # bool 走 i8：torch 的 bool 张量在内存里就是 1 字节的 0/1，比较与 where 都按 i8 读写。
     table = {torch.float32: "fp32", torch.float16: "fp16", torch.bfloat16: "bf16",
-             torch.int8: "i8", torch.int32: "i32", torch.int64: "i64"}
+             torch.bool: "i8", torch.int8: "i8", torch.int32: "i32", torch.int64: "i64"}
     if dtype not in table:
         raise NotImplementedError(f"corex 的算子层还没覆盖 dtype={dtype}")
     return table[dtype]

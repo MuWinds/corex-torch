@@ -422,9 +422,21 @@ def _copy_impl(self, src, non_blocking: bool = False):
         return _copy_from_impl(src, self)
     _check_corex(src, "copy_")
     if self.dtype != src.dtype:
-        raise NotImplementedError(
-            f"corex 的 copy_ 要求同 dtype：{self.dtype} <- {src.dtype}（类型转换走 to()）"
-        )
+        # 同设备跨 dtype：走转换内核（`_copy_from` 已经有同样的分支，这里覆盖 `copy_` 直调）。
+        if int(self.numel()) != int(src.numel()):
+            raise NotImplementedError(
+                f"corex 的 copy_ 跨 dtype 要求同元素数：{self.dtype} <- {src.dtype}")
+        src_c = src.contiguous()
+        if self.is_contiguous():
+            _mod("_ops_elementwise").cast(src_c.data_ptr(), self.data_ptr(),
+                                          int(self.numel()), _mod("_device")._dtype_name(src.dtype),
+                                          _mod("_device")._dtype_name(self.dtype))
+            return self
+        stage = _mod("_device")._empty_impl(list(self.shape), dtype=self.dtype, device=self.device)
+        _mod("_ops_elementwise").cast(src_c.data_ptr(), stage.data_ptr(), int(self.numel()),
+                                      _mod("_device")._dtype_name(src.dtype),
+                                      _mod("_device")._dtype_name(self.dtype))
+        return _copy_impl(self, stage)
     if tuple(self.shape) != tuple(src.shape):
         raise NotImplementedError(
             f"corex 的 copy_ 暂不支持广播：{tuple(self.shape)} <- {tuple(src.shape)}"
