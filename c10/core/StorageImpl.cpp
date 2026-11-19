@@ -4,15 +4,12 @@
 namespace c10 {
 
 // The array to save function pointer for custom storageImpl create.
-static std::array<StorageImplCreateHelper, at::COMPILE_TIME_MAX_DEVICE_TYPES>
+C10_API std::array<StorageImplCreateHelper, at::COMPILE_TIME_MAX_DEVICE_TYPES>
     StorageImplCreate;
 
-// A allowlist of device type, currently available is PrivateUse1
-static ska::flat_hash_set<c10::DeviceType>& GetBackendMetaAllowlist() {
-  static ska::flat_hash_set<c10::DeviceType> DeviceTypeAllowList{
-      DeviceType::PrivateUse1};
-  return DeviceTypeAllowList;
-}
+// A allowlist of device type, currently available is PrivateUse1.
+static ska::flat_hash_set<c10::DeviceType> DeviceTypeAllowList{
+    DeviceType::PrivateUse1};
 
 void throwNullDataPtrError() {
   TORCH_CHECK(
@@ -40,21 +37,12 @@ void warnDeprecatedDataPtr() {
       "isinstance(tensor, FakeTensor).")
 }
 
-[[noreturn]] void StorageImpl::throw_data_ptr_access_error() const {
-  if (extra_meta_ && extra_meta_->custom_data_ptr_error_msg_) {
-    // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
-    TORCH_CHECK(false, *extra_meta_->custom_data_ptr_error_msg_);
-  }
-  TORCH_CHECK(false, "Cannot access data pointer of Storage that is invalid.");
-}
-
 void SetStorageImplCreate(DeviceType t, StorageImplCreateHelper fptr) {
   // Allowlist verification.
   // Only if the devicetype is in the allowlist,
   // we allow the extension to be registered for storageImpl create.
-  const auto& DeviceTypeAllowlist = GetBackendMetaAllowlist();
   TORCH_CHECK(
-      DeviceTypeAllowlist.find(t) != DeviceTypeAllowlist.end(),
+      DeviceTypeAllowList.find(t) != DeviceTypeAllowList.end(),
       "It is only allowed to register the storageImpl create method ",
       "for PrivateUse1. ",
       "If you have related storageImpl requirements, ",

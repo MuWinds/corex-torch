@@ -4,9 +4,9 @@
 #include <mutex>
 #include <shared_mutex>
 #include <stdexcept>
-#include <utility>
 
-namespace c10d::control_plane {
+namespace c10d {
+namespace control_plane {
 
 namespace {
 
@@ -16,11 +16,11 @@ class HandlerRegistry {
     std::unique_lock<std::shared_mutex> lock(handlersMutex_);
 
     if (handlers_.find(name) != handlers_.end()) {
-      throw std::invalid_argument(
+      throw std::runtime_error(
           fmt::format("Handler {} already registered", name));
     }
 
-    handlers_[name] = std::move(f);
+    handlers_[name] = f;
   }
 
   HandlerFunc getHandler(const std::string& name) {
@@ -28,8 +28,7 @@ class HandlerRegistry {
 
     auto it = handlers_.find(name);
     if (it == handlers_.end()) {
-      throw std::invalid_argument(
-          fmt::format("Failed to find handler {}", name));
+      throw std::runtime_error(fmt::format("Failed to find handler {}", name));
     }
     return handlers_[name];
   }
@@ -38,7 +37,6 @@ class HandlerRegistry {
     std::shared_lock<std::shared_mutex> lock(handlersMutex_);
 
     std::vector<std::string> names;
-    names.reserve(handlers_.size());
     for (const auto& [name, _] : handlers_) {
       names.push_back(name);
     }
@@ -57,13 +55,12 @@ HandlerRegistry& getHandlerRegistry() {
 
 RegisterHandler pingHandler{"ping", [](const Request&, Response& res) {
                               res.setContent("pong", "text/plain");
-                              res.setStatus(200);
                             }};
 
 } // namespace
 
 void registerHandler(const std::string& name, HandlerFunc f) {
-  return getHandlerRegistry().registerHandler(name, std::move(f));
+  return getHandlerRegistry().registerHandler(name, f);
 }
 
 HandlerFunc getHandler(const std::string& name) {
@@ -74,4 +71,5 @@ std::vector<std::string> getHandlerNames() {
   return getHandlerRegistry().getHandlerNames();
 }
 
-} // namespace c10d::control_plane
+} // namespace control_plane
+} // namespace c10d

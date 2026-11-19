@@ -30,18 +30,6 @@ namespace at::native {
 void neg_kernel_cuda(TensorIteratorBase &iter);
 void conj_kernel_cuda(TensorIteratorBase &iter);
 
-void float16_copy_kernel_cuda(TensorIteratorBase &iter) {
-    gpu_kernel_nocast(iter, [] GPU_LAMBDA(float value) {
-        return static_cast<at::Half>(value);
-    });
-}
-
-void bfloat16_copy_kernel_cuda(TensorIteratorBase &iter) {
-    gpu_kernel_nocast(iter, [] GPU_LAMBDA(float value) {
-        return static_cast<at::BFloat16>(value);
-    });
-}
-
 void float8_copy_kernel_cuda(TensorIteratorBase &iter) {
   ScalarType dtype = iter.dtype(0);
   ScalarType other_dtype = iter.dtype(1);
@@ -144,28 +132,6 @@ void float8_copy_kernel_cuda(TensorIteratorBase &iter) {
          gpu_kernel(iter, [] GPU_LAMBDA(Float8_e5m2fnuz x) { return x; });
          break;
     }
-  } else if (dtype == kFloat8_e8m0fnu) {
-    // TODO(#146647): clean this up, too much copy-pasta
-    switch (other_dtype) {
-      case kFloat:
-         gpu_kernel_nocast(iter, [] GPU_LAMBDA(float value) {
-             return Float8_e8m0fnu(value);
-         });
-         break;
-      case kHalf:
-         gpu_kernel_nocast(iter, [] GPU_LAMBDA(Half value) {
-             return Float8_e8m0fnu(value);
-         });
-         break;
-      case kBFloat16:
-         gpu_kernel_nocast(iter, [] GPU_LAMBDA(BFloat16 value) {
-             return Float8_e8m0fnu(value);
-         });
-         break;
-      default:
-         gpu_kernel(iter, [] GPU_LAMBDA(Float8_e8m0fnu x) { return x; });
-         break;
-    }
   } else {
     TORCH_CHECK(false, "This supposed ot be called only for Float8 types");
   }
@@ -179,14 +145,8 @@ void direct_copy_kernel_cuda(TensorIteratorBase &iter) {
     AT_DISPATCH_QINT_TYPES(dtype, "copy_", [&] {
       gpu_kernel(iter, [] GPU_LAMBDA(scalar_t x) { return x; });
     });
-  } else if (isFloat8Type(dtype)) {
+  } else if (dtype == kFloat8_e5m2 || dtype == kFloat8_e4m3fn || dtype == kFloat8_e5m2fnuz || dtype == kFloat8_e4m3fnuz) {
      float8_copy_kernel_cuda(iter);
-  } else if (iter.dtype(1) == kFloat && (dtype == kBFloat16 || dtype == kHalf)) {
-     if (dtype == kBFloat16) {
-       bfloat16_copy_kernel_cuda(iter);
-     } else {
-       float16_copy_kernel_cuda(iter);
-     }
   } else if (isBitsType(dtype)) {
     TORCH_CHECK(dtype == iter.dtype(1), "copy_() does not support casting "
       "bits types to different bits types. Source dtype is ", iter.dtype(1), "target dtype is ", dtype);
@@ -418,7 +378,8 @@ static void copy_kernel_cuda(TensorIterator& iter, bool non_blocking) {
     auto* ptr = (dst_device == kCPU ? dst : src);
     auto* ctx = host_tensor.storage().data_ptr().get_context();
     // TODO: warn on the return value.
-    at::getHostAllocator(at::kCUDA)->record_event(ptr, ctx, stream.unwrap());
+    CachingHostAllocator_recordEvent(ptr, ctx, stream);
+
   } else {
     at::cuda::memcpy_and_sync(dst, src, nbytes, kind, stream);
   }
@@ -431,6 +392,6 @@ static void copy_kernel_cuda(TensorIterator& iter, bool non_blocking) {
   }
 }
 
-REGISTER_DISPATCH(copy_stub, &copy_kernel_cuda)
+REGISTER_DISPATCH(copy_stub, &copy_kernel_cuda);
 
 } // namespace at::native

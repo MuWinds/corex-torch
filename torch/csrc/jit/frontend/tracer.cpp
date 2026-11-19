@@ -34,14 +34,14 @@ namespace torch::jit::tracer {
 namespace detail {
 
 template <typename T>
-static void genericAddInput(Node* n, T value) {
+void genericAddInput(Node* n, T value) {
   Value* v = n->owningGraph()->insertConstant(value);
   recordSourceLocation(v->node());
   n->addInput(v);
 }
 
 template <typename T>
-static void genericAddOptionalInput(
+void genericAddOptionalInput(
     Node* n,
     const char* name,
     const std::optional<T>& value) {
@@ -55,15 +55,14 @@ static void genericAddOptionalInput(
 }
 
 template <typename T>
-static void badArgType(const T& v) {
-  TORCH_CHECK(
-      false,
+void badArgType(const T& v) {
+  AT_ERROR(
       "Found an unsupported argument type in the JIT tracer: ",
       c10::demangle_type<T>(),
       ". File a bug report.");
 }
 
-static thread_local std::shared_ptr<TracingState> tracing_state;
+thread_local std::shared_ptr<TracingState> tracing_state;
 } // namespace detail
 
 static std::atomic<bool> tracer_state_warn_mode{true};
@@ -73,6 +72,7 @@ std::atomic<bool>& getTracerStateWarnMode() {
 }
 
 std::function<void()> pauseTracing() {
+  // NOLINTNEXTLINE
   std::shared_ptr<tracer::TracingState> state = getTracingState();
   tracer::setTracingState(nullptr);
 
@@ -323,8 +323,7 @@ Value* TracingState::getOutput(const IValue& iv, size_t i) {
     graph->insertNode(dict_node);
     return dict_node->output();
   } else {
-    TORCH_CHECK(
-        false,
+    AT_ERROR(
         "Only tensors, lists, tuples of tensors, or dictionary of tensors can be output from traced functions");
   }
 }
@@ -346,7 +345,7 @@ static IValue addInput(
   value->setType(type);
   if (type->isSubtypeOf(*TensorType::get())) {
     auto input_tensor = input.toTensor();
-    auto const& name = input_tensor.name();
+    auto name = Variable(input_tensor).name();
     if (state->hasValue(input)) {
       input_tensor = input_tensor.view(input_tensor.sizes());
     }
@@ -417,8 +416,7 @@ static IValue addInput(
       return elems;
     }
   } else {
-    TORCH_CHECK(
-        false,
+    AT_ERROR(
         "Only tensors or (possibly nested) dict or tuples of tensors can be "
         "inputs to traced functions. Got ",
         type->repr_str());
@@ -474,7 +472,7 @@ std::pair<std::shared_ptr<TracingState>, Stack> trace(
     // varied on subsequent invocations of the trace.  Any other variables
     // will be treated as constants.
     if (isTracing()) {
-      TORCH_CHECK(false, "Tracing can't be nested");
+      AT_ERROR("Tracing can't be nested");
     }
     auto state = std::make_shared<TracingState>();
     setTracingState(state);
@@ -615,7 +613,7 @@ void addInputs(Node* n, const char* name, int64_t value) {
   }
 }
 
-void addInputs(Node* n, const char* name, const c10::SymInt& value) {
+void addInputs(Node* n, const char* name, c10::SymInt value) {
   addInputs(n, name, value.guard_int(__FILE__, __LINE__));
 }
 
@@ -659,13 +657,13 @@ void addInputs(
     const std::optional<at::Scalar>& value) {
   detail::genericAddOptionalInput(n, name, value);
 }
-void addInputs(Node* n, const char* name, const std::string_view value) {
+void addInputs(Node* n, const char* name, const c10::string_view value) {
   detail::genericAddInput(n, std::string(value));
 }
 void addInputs(
     Node* n,
     const char* name,
-    const std::optional<std::string_view>& value) {
+    const std::optional<c10::string_view>& value) {
   detail::genericAddOptionalInput(n, name, value);
 }
 void addInputs(Node* n, const char* name, const at::Tensor& value) {
@@ -745,7 +743,7 @@ void addInputs(
 void addInputs(
     Node* n,
     const char* name,
-    const std::vector<at::Tensor>& value,
+    std::vector<at::Tensor> value,
     bool allow_undefined) {
   addInputs(n, name, at::ITensorListRef(value), allow_undefined);
 }
@@ -820,8 +818,8 @@ void addInputs(Node* n, const char* name, std::optional<c10::SymInt> value) {
       n,
       name,
       value.has_value()
-          ? std::make_optional(value->guard_int(__FILE__, __LINE__))
-          : std::nullopt);
+          ? c10::make_optional(value->guard_int(__FILE__, __LINE__))
+          : c10::nullopt);
 }
 
 void addInputs(
@@ -1055,8 +1053,8 @@ void ArgumentStash::stashValue(
 ////////////////////////////////////////////////////////////////////////////////
 // no python present so we just do not record source information
 static void defaultRecordSourceLocation(Node* n) {}
-static std::atomic<decltype(&defaultRecordSourceLocation)>
-    record_source_location(defaultRecordSourceLocation);
+std::atomic<decltype(&defaultRecordSourceLocation)> record_source_location(
+    defaultRecordSourceLocation);
 void recordSourceLocation(Node* n) {
   return record_source_location.load()(n);
 }
@@ -1067,7 +1065,7 @@ void setRecordSourceLocation(void (*v)(Node*)) {
 static std::vector<StackEntry> defaultPythonCallstack() {
   return std::vector<StackEntry>();
 }
-static std::atomic<decltype(&defaultPythonCallstack)> python_callstack_fn(
+std::atomic<decltype(&defaultPythonCallstack)> python_callstack_fn(
     defaultPythonCallstack);
 std::vector<StackEntry> pythonCallstack() {
   return python_callstack_fn.load()();
@@ -1079,7 +1077,7 @@ void setPythonCallstack(std::vector<StackEntry> (*v)()) {
 static void defaultWarn(const std::string& str) {
   TORCH_WARN(str);
 }
-static std::atomic<warn_fn_type> warn_callback{defaultWarn};
+std::atomic<warn_fn_type> warn_callback{defaultWarn};
 
 const char* WARN_PYTHON_DATAFLOW =
     " might cause the trace to be incorrect. We can't record the data flow of "

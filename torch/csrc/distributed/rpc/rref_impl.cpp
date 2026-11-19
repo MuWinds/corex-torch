@@ -10,12 +10,9 @@
 #include <torch/csrc/distributed/rpc/rref_proto.h>
 #include <torch/csrc/distributed/rpc/utils.h>
 
-#include <utility>
-
 namespace {
 // If the type is subtype of named type, return its qualifiedname, otherwise
 // return its type str.
-// NOLINTBEGIN(bugprone-unchecked-optional-access)
 std::string getTypeStr(const c10::TypePtr& type) {
   switch (type->kind()) {
     case c10::TypeKind::FunctionType:
@@ -30,11 +27,12 @@ std::string getTypeStr(const c10::TypePtr& type) {
       return type->annotation_str();
   }
 }
-// NOLINTEND(bugprone-unchecked-optional-access)
 
 } // namespace
 
-namespace torch::distributed::rpc {
+namespace torch {
+namespace distributed {
+namespace rpc {
 
 std::atomic<local_id_t> RRefContext::nextLocalId_{0};
 
@@ -55,7 +53,10 @@ RRefForkData::RRefForkData(
 //////////////////////////////  RRef  /////////////////////////////////////
 
 RRef::RRef(worker_id_t ownerId, const RRefId& rrefId, TypePtr type)
-    : ownerId_(ownerId), rrefId_(rrefId), type_(std::move(type)) {}
+    : RRefInterface(),
+      ownerId_(ownerId),
+      rrefId_(rrefId),
+      type_(std::move(type)) {}
 
 RRefForkData RRef::fork() const {
   auto& ctx = RRefContext::getInstance();
@@ -241,12 +242,7 @@ OwnerRRef::OwnerRRef(
     const RRefId& rrefId,
     TypePtr type,
     std::vector<c10::Device> devices)
-    : OwnerRRef(
-          ownerId,
-          rrefId,
-          std::move(type),
-          /* value */ {},
-          std::move(devices)) {}
+    : OwnerRRef(ownerId, rrefId, type, /* value */ {}, std::move(devices)) {}
 
 OwnerRRef::OwnerRRef(
     worker_id_t ownerId,
@@ -254,7 +250,7 @@ OwnerRRef::OwnerRRef(
     TypePtr type,
     std::optional<IValue> value,
     std::vector<c10::Device> devices)
-    : RRef(ownerId, rrefId, std::move(type)) {
+    : RRef(ownerId, rrefId, type) {
   future_ = c10::make_intrusive<JitFuture>(type_, std::move(devices));
 
   if (value.has_value()) {
@@ -280,7 +276,7 @@ c10::intrusive_ptr<JitFuture> OwnerRRef::getFuture() {
 }
 
 void OwnerRRef::setValue(IValue&& value) {
-  future_->markCompleted(std::move(value));
+  future_->markCompleted(value);
 }
 
 void OwnerRRef::setError(std::exception_ptr eptr) {
@@ -299,4 +295,6 @@ std::ostream& operator<<(std::ostream& os, const RRef& rref) {
   }
 }
 
-} // namespace torch::distributed::rpc
+} // namespace rpc
+} // namespace distributed
+} // namespace torch

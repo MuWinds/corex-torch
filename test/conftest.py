@@ -7,7 +7,7 @@ import sys
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 from types import MethodType
-from typing import Any, Optional, TYPE_CHECKING, Union
+from typing import Any, List, Optional, TYPE_CHECKING, Union
 
 import pytest
 from _pytest.config import Config, filename_arg
@@ -17,9 +17,7 @@ from _pytest.python import Module
 from _pytest.reports import TestReport
 from _pytest.stash import StashKey
 from _pytest.terminal import _get_raw_skip_reason
-
 from pytest_shard_custom import pytest_addoptions as shard_addoptions, PytestShardPlugin
-
 
 if TYPE_CHECKING:
     from _pytest._code.code import ReprFileLocation
@@ -32,9 +30,18 @@ STEPCURRENT_CACHE_DIR = "cache/stepcurrent"
 
 def pytest_addoption(parser: Parser) -> None:
     group = parser.getgroup("general")
-    group.addoption("--scs", action="store", default=None, dest="stepcurrent_skip")
-    group.addoption("--sc", action="store", default=None, dest="stepcurrent")
-    group.addoption("--rs", action="store", default=None, dest="run_single")
+    group.addoption(
+        "--scs",
+        action="store",
+        default=None,
+        dest="stepcurrent_skip",
+    )
+    group.addoption(
+        "--sc",
+        action="store",
+        default=None,
+        dest="stepcurrent",
+    )
 
     parser.addoption("--use-main-module", action="store_true")
     group = parser.getgroup("terminal reporting")
@@ -99,8 +106,6 @@ def pytest_configure(config: Config) -> None:
         config.pluginmanager.register(config.stash[xml_key])
     if config.getoption("stepcurrent_skip"):
         config.option.stepcurrent = config.getoption("stepcurrent_skip")
-    if config.getoption("run_single"):
-        config.option.stepcurrent = config.getoption("run_single")
     if config.getoption("stepcurrent"):
         config.pluginmanager.register(StepcurrentPlugin(config), "stepcurrentplugin")
     if config.getoption("num_shards"):
@@ -135,7 +140,8 @@ class _NodeReporterReruns(_NodeReporter):
         else:
             assert isinstance(report.longrepr, tuple)
             filename, lineno, skipreason = report.longrepr
-            skipreason = skipreason.removeprefix("Skipped: ")
+            if skipreason.startswith("Skipped: "):
+                skipreason = skipreason[9:]
             details = f"{filename}:{lineno}: {skipreason}"
 
             skipped = ET.Element(
@@ -240,7 +246,7 @@ def pytest_report_teststatus(report, config):
 
 
 @pytest.hookimpl(trylast=True)
-def pytest_collection_modifyitems(items: list[Any]) -> None:
+def pytest_collection_modifyitems(items: List[Any]) -> None:
     """
     This hook is used when rerunning disabled tests to get rid of all skipped tests
     instead of running and skipping them N times. This avoids flooding the console
@@ -301,9 +307,8 @@ class StepcurrentPlugin:
         self.lastrun: Optional[str] = self.cache.get(self.directory, None)
         self.initial_val = self.lastrun
         self.skip: bool = config.getoption("stepcurrent_skip")
-        self.run_single: bool = config.getoption("run_single")
 
-    def pytest_collection_modifyitems(self, config: Config, items: list[Any]) -> None:
+    def pytest_collection_modifyitems(self, config: Config, items: List[Any]) -> None:
         if not self.lastrun:
             self.report_status = "Cannot find last run test, not skipping"
             return
@@ -325,10 +330,6 @@ class StepcurrentPlugin:
             self.report_status = f"skipping {failed_index} already run items."
             deselected = items[:failed_index]
             del items[:failed_index]
-            if self.run_single:
-                self.report_status += f" Running only {items[0].nodeid}"
-                deselected += items[1:]
-                del items[1:]
             config.hook.pytest_deselected(items=deselected)
 
     def pytest_report_collectionfinish(self) -> Optional[str]:

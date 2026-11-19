@@ -18,7 +18,9 @@
 #include <tuple>
 #include <vector>
 
-namespace torch::jit::fuser {
+namespace torch {
+namespace jit {
+namespace fuser {
 
 // Template for computing the offset into the tensor to access a value
 static auto dim_calc = at::jit::CodeTemplate(R"(
@@ -28,15 +30,15 @@ ${tensor}_offset += ${tensor}_dimIndex${d} ${times_stride};
 )");
 
 static std::string valueName(const Value* n) {
-  return "n" + std::to_string(n->unique());
+  return "n" + c10::to_string(n->unique());
 }
 
 static std::string scalarValue(const int64_t v) {
-  return std::to_string(v);
+  return c10::to_string(v);
 }
 
 static std::string scalarValue(const bool v) {
-  return std::to_string(v);
+  return c10::to_string(v);
 }
 
 // Note: The NAN, NEG_INFINITY and POS_INFINITY strings map to device-specific
@@ -64,7 +66,7 @@ static const char* scalarTypeName(const at::ScalarType type) {
     return "half";
   }
   if (type == at::ScalarType::BFloat16) {
-    return cuda::bfloat16_type_string;
+    return "__nv_bfloat16";
   }
 
   switch (type) {
@@ -272,10 +274,10 @@ static std::string encodeRHS(const Node* n) {
       // PyTorch converts (scalar) argument types to result before applying the
       // operator e.g. 1.4-torch.tensor(3) = -2
       env.s(
-          std::to_string(i),
+          c10::to_string(i),
           typeCastedValueName(*in->type(), *outtype, valueName(in)));
       // Uncasted operands only used for comparison operators
-      env.s(std::to_string(i) + "_nocast", valueName(in));
+      env.s(c10::to_string(i) + "_nocast", valueName(in));
       i++;
     }
 
@@ -389,7 +391,7 @@ std::string generateKernel(
             1); // + 1 because the first argument is the linearIndex
     std::string tensor =
         "t" +
-        std::to_string(
+        c10::to_string(
             formals.size()); // can't be unique() because Param may be an output
     const auto nDim = desc.nDim();
     emitCheckFor(tensorChecks, tensor, nDim, desc);
@@ -411,7 +413,7 @@ std::string generateKernel(
             1); // + 1 because the first argument is the linearIndex
     std::string scalar =
         "s" +
-        std::to_string(
+        c10::to_string(
             formals.size()); // can't be unique() because Param may be an output
     env.d(
         "formal_index",
@@ -536,7 +538,7 @@ std::string generateKernel(
   //       places where the constant None node is used
   // Note: No need to iterate over reference as n is a pointer
   for (const auto n : graph.nodes()) {
-    static_assert(std::is_pointer_v<decltype(n)>, "n must be a pointer");
+    static_assert(std::is_pointer<decltype(n)>::value, "n must be a pointer");
     // Note: FusedConcat nodes work by narrowing the output Tensors before the
     // kernel runs
     if (n->kind() == prim::FusedConcat)
@@ -678,9 +680,11 @@ std::string generateKernel(
   }
 
   if (debugFuser()) {
-    std::cerr << "fusion code:" << code_string << '\n';
+    std::cerr << "fusion code:" << code_string << std::endl;
   }
   return code_string;
 }
 
-} // namespace torch::jit::fuser
+} // namespace fuser
+} // namespace jit
+} // namespace torch

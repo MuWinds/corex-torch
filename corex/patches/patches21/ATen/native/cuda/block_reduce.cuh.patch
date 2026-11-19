@@ -1,0 +1,17 @@
+--- /data/home/2024240384035/build/pytorch-2.1.0/aten/src/ATen/native/cuda/block_reduce.cuh	2023-09-22 06:25:09.000000000 +0800
++++ /data/software/Anaconda3/2024.10-1/envs/py310/lib/python3.10/site-packages/torch/include/ATen/native/cuda/block_reduce.cuh	2025-03-13 11:53:02.393028395 +0800
+@@ -93,7 +93,14 @@
+     shared[wid] = val;
+   }
+   __syncthreads();
++#ifdef __ILUVATAR_WORKAROUND__
++  val = identity_element;
++  if (tid < B::Warps()) {
++    val = shared[lid];
++  }
++#else
+   val = (tid < B::Warps()) ? shared[lid] : identity_element;
++#endif
+   if (wid == 0) {
+     val = WarpReduce(val, op);
+   }

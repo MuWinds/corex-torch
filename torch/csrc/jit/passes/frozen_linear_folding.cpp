@@ -12,7 +12,8 @@
 #include <ATen/ops/zeros_like.h>
 #endif
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 namespace {
 
@@ -139,4 +140,5 @@ bool FoldFrozenLinearBatchnorm(std::shared_ptr<Graph>& graph) {
   return graph_modified;
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

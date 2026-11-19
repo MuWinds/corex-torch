@@ -4,7 +4,8 @@
 #include <torch/csrc/jit/passes/onnx/helper.h>
 #include <torch/csrc/jit/passes/onnx/list_model_parameters.h>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 namespace onnx {
 using namespace ::c10::onnx;
@@ -22,7 +23,7 @@ using namespace ::c10::onnx;
 //   ...
 //   %weight = prim::GetAttr[name="scale"](%B)
 //   ...
-static std::deque<std::string> findSubModuleAttr(
+std::deque<std::string> findSubModuleAttr(
     Value* input,
     std::string& name,
     Module& attrModule,
@@ -48,13 +49,10 @@ static std::deque<std::string> findSubModuleAttr(
   return moduleNames;
 }
 
-static Value* addParamAsArgument(
-    Function* function,
-    std::string& name,
-    IValue& attr) {
+Value* addParamAsArgument(Function* function, std::string& name, IValue& attr) {
   auto schema = function->getSchema();
   auto args = schema.arguments();
-  args.emplace_back(name, nullptr, std::nullopt, attr);
+  args.emplace_back(name, nullptr, c10::nullopt, attr);
   auto new_schema = FunctionSchema(
       schema.name(),
       schema.overload_name(),
@@ -67,7 +65,7 @@ static Value* addParamAsArgument(
       attr.type());
 }
 
-static std::vector<IValue> getParamAttributes(
+std::vector<IValue> getParamAttributes(
     Block* block,
     std::shared_ptr<Graph>& graph,
     const Module& module_,
@@ -103,7 +101,7 @@ static std::vector<IValue> getParamAttributes(
       auto attr = attrModule.attr(name);
       Value* paramConst = nullptr;
 
-      std::string fullName;
+      std::string fullName("");
       for (auto& name : moduleNames) {
         fullName += name + '.';
       }
@@ -166,7 +164,7 @@ static std::vector<IValue> getParamAttributes(
   return parameterIValues;
 }
 
-static void insertMainModuleAsConstant(const std::shared_ptr<Graph>& graph) {
+void insertMainModuleAsConstant(const std::shared_ptr<Graph>& graph) {
   auto* constNode = graph->create(prim::CreateObject);
   constNode->output()->setType(graph->inputs().at(0)->type());
   auto it = graph->nodes().begin();
@@ -193,4 +191,5 @@ std::pair<Module, std::vector<IValue>> list_module_parameters(
   return std::make_pair(moduleClone, parameterIValues);
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

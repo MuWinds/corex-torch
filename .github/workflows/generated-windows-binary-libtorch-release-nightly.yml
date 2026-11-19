@@ -20,34 +20,25 @@ on:
 env:
   # Needed for conda builds
   ALPINE_IMAGE: "308535385114.dkr.ecr.us-east-1.amazonaws.com/tool/alpine"
+  ANACONDA_USER: pytorch
   AWS_DEFAULT_REGION: us-east-1
   BUILD_ENVIRONMENT: windows-binary-libtorch-release
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   PR_NUMBER: ${{ github.event.pull_request.number }}
   SHA1: ${{ github.event.pull_request.head.sha || github.sha }}
   SKIP_ALL_TESTS: 1
-  OS: windows
 concurrency:
   group: windows-binary-libtorch-release-${{ github.event.pull_request.number || github.ref_name }}-${{ github.ref_type == 'branch' && github.sha }}-${{ github.event_name == 'workflow_dispatch' }}
   cancel-in-progress: true
 
 jobs:
-  get-label-type:
-    if: github.repository_owner == 'pytorch'
-    name: get-label-type
-    uses: pytorch/pytorch/.github/workflows/_runner-determinator.yml@release/2.8
-    with:
-      triggering_actor: ${{ github.triggering_actor }}
-      issue_owner: ${{ github.event.pull_request.user.login || github.event.issue.user.login }}
-      curr_branch: ${{ github.head_ref || github.ref_name }}
-      curr_ref_type: ${{ github.ref_type }}
   libtorch-cpu-shared-with-deps-release-build:
     if: ${{ github.repository_owner == 'pytorch' }}
-    needs: get-label-type
-    runs-on: "${{ needs.get-label-type.outputs.label-type }}windows.4xlarge"
-    timeout-minutes: 300
+    runs-on: windows.4xlarge.nonephemeral
+    timeout-minutes: 240
     env:
       PYTORCH_ROOT: ${{ github.workspace }}/pytorch
+      BUILDER_ROOT: ${{ github.workspace }}/builder
       PACKAGE_TYPE: libtorch
       # TODO: This is a legacy variable that we eventually want to get rid of in
       #       favor of GPU_ARCH_VERSION
@@ -58,17 +49,8 @@ jobs:
       LIBTORCH_VARIANT: shared-with-deps
       # This is a dummy value for libtorch to work correctly with our batch scripts
       # without this value pip does not get installed for some reason
-      DESIRED_PYTHON: "3.9"
+      DESIRED_PYTHON: "3.8"
     steps:
-      # NOTE: These environment variables are put here so that they can be applied on every job equally
-      #       They are also here because setting them at a workflow level doesn't give us access to the
-      #       runner.temp variable, which we need.
-      - name: Populate binary env
-        shell: bash
-        run: |
-          echo "BINARY_ENV_FILE=${RUNNER_TEMP}/env" >> "${GITHUB_ENV}"
-          echo "PYTORCH_FINAL_PACKAGE_DIR=${RUNNER_TEMP}/artifacts" >> "${GITHUB_ENV}"
-          echo "WIN_PACKAGE_WORK_DIR=${RUNNER_TEMP}"
       - name: Display EC2 information
         shell: bash
         run: |
@@ -77,27 +59,17 @@ jobs:
             # Pulled from instance metadata endpoint for EC2
             # see https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instancedata-data-retrieval.html
             category=$1
-            curl -H "X-aws-ec2-metadata-token: $(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 30")" -fsSL "http://169.254.169.254/latest/meta-data/${category}"
+            curl -fsSL "http://169.254.169.254/latest/meta-data/${category}"
           }
           echo "ami-id: $(get_ec2_metadata ami-id)"
           echo "instance-id: $(get_ec2_metadata instance-id)"
           echo "instance-type: $(get_ec2_metadata instance-type)"
           echo "system info $(uname -a)"
       - name: "[FB EMPLOYEES] Enable SSH (Click me for login details)"
-        uses: pytorch/test-infra/.github/actions/setup-ssh@release/2.8
+        uses: pytorch/test-infra/.github/actions/setup-ssh@main
         continue-on-error: true
         with:
           github-secret: ${{ secrets.GITHUB_TOKEN }}
-      - name: Enable git long paths and symlinks on Windows and disable fsmonitor daemon
-        shell: bash
-        run: |
-          git config --global core.longpaths true
-          git config --global core.symlinks true
-
-          # https://git-scm.com/docs/git-fsmonitor--daemon.  The daemon could lock
-          # the directory on Windows and prevent GHA from checking out as reported
-          # in https://github.com/actions/checkout/issues/1018
-          git config --global core.fsmonitor false
       # Needed for binary builds, see: https://github.com/pytorch/pytorch/issues/73339#issuecomment-1058981560
       - name: Enable long paths on Windows
         shell: powershell
@@ -113,17 +85,39 @@ jobs:
           # Let's both exclude the path and disable Windows Defender completely just to be sure
           # that it doesn't interfere
           Set-MpPreference -DisableRealtimeMonitoring $True -ErrorAction Ignore
+      # NOTE: These environment variables are put here so that they can be applied on every job equally
+      #       They are also here because setting them at a workflow level doesn't give us access to the
+      #       runner.temp variable, which we need.
+      - name: Populate binary env
+        shell: bash
+        run: |
+          echo "BINARY_ENV_FILE=${RUNNER_TEMP}/env" >> "${GITHUB_ENV}"
+          echo "PYTORCH_FINAL_PACKAGE_DIR=${RUNNER_TEMP}/artifacts" >> "${GITHUB_ENV}"
+          echo "WIN_PACKAGE_WORK_DIR=${RUNNER_TEMP}"
       - name: Checkout PyTorch
-        uses: actions/checkout@v4
+        uses: malfet/checkout@silent-checkout
         with:
           submodules: recursive
           path: pytorch
-          show-progress: false
+          quiet-checkout: true
       - name: Clean PyTorch checkout
         run: |
           # Remove any artifacts from the previous checkouts
           git clean -fxd
         working-directory: pytorch
+      - name: Checkout pytorch/builder
+        uses: malfet/checkout@silent-checkout
+        with:
+          ref: release/2.4
+          submodules: recursive
+          repository: pytorch/builder
+          path: builder
+          quiet-checkout: true
+      - name: Clean pytorch/builder checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
+        working-directory: builder
       - name: Populate binary env
         shell: bash
         run: |
@@ -132,7 +126,7 @@ jobs:
         shell: bash
         run: |
           "${PYTORCH_ROOT}/.circleci/scripts/binary_windows_build.sh"
-      - uses: actions/upload-artifact@v4.4.0
+      - uses: actions/upload-artifact@v3
         if: always()
         with:
           name: libtorch-cpu-shared-with-deps-release
@@ -152,16 +146,14 @@ jobs:
         if: always()
         run: |
           .github\scripts\kill_active_ssh_sessions.ps1
-
   libtorch-cpu-shared-with-deps-release-test:  # Testing
     if: ${{ github.repository_owner == 'pytorch' }}
-    needs:
-      - libtorch-cpu-shared-with-deps-release-build
-      - get-label-type
-    runs-on: "${{ needs.get-label-type.outputs.label-type }}windows.4xlarge"
-    timeout-minutes: 300
+    needs: libtorch-cpu-shared-with-deps-release-build
+    runs-on: windows.4xlarge.nonephemeral
+    timeout-minutes: 240
     env:
       PYTORCH_ROOT: ${{ github.workspace }}/pytorch
+      BUILDER_ROOT: ${{ github.workspace }}/builder
       PACKAGE_TYPE: libtorch
       # TODO: This is a legacy variable that we eventually want to get rid of in
       #       favor of GPU_ARCH_VERSION
@@ -172,7 +164,7 @@ jobs:
       LIBTORCH_VARIANT: shared-with-deps
       # This is a dummy value for libtorch to work correctly with our batch scripts
       # without this value pip does not get installed for some reason
-      DESIRED_PYTHON: "3.9"
+      DESIRED_PYTHON: "3.8"
     steps:
       - name: Display EC2 information
         shell: bash
@@ -182,27 +174,17 @@ jobs:
             # Pulled from instance metadata endpoint for EC2
             # see https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instancedata-data-retrieval.html
             category=$1
-            curl -H "X-aws-ec2-metadata-token: $(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 30")" -fsSL "http://169.254.169.254/latest/meta-data/${category}"
+            curl -fsSL "http://169.254.169.254/latest/meta-data/${category}"
           }
           echo "ami-id: $(get_ec2_metadata ami-id)"
           echo "instance-id: $(get_ec2_metadata instance-id)"
           echo "instance-type: $(get_ec2_metadata instance-type)"
           echo "system info $(uname -a)"
       - name: "[FB EMPLOYEES] Enable SSH (Click me for login details)"
-        uses: pytorch/test-infra/.github/actions/setup-ssh@release/2.8
+        uses: pytorch/test-infra/.github/actions/setup-ssh@main
         continue-on-error: true
         with:
           github-secret: ${{ secrets.GITHUB_TOKEN }}
-      - name: Enable git long paths and symlinks on Windows and disable fsmonitor daemon
-        shell: bash
-        run: |
-          git config --global core.longpaths true
-          git config --global core.symlinks true
-
-          # https://git-scm.com/docs/git-fsmonitor--daemon.  The daemon could lock
-          # the directory on Windows and prevent GHA from checking out as reported
-          # in https://github.com/actions/checkout/issues/1018
-          git config --global core.fsmonitor false
       # Needed for binary builds, see: https://github.com/pytorch/pytorch/issues/73339#issuecomment-1058981560
       - name: Enable long paths on Windows
         shell: powershell
@@ -218,17 +200,6 @@ jobs:
           # Let's both exclude the path and disable Windows Defender completely just to be sure
           # that it doesn't interfere
           Set-MpPreference -DisableRealtimeMonitoring $True -ErrorAction Ignore
-      - name: Checkout PyTorch
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          path: pytorch
-          show-progress: false
-      - name: Clean PyTorch checkout
-        run: |
-          # Remove any artifacts from the previous checkouts
-          git clean -fxd
-        working-directory: pytorch
       # NOTE: These environment variables are put here so that they can be applied on every job equally
       #       They are also here because setting them at a workflow level doesn't give us access to the
       #       runner.temp variable, which we need.
@@ -238,11 +209,35 @@ jobs:
           echo "BINARY_ENV_FILE=${RUNNER_TEMP}/env" >> "${GITHUB_ENV}"
           echo "PYTORCH_FINAL_PACKAGE_DIR=${RUNNER_TEMP}/artifacts" >> "${GITHUB_ENV}"
           echo "WIN_PACKAGE_WORK_DIR=${RUNNER_TEMP}"
-      - uses: actions/download-artifact@v4.1.7
+      - uses: actions/download-artifact@v3
         name: Download Build Artifacts
         with:
           name: libtorch-cpu-shared-with-deps-release
           path: "${{ env.PYTORCH_FINAL_PACKAGE_DIR }}"
+      - name: Checkout PyTorch
+        uses: malfet/checkout@silent-checkout
+        with:
+          submodules: recursive
+          path: pytorch
+          quiet-checkout: true
+      - name: Clean PyTorch checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
+        working-directory: pytorch
+      - name: Checkout pytorch/builder
+        uses: malfet/checkout@silent-checkout
+        with:
+          ref: release/2.4
+          submodules: recursive
+          repository: pytorch/builder
+          path: builder
+          quiet-checkout: true
+      - name: Clean pytorch/builder checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
+        working-directory: builder
       - name: Populate binary env
         shell: bash
         run: |
@@ -272,6 +267,7 @@ jobs:
     needs: libtorch-cpu-shared-with-deps-release-test
     with:
       PYTORCH_ROOT: ${{ github.workspace }}/pytorch
+      BUILDER_ROOT: ${{ github.workspace }}/builder
       PACKAGE_TYPE: libtorch
       # TODO: This is a legacy variable that we eventually want to get rid of in
       #       favor of GPU_ARCH_VERSION
@@ -281,40 +277,33 @@ jobs:
       LIBTORCH_VARIANT: shared-with-deps
       # This is a dummy value for libtorch to work correctly with our batch scripts
       # without this value pip does not get installed for some reason
-      DESIRED_PYTHON: "3.9"
+      DESIRED_PYTHON: "3.8"
       build_name: libtorch-cpu-shared-with-deps-release
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      conda-pytorchbot-token: ${{ secrets.CONDA_PYTORCHBOT_TOKEN }}
+      conda-pytorchbot-token-test: ${{ secrets.CONDA_PYTORCHBOT_TOKEN_TEST }}
     uses: ./.github/workflows/_binary-upload.yml
-  libtorch-cuda12_6-shared-with-deps-release-build:
+  libtorch-cuda11_8-shared-with-deps-release-build:
     if: ${{ github.repository_owner == 'pytorch' }}
-    needs: get-label-type
-    runs-on: "${{ needs.get-label-type.outputs.label-type }}windows.4xlarge"
-    timeout-minutes: 300
+    runs-on: windows.4xlarge.nonephemeral
+    timeout-minutes: 240
     env:
       PYTORCH_ROOT: ${{ github.workspace }}/pytorch
+      BUILDER_ROOT: ${{ github.workspace }}/builder
       PACKAGE_TYPE: libtorch
       # TODO: This is a legacy variable that we eventually want to get rid of in
       #       favor of GPU_ARCH_VERSION
-      DESIRED_CUDA: cu126
-      GPU_ARCH_VERSION: 12.6
+      DESIRED_CUDA: cu118
+      GPU_ARCH_VERSION: 11.8
       GPU_ARCH_TYPE: cuda
       SKIP_ALL_TESTS: 1
       LIBTORCH_CONFIG: release
       LIBTORCH_VARIANT: shared-with-deps
       # This is a dummy value for libtorch to work correctly with our batch scripts
       # without this value pip does not get installed for some reason
-      DESIRED_PYTHON: "3.9"
+      DESIRED_PYTHON: "3.8"
     steps:
-      # NOTE: These environment variables are put here so that they can be applied on every job equally
-      #       They are also here because setting them at a workflow level doesn't give us access to the
-      #       runner.temp variable, which we need.
-      - name: Populate binary env
-        shell: bash
-        run: |
-          echo "BINARY_ENV_FILE=${RUNNER_TEMP}/env" >> "${GITHUB_ENV}"
-          echo "PYTORCH_FINAL_PACKAGE_DIR=${RUNNER_TEMP}/artifacts" >> "${GITHUB_ENV}"
-          echo "WIN_PACKAGE_WORK_DIR=${RUNNER_TEMP}"
       - name: Display EC2 information
         shell: bash
         run: |
@@ -323,27 +312,17 @@ jobs:
             # Pulled from instance metadata endpoint for EC2
             # see https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instancedata-data-retrieval.html
             category=$1
-            curl -H "X-aws-ec2-metadata-token: $(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 30")" -fsSL "http://169.254.169.254/latest/meta-data/${category}"
+            curl -fsSL "http://169.254.169.254/latest/meta-data/${category}"
           }
           echo "ami-id: $(get_ec2_metadata ami-id)"
           echo "instance-id: $(get_ec2_metadata instance-id)"
           echo "instance-type: $(get_ec2_metadata instance-type)"
           echo "system info $(uname -a)"
       - name: "[FB EMPLOYEES] Enable SSH (Click me for login details)"
-        uses: pytorch/test-infra/.github/actions/setup-ssh@release/2.8
+        uses: pytorch/test-infra/.github/actions/setup-ssh@main
         continue-on-error: true
         with:
           github-secret: ${{ secrets.GITHUB_TOKEN }}
-      - name: Enable git long paths and symlinks on Windows and disable fsmonitor daemon
-        shell: bash
-        run: |
-          git config --global core.longpaths true
-          git config --global core.symlinks true
-
-          # https://git-scm.com/docs/git-fsmonitor--daemon.  The daemon could lock
-          # the directory on Windows and prevent GHA from checking out as reported
-          # in https://github.com/actions/checkout/issues/1018
-          git config --global core.fsmonitor false
       # Needed for binary builds, see: https://github.com/pytorch/pytorch/issues/73339#issuecomment-1058981560
       - name: Enable long paths on Windows
         shell: powershell
@@ -359,17 +338,39 @@ jobs:
           # Let's both exclude the path and disable Windows Defender completely just to be sure
           # that it doesn't interfere
           Set-MpPreference -DisableRealtimeMonitoring $True -ErrorAction Ignore
+      # NOTE: These environment variables are put here so that they can be applied on every job equally
+      #       They are also here because setting them at a workflow level doesn't give us access to the
+      #       runner.temp variable, which we need.
+      - name: Populate binary env
+        shell: bash
+        run: |
+          echo "BINARY_ENV_FILE=${RUNNER_TEMP}/env" >> "${GITHUB_ENV}"
+          echo "PYTORCH_FINAL_PACKAGE_DIR=${RUNNER_TEMP}/artifacts" >> "${GITHUB_ENV}"
+          echo "WIN_PACKAGE_WORK_DIR=${RUNNER_TEMP}"
       - name: Checkout PyTorch
-        uses: actions/checkout@v4
+        uses: malfet/checkout@silent-checkout
         with:
           submodules: recursive
           path: pytorch
-          show-progress: false
+          quiet-checkout: true
       - name: Clean PyTorch checkout
         run: |
           # Remove any artifacts from the previous checkouts
           git clean -fxd
         working-directory: pytorch
+      - name: Checkout pytorch/builder
+        uses: malfet/checkout@silent-checkout
+        with:
+          ref: release/2.4
+          submodules: recursive
+          repository: pytorch/builder
+          path: builder
+          quiet-checkout: true
+      - name: Clean pytorch/builder checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
+        working-directory: builder
       - name: Populate binary env
         shell: bash
         run: |
@@ -378,10 +379,10 @@ jobs:
         shell: bash
         run: |
           "${PYTORCH_ROOT}/.circleci/scripts/binary_windows_build.sh"
-      - uses: actions/upload-artifact@v4.4.0
+      - uses: actions/upload-artifact@v3
         if: always()
         with:
-          name: libtorch-cuda12_6-shared-with-deps-release
+          name: libtorch-cuda11_8-shared-with-deps-release
           retention-days: 14
           if-no-files-found: error
           path: "${{ env.PYTORCH_FINAL_PACKAGE_DIR }}"
@@ -398,28 +399,26 @@ jobs:
         if: always()
         run: |
           .github\scripts\kill_active_ssh_sessions.ps1
-
-  libtorch-cuda12_6-shared-with-deps-release-test:  # Testing
+  libtorch-cuda11_8-shared-with-deps-release-test:  # Testing
     if: ${{ github.repository_owner == 'pytorch' }}
-    needs:
-      - libtorch-cuda12_6-shared-with-deps-release-build
-      - get-label-type
-    runs-on: "${{ needs.get-label-type.outputs.label-type }}windows.g4dn.xlarge"
-    timeout-minutes: 300
+    needs: libtorch-cuda11_8-shared-with-deps-release-build
+    runs-on: windows.8xlarge.nvidia.gpu
+    timeout-minutes: 240
     env:
       PYTORCH_ROOT: ${{ github.workspace }}/pytorch
+      BUILDER_ROOT: ${{ github.workspace }}/builder
       PACKAGE_TYPE: libtorch
       # TODO: This is a legacy variable that we eventually want to get rid of in
       #       favor of GPU_ARCH_VERSION
-      DESIRED_CUDA: cu126
-      GPU_ARCH_VERSION: 12.6
+      DESIRED_CUDA: cu118
+      GPU_ARCH_VERSION: 11.8
       GPU_ARCH_TYPE: cuda
       SKIP_ALL_TESTS: 1
       LIBTORCH_CONFIG: release
       LIBTORCH_VARIANT: shared-with-deps
       # This is a dummy value for libtorch to work correctly with our batch scripts
       # without this value pip does not get installed for some reason
-      DESIRED_PYTHON: "3.9"
+      DESIRED_PYTHON: "3.8"
     steps:
       - name: Display EC2 information
         shell: bash
@@ -429,27 +428,17 @@ jobs:
             # Pulled from instance metadata endpoint for EC2
             # see https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instancedata-data-retrieval.html
             category=$1
-            curl -H "X-aws-ec2-metadata-token: $(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 30")" -fsSL "http://169.254.169.254/latest/meta-data/${category}"
+            curl -fsSL "http://169.254.169.254/latest/meta-data/${category}"
           }
           echo "ami-id: $(get_ec2_metadata ami-id)"
           echo "instance-id: $(get_ec2_metadata instance-id)"
           echo "instance-type: $(get_ec2_metadata instance-type)"
           echo "system info $(uname -a)"
       - name: "[FB EMPLOYEES] Enable SSH (Click me for login details)"
-        uses: pytorch/test-infra/.github/actions/setup-ssh@release/2.8
+        uses: pytorch/test-infra/.github/actions/setup-ssh@main
         continue-on-error: true
         with:
           github-secret: ${{ secrets.GITHUB_TOKEN }}
-      - name: Enable git long paths and symlinks on Windows and disable fsmonitor daemon
-        shell: bash
-        run: |
-          git config --global core.longpaths true
-          git config --global core.symlinks true
-
-          # https://git-scm.com/docs/git-fsmonitor--daemon.  The daemon could lock
-          # the directory on Windows and prevent GHA from checking out as reported
-          # in https://github.com/actions/checkout/issues/1018
-          git config --global core.fsmonitor false
       # Needed for binary builds, see: https://github.com/pytorch/pytorch/issues/73339#issuecomment-1058981560
       - name: Enable long paths on Windows
         shell: powershell
@@ -465,17 +454,6 @@ jobs:
           # Let's both exclude the path and disable Windows Defender completely just to be sure
           # that it doesn't interfere
           Set-MpPreference -DisableRealtimeMonitoring $True -ErrorAction Ignore
-      - name: Checkout PyTorch
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          path: pytorch
-          show-progress: false
-      - name: Clean PyTorch checkout
-        run: |
-          # Remove any artifacts from the previous checkouts
-          git clean -fxd
-        working-directory: pytorch
       # NOTE: These environment variables are put here so that they can be applied on every job equally
       #       They are also here because setting them at a workflow level doesn't give us access to the
       #       runner.temp variable, which we need.
@@ -485,11 +463,35 @@ jobs:
           echo "BINARY_ENV_FILE=${RUNNER_TEMP}/env" >> "${GITHUB_ENV}"
           echo "PYTORCH_FINAL_PACKAGE_DIR=${RUNNER_TEMP}/artifacts" >> "${GITHUB_ENV}"
           echo "WIN_PACKAGE_WORK_DIR=${RUNNER_TEMP}"
-      - uses: actions/download-artifact@v4.1.7
+      - uses: actions/download-artifact@v3
         name: Download Build Artifacts
         with:
-          name: libtorch-cuda12_6-shared-with-deps-release
+          name: libtorch-cuda11_8-shared-with-deps-release
           path: "${{ env.PYTORCH_FINAL_PACKAGE_DIR }}"
+      - name: Checkout PyTorch
+        uses: malfet/checkout@silent-checkout
+        with:
+          submodules: recursive
+          path: pytorch
+          quiet-checkout: true
+      - name: Clean PyTorch checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
+        working-directory: pytorch
+      - name: Checkout pytorch/builder
+        uses: malfet/checkout@silent-checkout
+        with:
+          ref: release/2.4
+          submodules: recursive
+          repository: pytorch/builder
+          path: builder
+          quiet-checkout: true
+      - name: Clean pytorch/builder checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
+        working-directory: builder
       - name: Populate binary env
         shell: bash
         run: |
@@ -511,58 +513,52 @@ jobs:
         if: always()
         run: |
           .github\scripts\kill_active_ssh_sessions.ps1
-  libtorch-cuda12_6-shared-with-deps-release-upload:  # Uploading
+  libtorch-cuda11_8-shared-with-deps-release-upload:  # Uploading
     if: ${{ github.repository_owner == 'pytorch' }}
     permissions:
       id-token: write
       contents: read
-    needs: libtorch-cuda12_6-shared-with-deps-release-test
+    needs: libtorch-cuda11_8-shared-with-deps-release-test
     with:
       PYTORCH_ROOT: ${{ github.workspace }}/pytorch
+      BUILDER_ROOT: ${{ github.workspace }}/builder
       PACKAGE_TYPE: libtorch
       # TODO: This is a legacy variable that we eventually want to get rid of in
       #       favor of GPU_ARCH_VERSION
-      DESIRED_CUDA: cu126
-      GPU_ARCH_VERSION: 12.6
+      DESIRED_CUDA: cu118
+      GPU_ARCH_VERSION: 11.8
       GPU_ARCH_TYPE: cuda
       LIBTORCH_CONFIG: release
       LIBTORCH_VARIANT: shared-with-deps
       # This is a dummy value for libtorch to work correctly with our batch scripts
       # without this value pip does not get installed for some reason
-      DESIRED_PYTHON: "3.9"
-      build_name: libtorch-cuda12_6-shared-with-deps-release
+      DESIRED_PYTHON: "3.8"
+      build_name: libtorch-cuda11_8-shared-with-deps-release
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      conda-pytorchbot-token: ${{ secrets.CONDA_PYTORCHBOT_TOKEN }}
+      conda-pytorchbot-token-test: ${{ secrets.CONDA_PYTORCHBOT_TOKEN_TEST }}
     uses: ./.github/workflows/_binary-upload.yml
-  libtorch-cuda12_8-shared-with-deps-release-build:
+  libtorch-cuda12_1-shared-with-deps-release-build:
     if: ${{ github.repository_owner == 'pytorch' }}
-    needs: get-label-type
-    runs-on: "${{ needs.get-label-type.outputs.label-type }}windows.4xlarge"
-    timeout-minutes: 300
+    runs-on: windows.4xlarge.nonephemeral
+    timeout-minutes: 240
     env:
       PYTORCH_ROOT: ${{ github.workspace }}/pytorch
+      BUILDER_ROOT: ${{ github.workspace }}/builder
       PACKAGE_TYPE: libtorch
       # TODO: This is a legacy variable that we eventually want to get rid of in
       #       favor of GPU_ARCH_VERSION
-      DESIRED_CUDA: cu128
-      GPU_ARCH_VERSION: 12.8
+      DESIRED_CUDA: cu121
+      GPU_ARCH_VERSION: 12.1
       GPU_ARCH_TYPE: cuda
       SKIP_ALL_TESTS: 1
       LIBTORCH_CONFIG: release
       LIBTORCH_VARIANT: shared-with-deps
       # This is a dummy value for libtorch to work correctly with our batch scripts
       # without this value pip does not get installed for some reason
-      DESIRED_PYTHON: "3.9"
+      DESIRED_PYTHON: "3.8"
     steps:
-      # NOTE: These environment variables are put here so that they can be applied on every job equally
-      #       They are also here because setting them at a workflow level doesn't give us access to the
-      #       runner.temp variable, which we need.
-      - name: Populate binary env
-        shell: bash
-        run: |
-          echo "BINARY_ENV_FILE=${RUNNER_TEMP}/env" >> "${GITHUB_ENV}"
-          echo "PYTORCH_FINAL_PACKAGE_DIR=${RUNNER_TEMP}/artifacts" >> "${GITHUB_ENV}"
-          echo "WIN_PACKAGE_WORK_DIR=${RUNNER_TEMP}"
       - name: Display EC2 information
         shell: bash
         run: |
@@ -571,27 +567,17 @@ jobs:
             # Pulled from instance metadata endpoint for EC2
             # see https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instancedata-data-retrieval.html
             category=$1
-            curl -H "X-aws-ec2-metadata-token: $(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 30")" -fsSL "http://169.254.169.254/latest/meta-data/${category}"
+            curl -fsSL "http://169.254.169.254/latest/meta-data/${category}"
           }
           echo "ami-id: $(get_ec2_metadata ami-id)"
           echo "instance-id: $(get_ec2_metadata instance-id)"
           echo "instance-type: $(get_ec2_metadata instance-type)"
           echo "system info $(uname -a)"
       - name: "[FB EMPLOYEES] Enable SSH (Click me for login details)"
-        uses: pytorch/test-infra/.github/actions/setup-ssh@release/2.8
+        uses: pytorch/test-infra/.github/actions/setup-ssh@main
         continue-on-error: true
         with:
           github-secret: ${{ secrets.GITHUB_TOKEN }}
-      - name: Enable git long paths and symlinks on Windows and disable fsmonitor daemon
-        shell: bash
-        run: |
-          git config --global core.longpaths true
-          git config --global core.symlinks true
-
-          # https://git-scm.com/docs/git-fsmonitor--daemon.  The daemon could lock
-          # the directory on Windows and prevent GHA from checking out as reported
-          # in https://github.com/actions/checkout/issues/1018
-          git config --global core.fsmonitor false
       # Needed for binary builds, see: https://github.com/pytorch/pytorch/issues/73339#issuecomment-1058981560
       - name: Enable long paths on Windows
         shell: powershell
@@ -607,17 +593,39 @@ jobs:
           # Let's both exclude the path and disable Windows Defender completely just to be sure
           # that it doesn't interfere
           Set-MpPreference -DisableRealtimeMonitoring $True -ErrorAction Ignore
+      # NOTE: These environment variables are put here so that they can be applied on every job equally
+      #       They are also here because setting them at a workflow level doesn't give us access to the
+      #       runner.temp variable, which we need.
+      - name: Populate binary env
+        shell: bash
+        run: |
+          echo "BINARY_ENV_FILE=${RUNNER_TEMP}/env" >> "${GITHUB_ENV}"
+          echo "PYTORCH_FINAL_PACKAGE_DIR=${RUNNER_TEMP}/artifacts" >> "${GITHUB_ENV}"
+          echo "WIN_PACKAGE_WORK_DIR=${RUNNER_TEMP}"
       - name: Checkout PyTorch
-        uses: actions/checkout@v4
+        uses: malfet/checkout@silent-checkout
         with:
           submodules: recursive
           path: pytorch
-          show-progress: false
+          quiet-checkout: true
       - name: Clean PyTorch checkout
         run: |
           # Remove any artifacts from the previous checkouts
           git clean -fxd
         working-directory: pytorch
+      - name: Checkout pytorch/builder
+        uses: malfet/checkout@silent-checkout
+        with:
+          ref: release/2.4
+          submodules: recursive
+          repository: pytorch/builder
+          path: builder
+          quiet-checkout: true
+      - name: Clean pytorch/builder checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
+        working-directory: builder
       - name: Populate binary env
         shell: bash
         run: |
@@ -626,10 +634,10 @@ jobs:
         shell: bash
         run: |
           "${PYTORCH_ROOT}/.circleci/scripts/binary_windows_build.sh"
-      - uses: actions/upload-artifact@v4.4.0
+      - uses: actions/upload-artifact@v3
         if: always()
         with:
-          name: libtorch-cuda12_8-shared-with-deps-release
+          name: libtorch-cuda12_1-shared-with-deps-release
           retention-days: 14
           if-no-files-found: error
           path: "${{ env.PYTORCH_FINAL_PACKAGE_DIR }}"
@@ -646,28 +654,26 @@ jobs:
         if: always()
         run: |
           .github\scripts\kill_active_ssh_sessions.ps1
-
-  libtorch-cuda12_8-shared-with-deps-release-test:  # Testing
+  libtorch-cuda12_1-shared-with-deps-release-test:  # Testing
     if: ${{ github.repository_owner == 'pytorch' }}
-    needs:
-      - libtorch-cuda12_8-shared-with-deps-release-build
-      - get-label-type
-    runs-on: "${{ needs.get-label-type.outputs.label-type }}windows.g4dn.xlarge"
-    timeout-minutes: 300
+    needs: libtorch-cuda12_1-shared-with-deps-release-build
+    runs-on: windows.8xlarge.nvidia.gpu
+    timeout-minutes: 240
     env:
       PYTORCH_ROOT: ${{ github.workspace }}/pytorch
+      BUILDER_ROOT: ${{ github.workspace }}/builder
       PACKAGE_TYPE: libtorch
       # TODO: This is a legacy variable that we eventually want to get rid of in
       #       favor of GPU_ARCH_VERSION
-      DESIRED_CUDA: cu128
-      GPU_ARCH_VERSION: 12.8
+      DESIRED_CUDA: cu121
+      GPU_ARCH_VERSION: 12.1
       GPU_ARCH_TYPE: cuda
       SKIP_ALL_TESTS: 1
       LIBTORCH_CONFIG: release
       LIBTORCH_VARIANT: shared-with-deps
       # This is a dummy value for libtorch to work correctly with our batch scripts
       # without this value pip does not get installed for some reason
-      DESIRED_PYTHON: "3.9"
+      DESIRED_PYTHON: "3.8"
     steps:
       - name: Display EC2 information
         shell: bash
@@ -677,27 +683,17 @@ jobs:
             # Pulled from instance metadata endpoint for EC2
             # see https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instancedata-data-retrieval.html
             category=$1
-            curl -H "X-aws-ec2-metadata-token: $(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 30")" -fsSL "http://169.254.169.254/latest/meta-data/${category}"
+            curl -fsSL "http://169.254.169.254/latest/meta-data/${category}"
           }
           echo "ami-id: $(get_ec2_metadata ami-id)"
           echo "instance-id: $(get_ec2_metadata instance-id)"
           echo "instance-type: $(get_ec2_metadata instance-type)"
           echo "system info $(uname -a)"
       - name: "[FB EMPLOYEES] Enable SSH (Click me for login details)"
-        uses: pytorch/test-infra/.github/actions/setup-ssh@release/2.8
+        uses: pytorch/test-infra/.github/actions/setup-ssh@main
         continue-on-error: true
         with:
           github-secret: ${{ secrets.GITHUB_TOKEN }}
-      - name: Enable git long paths and symlinks on Windows and disable fsmonitor daemon
-        shell: bash
-        run: |
-          git config --global core.longpaths true
-          git config --global core.symlinks true
-
-          # https://git-scm.com/docs/git-fsmonitor--daemon.  The daemon could lock
-          # the directory on Windows and prevent GHA from checking out as reported
-          # in https://github.com/actions/checkout/issues/1018
-          git config --global core.fsmonitor false
       # Needed for binary builds, see: https://github.com/pytorch/pytorch/issues/73339#issuecomment-1058981560
       - name: Enable long paths on Windows
         shell: powershell
@@ -713,17 +709,6 @@ jobs:
           # Let's both exclude the path and disable Windows Defender completely just to be sure
           # that it doesn't interfere
           Set-MpPreference -DisableRealtimeMonitoring $True -ErrorAction Ignore
-      - name: Checkout PyTorch
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          path: pytorch
-          show-progress: false
-      - name: Clean PyTorch checkout
-        run: |
-          # Remove any artifacts from the previous checkouts
-          git clean -fxd
-        working-directory: pytorch
       # NOTE: These environment variables are put here so that they can be applied on every job equally
       #       They are also here because setting them at a workflow level doesn't give us access to the
       #       runner.temp variable, which we need.
@@ -733,11 +718,35 @@ jobs:
           echo "BINARY_ENV_FILE=${RUNNER_TEMP}/env" >> "${GITHUB_ENV}"
           echo "PYTORCH_FINAL_PACKAGE_DIR=${RUNNER_TEMP}/artifacts" >> "${GITHUB_ENV}"
           echo "WIN_PACKAGE_WORK_DIR=${RUNNER_TEMP}"
-      - uses: actions/download-artifact@v4.1.7
+      - uses: actions/download-artifact@v3
         name: Download Build Artifacts
         with:
-          name: libtorch-cuda12_8-shared-with-deps-release
+          name: libtorch-cuda12_1-shared-with-deps-release
           path: "${{ env.PYTORCH_FINAL_PACKAGE_DIR }}"
+      - name: Checkout PyTorch
+        uses: malfet/checkout@silent-checkout
+        with:
+          submodules: recursive
+          path: pytorch
+          quiet-checkout: true
+      - name: Clean PyTorch checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
+        working-directory: pytorch
+      - name: Checkout pytorch/builder
+        uses: malfet/checkout@silent-checkout
+        with:
+          ref: release/2.4
+          submodules: recursive
+          repository: pytorch/builder
+          path: builder
+          quiet-checkout: true
+      - name: Clean pytorch/builder checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
+        working-directory: builder
       - name: Populate binary env
         shell: bash
         run: |
@@ -759,58 +768,52 @@ jobs:
         if: always()
         run: |
           .github\scripts\kill_active_ssh_sessions.ps1
-  libtorch-cuda12_8-shared-with-deps-release-upload:  # Uploading
+  libtorch-cuda12_1-shared-with-deps-release-upload:  # Uploading
     if: ${{ github.repository_owner == 'pytorch' }}
     permissions:
       id-token: write
       contents: read
-    needs: libtorch-cuda12_8-shared-with-deps-release-test
+    needs: libtorch-cuda12_1-shared-with-deps-release-test
     with:
       PYTORCH_ROOT: ${{ github.workspace }}/pytorch
+      BUILDER_ROOT: ${{ github.workspace }}/builder
       PACKAGE_TYPE: libtorch
       # TODO: This is a legacy variable that we eventually want to get rid of in
       #       favor of GPU_ARCH_VERSION
-      DESIRED_CUDA: cu128
-      GPU_ARCH_VERSION: 12.8
+      DESIRED_CUDA: cu121
+      GPU_ARCH_VERSION: 12.1
       GPU_ARCH_TYPE: cuda
       LIBTORCH_CONFIG: release
       LIBTORCH_VARIANT: shared-with-deps
       # This is a dummy value for libtorch to work correctly with our batch scripts
       # without this value pip does not get installed for some reason
-      DESIRED_PYTHON: "3.9"
-      build_name: libtorch-cuda12_8-shared-with-deps-release
+      DESIRED_PYTHON: "3.8"
+      build_name: libtorch-cuda12_1-shared-with-deps-release
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      conda-pytorchbot-token: ${{ secrets.CONDA_PYTORCHBOT_TOKEN }}
+      conda-pytorchbot-token-test: ${{ secrets.CONDA_PYTORCHBOT_TOKEN_TEST }}
     uses: ./.github/workflows/_binary-upload.yml
-  libtorch-cuda12_9-shared-with-deps-release-build:
+  libtorch-cuda12_4-shared-with-deps-release-build:
     if: ${{ github.repository_owner == 'pytorch' }}
-    needs: get-label-type
-    runs-on: "${{ needs.get-label-type.outputs.label-type }}windows.4xlarge"
-    timeout-minutes: 300
+    runs-on: windows.4xlarge.nonephemeral
+    timeout-minutes: 240
     env:
       PYTORCH_ROOT: ${{ github.workspace }}/pytorch
+      BUILDER_ROOT: ${{ github.workspace }}/builder
       PACKAGE_TYPE: libtorch
       # TODO: This is a legacy variable that we eventually want to get rid of in
       #       favor of GPU_ARCH_VERSION
-      DESIRED_CUDA: cu129
-      GPU_ARCH_VERSION: 12.9
+      DESIRED_CUDA: cu124
+      GPU_ARCH_VERSION: 12.4
       GPU_ARCH_TYPE: cuda
       SKIP_ALL_TESTS: 1
       LIBTORCH_CONFIG: release
       LIBTORCH_VARIANT: shared-with-deps
       # This is a dummy value for libtorch to work correctly with our batch scripts
       # without this value pip does not get installed for some reason
-      DESIRED_PYTHON: "3.9"
+      DESIRED_PYTHON: "3.8"
     steps:
-      # NOTE: These environment variables are put here so that they can be applied on every job equally
-      #       They are also here because setting them at a workflow level doesn't give us access to the
-      #       runner.temp variable, which we need.
-      - name: Populate binary env
-        shell: bash
-        run: |
-          echo "BINARY_ENV_FILE=${RUNNER_TEMP}/env" >> "${GITHUB_ENV}"
-          echo "PYTORCH_FINAL_PACKAGE_DIR=${RUNNER_TEMP}/artifacts" >> "${GITHUB_ENV}"
-          echo "WIN_PACKAGE_WORK_DIR=${RUNNER_TEMP}"
       - name: Display EC2 information
         shell: bash
         run: |
@@ -819,27 +822,17 @@ jobs:
             # Pulled from instance metadata endpoint for EC2
             # see https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instancedata-data-retrieval.html
             category=$1
-            curl -H "X-aws-ec2-metadata-token: $(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 30")" -fsSL "http://169.254.169.254/latest/meta-data/${category}"
+            curl -fsSL "http://169.254.169.254/latest/meta-data/${category}"
           }
           echo "ami-id: $(get_ec2_metadata ami-id)"
           echo "instance-id: $(get_ec2_metadata instance-id)"
           echo "instance-type: $(get_ec2_metadata instance-type)"
           echo "system info $(uname -a)"
       - name: "[FB EMPLOYEES] Enable SSH (Click me for login details)"
-        uses: pytorch/test-infra/.github/actions/setup-ssh@release/2.8
+        uses: pytorch/test-infra/.github/actions/setup-ssh@main
         continue-on-error: true
         with:
           github-secret: ${{ secrets.GITHUB_TOKEN }}
-      - name: Enable git long paths and symlinks on Windows and disable fsmonitor daemon
-        shell: bash
-        run: |
-          git config --global core.longpaths true
-          git config --global core.symlinks true
-
-          # https://git-scm.com/docs/git-fsmonitor--daemon.  The daemon could lock
-          # the directory on Windows and prevent GHA from checking out as reported
-          # in https://github.com/actions/checkout/issues/1018
-          git config --global core.fsmonitor false
       # Needed for binary builds, see: https://github.com/pytorch/pytorch/issues/73339#issuecomment-1058981560
       - name: Enable long paths on Windows
         shell: powershell
@@ -855,17 +848,39 @@ jobs:
           # Let's both exclude the path and disable Windows Defender completely just to be sure
           # that it doesn't interfere
           Set-MpPreference -DisableRealtimeMonitoring $True -ErrorAction Ignore
+      # NOTE: These environment variables are put here so that they can be applied on every job equally
+      #       They are also here because setting them at a workflow level doesn't give us access to the
+      #       runner.temp variable, which we need.
+      - name: Populate binary env
+        shell: bash
+        run: |
+          echo "BINARY_ENV_FILE=${RUNNER_TEMP}/env" >> "${GITHUB_ENV}"
+          echo "PYTORCH_FINAL_PACKAGE_DIR=${RUNNER_TEMP}/artifacts" >> "${GITHUB_ENV}"
+          echo "WIN_PACKAGE_WORK_DIR=${RUNNER_TEMP}"
       - name: Checkout PyTorch
-        uses: actions/checkout@v4
+        uses: malfet/checkout@silent-checkout
         with:
           submodules: recursive
           path: pytorch
-          show-progress: false
+          quiet-checkout: true
       - name: Clean PyTorch checkout
         run: |
           # Remove any artifacts from the previous checkouts
           git clean -fxd
         working-directory: pytorch
+      - name: Checkout pytorch/builder
+        uses: malfet/checkout@silent-checkout
+        with:
+          ref: release/2.4
+          submodules: recursive
+          repository: pytorch/builder
+          path: builder
+          quiet-checkout: true
+      - name: Clean pytorch/builder checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
+        working-directory: builder
       - name: Populate binary env
         shell: bash
         run: |
@@ -874,10 +889,10 @@ jobs:
         shell: bash
         run: |
           "${PYTORCH_ROOT}/.circleci/scripts/binary_windows_build.sh"
-      - uses: actions/upload-artifact@v4.4.0
+      - uses: actions/upload-artifact@v3
         if: always()
         with:
-          name: libtorch-cuda12_9-shared-with-deps-release
+          name: libtorch-cuda12_4-shared-with-deps-release
           retention-days: 14
           if-no-files-found: error
           path: "${{ env.PYTORCH_FINAL_PACKAGE_DIR }}"
@@ -894,28 +909,26 @@ jobs:
         if: always()
         run: |
           .github\scripts\kill_active_ssh_sessions.ps1
-
-  libtorch-cuda12_9-shared-with-deps-release-test:  # Testing
+  libtorch-cuda12_4-shared-with-deps-release-test:  # Testing
     if: ${{ github.repository_owner == 'pytorch' }}
-    needs:
-      - libtorch-cuda12_9-shared-with-deps-release-build
-      - get-label-type
-    runs-on: "${{ needs.get-label-type.outputs.label-type }}windows.g4dn.xlarge"
-    timeout-minutes: 300
+    needs: libtorch-cuda12_4-shared-with-deps-release-build
+    runs-on: windows.8xlarge.nvidia.gpu
+    timeout-minutes: 240
     env:
       PYTORCH_ROOT: ${{ github.workspace }}/pytorch
+      BUILDER_ROOT: ${{ github.workspace }}/builder
       PACKAGE_TYPE: libtorch
       # TODO: This is a legacy variable that we eventually want to get rid of in
       #       favor of GPU_ARCH_VERSION
-      DESIRED_CUDA: cu129
-      GPU_ARCH_VERSION: 12.9
+      DESIRED_CUDA: cu124
+      GPU_ARCH_VERSION: 12.4
       GPU_ARCH_TYPE: cuda
       SKIP_ALL_TESTS: 1
       LIBTORCH_CONFIG: release
       LIBTORCH_VARIANT: shared-with-deps
       # This is a dummy value for libtorch to work correctly with our batch scripts
       # without this value pip does not get installed for some reason
-      DESIRED_PYTHON: "3.9"
+      DESIRED_PYTHON: "3.8"
     steps:
       - name: Display EC2 information
         shell: bash
@@ -925,27 +938,17 @@ jobs:
             # Pulled from instance metadata endpoint for EC2
             # see https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instancedata-data-retrieval.html
             category=$1
-            curl -H "X-aws-ec2-metadata-token: $(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 30")" -fsSL "http://169.254.169.254/latest/meta-data/${category}"
+            curl -fsSL "http://169.254.169.254/latest/meta-data/${category}"
           }
           echo "ami-id: $(get_ec2_metadata ami-id)"
           echo "instance-id: $(get_ec2_metadata instance-id)"
           echo "instance-type: $(get_ec2_metadata instance-type)"
           echo "system info $(uname -a)"
       - name: "[FB EMPLOYEES] Enable SSH (Click me for login details)"
-        uses: pytorch/test-infra/.github/actions/setup-ssh@release/2.8
+        uses: pytorch/test-infra/.github/actions/setup-ssh@main
         continue-on-error: true
         with:
           github-secret: ${{ secrets.GITHUB_TOKEN }}
-      - name: Enable git long paths and symlinks on Windows and disable fsmonitor daemon
-        shell: bash
-        run: |
-          git config --global core.longpaths true
-          git config --global core.symlinks true
-
-          # https://git-scm.com/docs/git-fsmonitor--daemon.  The daemon could lock
-          # the directory on Windows and prevent GHA from checking out as reported
-          # in https://github.com/actions/checkout/issues/1018
-          git config --global core.fsmonitor false
       # Needed for binary builds, see: https://github.com/pytorch/pytorch/issues/73339#issuecomment-1058981560
       - name: Enable long paths on Windows
         shell: powershell
@@ -961,17 +964,6 @@ jobs:
           # Let's both exclude the path and disable Windows Defender completely just to be sure
           # that it doesn't interfere
           Set-MpPreference -DisableRealtimeMonitoring $True -ErrorAction Ignore
-      - name: Checkout PyTorch
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          path: pytorch
-          show-progress: false
-      - name: Clean PyTorch checkout
-        run: |
-          # Remove any artifacts from the previous checkouts
-          git clean -fxd
-        working-directory: pytorch
       # NOTE: These environment variables are put here so that they can be applied on every job equally
       #       They are also here because setting them at a workflow level doesn't give us access to the
       #       runner.temp variable, which we need.
@@ -981,11 +973,35 @@ jobs:
           echo "BINARY_ENV_FILE=${RUNNER_TEMP}/env" >> "${GITHUB_ENV}"
           echo "PYTORCH_FINAL_PACKAGE_DIR=${RUNNER_TEMP}/artifacts" >> "${GITHUB_ENV}"
           echo "WIN_PACKAGE_WORK_DIR=${RUNNER_TEMP}"
-      - uses: actions/download-artifact@v4.1.7
+      - uses: actions/download-artifact@v3
         name: Download Build Artifacts
         with:
-          name: libtorch-cuda12_9-shared-with-deps-release
+          name: libtorch-cuda12_4-shared-with-deps-release
           path: "${{ env.PYTORCH_FINAL_PACKAGE_DIR }}"
+      - name: Checkout PyTorch
+        uses: malfet/checkout@silent-checkout
+        with:
+          submodules: recursive
+          path: pytorch
+          quiet-checkout: true
+      - name: Clean PyTorch checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
+        working-directory: pytorch
+      - name: Checkout pytorch/builder
+        uses: malfet/checkout@silent-checkout
+        with:
+          ref: release/2.4
+          submodules: recursive
+          repository: pytorch/builder
+          path: builder
+          quiet-checkout: true
+      - name: Clean pytorch/builder checkout
+        run: |
+          # Remove any artifacts from the previous checkouts
+          git clean -fxd
+        working-directory: builder
       - name: Populate binary env
         shell: bash
         run: |
@@ -1007,26 +1023,29 @@ jobs:
         if: always()
         run: |
           .github\scripts\kill_active_ssh_sessions.ps1
-  libtorch-cuda12_9-shared-with-deps-release-upload:  # Uploading
+  libtorch-cuda12_4-shared-with-deps-release-upload:  # Uploading
     if: ${{ github.repository_owner == 'pytorch' }}
     permissions:
       id-token: write
       contents: read
-    needs: libtorch-cuda12_9-shared-with-deps-release-test
+    needs: libtorch-cuda12_4-shared-with-deps-release-test
     with:
       PYTORCH_ROOT: ${{ github.workspace }}/pytorch
+      BUILDER_ROOT: ${{ github.workspace }}/builder
       PACKAGE_TYPE: libtorch
       # TODO: This is a legacy variable that we eventually want to get rid of in
       #       favor of GPU_ARCH_VERSION
-      DESIRED_CUDA: cu129
-      GPU_ARCH_VERSION: 12.9
+      DESIRED_CUDA: cu124
+      GPU_ARCH_VERSION: 12.4
       GPU_ARCH_TYPE: cuda
       LIBTORCH_CONFIG: release
       LIBTORCH_VARIANT: shared-with-deps
       # This is a dummy value for libtorch to work correctly with our batch scripts
       # without this value pip does not get installed for some reason
-      DESIRED_PYTHON: "3.9"
-      build_name: libtorch-cuda12_9-shared-with-deps-release
+      DESIRED_PYTHON: "3.8"
+      build_name: libtorch-cuda12_4-shared-with-deps-release
     secrets:
       github-token: ${{ secrets.GITHUB_TOKEN }}
+      conda-pytorchbot-token: ${{ secrets.CONDA_PYTORCHBOT_TOKEN }}
+      conda-pytorchbot-token-test: ${{ secrets.CONDA_PYTORCHBOT_TOKEN_TEST }}
     uses: ./.github/workflows/_binary-upload.yml

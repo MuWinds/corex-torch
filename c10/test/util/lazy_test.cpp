@@ -23,7 +23,6 @@ TEST(LazyTest, OptimisticLazy) {
   std::vector<std::thread> threads;
   std::atomic<std::string*> address = nullptr;
 
-  threads.reserve(kNumThreads);
   for (size_t i = 0; i < kNumThreads; ++i) {
     threads.emplace_back([&] {
       auto* p = &s.ensure(factory);
@@ -53,8 +52,8 @@ TEST(LazyTest, OptimisticLazy) {
   EXPECT_EQ(sCopy.ensure(factory), kLongString);
   EXPECT_EQ(invocations.load(), 0);
 
-  auto sMove = std::move(s); // codespell:ignore smove
-  EXPECT_EQ(sMove.ensure(factory), kLongString); // codespell:ignore smove
+  auto sMove = std::move(s);
+  EXPECT_EQ(sMove.ensure(factory), kLongString);
   EXPECT_EQ(invocations.load(), 0);
   // NOLINTNEXTLINE(bugprone-use-after-move)
   EXPECT_EQ(s.ensure(factory), kLongString);

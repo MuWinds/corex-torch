@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import argparse
 import os
 import sys
@@ -7,13 +5,12 @@ import xml.etree.ElementTree as ET
 from multiprocessing import cpu_count, Pool
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
+from typing import Any, Dict, List
 
 from tools.stats.test_dashboard import upload_additional_info
 from tools.stats.upload_stats_lib import (
     download_s3_artifacts,
     get_job_id,
-    remove_nan_inf,
     unzip,
     upload_workflow_stats_to_s3,
 )
@@ -24,14 +21,14 @@ def parse_xml_report(
     report: Path,
     workflow_id: int,
     workflow_run_attempt: int,
-) -> list[dict[str, Any]]:
+) -> List[Dict[str, Any]]:
     """Convert a test report xml file into a JSON-serializable list of test cases."""
     print(f"Parsing {tag}s for test report: {report}")
 
     job_id = get_job_id(report)
     print(f"Found job id: {job_id}")
 
-    test_cases: list[dict[str, Any]] = []
+    test_cases: List[Dict[str, Any]] = []
 
     root = ET.parse(report)
     for test_case in root.iter(tag):
@@ -56,11 +53,9 @@ def parse_xml_report(
     return test_cases
 
 
-def process_xml_element(
-    element: ET.Element, output_numbers: bool = True
-) -> dict[str, Any]:
+def process_xml_element(element: ET.Element) -> Dict[str, Any]:
     """Convert a test suite element into a JSON-serializable dict."""
-    ret: dict[str, Any] = {}
+    ret: Dict[str, Any] = {}
 
     # Convert attributes directly into dict elements.
     # e.g.
@@ -70,16 +65,16 @@ def process_xml_element(
     ret.update(element.attrib)
 
     # The XML format encodes all values as strings. Convert to ints/floats if
-    # possible to make aggregation possible in SQL.
-    if output_numbers:
-        for k, v in ret.items():
-            try:
-                ret[k] = int(v)
-            except ValueError:
-                try:
-                    ret[k] = float(v)
-                except ValueError:
-                    pass
+    # possible to make aggregation possible in Rockset.
+    for k, v in ret.items():
+        try:
+            ret[k] = int(v)
+        except ValueError:
+            pass
+        try:
+            ret[k] = float(v)
+        except ValueError:
+            pass
 
     # Convert inner and outer text into special dict elements.
     # e.g.
@@ -115,7 +110,7 @@ def process_xml_element(
     return ret
 
 
-def get_tests(workflow_run_id: int, workflow_run_attempt: int) -> list[dict[str, Any]]:
+def get_tests(workflow_run_id: int, workflow_run_attempt: int) -> List[Dict[str, Any]]:
     with TemporaryDirectory() as temp_dir:
         print("Using temporary directory:", temp_dir)
         os.chdir(temp_dir)
@@ -151,7 +146,7 @@ def get_tests(workflow_run_id: int, workflow_run_attempt: int) -> list[dict[str,
 
 def get_tests_for_circleci(
     workflow_run_id: int, workflow_run_attempt: int
-) -> list[dict[str, Any]]:
+) -> List[Dict[str, Any]]:
     # Parse the reports and transform them to JSON
     test_cases = []
     for xml_report in Path(".").glob("**/test/test-reports/**/*.xml"):
@@ -164,13 +159,13 @@ def get_tests_for_circleci(
     return test_cases
 
 
-def summarize_test_cases(test_cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def summarize_test_cases(test_cases: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Group test cases by classname, file, and job_id. We perform the aggregation
     manually instead of using the `test-suite` XML tag because xmlrunner does
     not produce reliable output for it.
     """
 
-    def get_key(test_case: dict[str, Any]) -> Any:
+    def get_key(test_case: Dict[str, Any]) -> Any:
         return (
             test_case.get("file"),
             test_case.get("classname"),
@@ -181,7 +176,7 @@ def summarize_test_cases(test_cases: list[dict[str, Any]]) -> list[dict[str, Any
             test_case["invoking_file"],
         )
 
-    def init_value(test_case: dict[str, Any]) -> dict[str, Any]:
+    def init_value(test_case: Dict[str, Any]) -> Dict[str, Any]:
         return {
             "file": test_case.get("file"),
             "classname": test_case.get("classname"),
@@ -220,7 +215,7 @@ def summarize_test_cases(test_cases: list[dict[str, Any]]) -> list[dict[str, Any
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Upload test stats to s3")
+    parser = argparse.ArgumentParser(description="Upload test stats to Rockset")
     parser.add_argument(
         "--workflow-run-id",
         required=True,
@@ -258,18 +253,18 @@ if __name__ == "__main__":
     else:
         test_cases = get_tests(args.workflow_run_id, args.workflow_run_attempt)
 
-    # Flush stdout so that any errors in the upload show up last in the logs.
+    # Flush stdout so that any errors in Rockset upload show up last in the logs.
     sys.stdout.flush()
 
     # For PRs, only upload a summary of test_runs. This helps lower the
-    # volume of writes we do to the HUD backend database.
+    # volume of writes we do to Rockset.
     test_case_summary = summarize_test_cases(test_cases)
 
     upload_workflow_stats_to_s3(
         args.workflow_run_id,
         args.workflow_run_attempt,
         "test_run_summary",
-        remove_nan_inf(test_case_summary),
+        test_case_summary,
     )
 
     # Separate out the failed test cases.
@@ -284,16 +279,13 @@ if __name__ == "__main__":
         args.workflow_run_id,
         args.workflow_run_attempt,
         "failed_test_runs",
-        remove_nan_inf(failed_tests_cases),
+        failed_tests_cases,
     )
 
     if args.head_branch == "main" and args.head_repository == "pytorch/pytorch":
         # For jobs on main branch, upload everything.
         upload_workflow_stats_to_s3(
-            args.workflow_run_id,
-            args.workflow_run_attempt,
-            "test_run",
-            remove_nan_inf(test_cases),
+            args.workflow_run_id, args.workflow_run_attempt, "test_run", test_cases
         )
 
     upload_additional_info(args.workflow_run_id, args.workflow_run_attempt, test_cases)

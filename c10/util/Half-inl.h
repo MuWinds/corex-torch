@@ -32,7 +32,7 @@ C10_CLANG_DIAGNOSTIC_IGNORE("-Wimplicit-int-float-conversion")
 
 namespace c10 {
 
-#if defined(__aarch64__) && !defined(__CUDACC__)
+#if defined(__aarch64__) && !defined(C10_MOBILE) && !defined(__CUDACC__)
 /// Constructors
 inline Half::Half(float16_t value) : x(detail::fp16_to_bits(value)) {}
 inline Half::operator float16_t() const {
@@ -59,20 +59,27 @@ inline C10_HOST_DEVICE Half::Half(float value)
 
 inline C10_HOST_DEVICE Half::operator float() const {
 #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
+#ifndef __ILUVATAR__
   return __half2float(*reinterpret_cast<const __half*>(&x));
+#else
+  __half tmp = *reinterpret_cast<const __half*>(&x);
+  float ret;
+  asm volatile("{ml_cvt_f32_f16 %0, %1;}" : "=r"(ret) : "r"(tmp));
+  return ret;
+#endif
 #elif defined(__SYCL_DEVICE_ONLY__)
   return float(c10::bit_cast<sycl::half>(x));
 #elif (defined(CPU_CAPABILITY_AVX2) || defined(CPU_CAPABILITY_AVX512)) && \
     !defined(__APPLE__)
   return at::vec::half2float_scalar(x);
-#elif defined(__aarch64__) && !defined(__CUDACC__)
+#elif defined(__aarch64__) && !defined(C10_MOBILE) && !defined(__CUDACC__)
   return detail::native_fp16_to_fp32_value(x);
 #else
   return detail::fp16_ieee_to_fp32_value(x);
 #endif
 }
 
-#endif /* !defined(__aarch64__) || defined(__CUDACC__) \
+#endif /* !defined(__aarch64__) || defined(C10_MOBILE) || defined(__CUDACC__) \
         */
 
 #if defined(__CUDACC__) || defined(__HIPCC__)
@@ -291,7 +298,11 @@ namespace std {
 template <>
 class numeric_limits<c10::Half> {
  public:
+#ifdef __ILUVATAR__
+  static constexpr bool is_specialized = false;
+#else
   static constexpr bool is_specialized = true;
+#endif
   static constexpr bool is_signed = true;
   static constexpr bool is_integer = false;
   static constexpr bool is_exact = false;

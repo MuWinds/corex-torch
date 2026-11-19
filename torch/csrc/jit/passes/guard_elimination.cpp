@@ -8,7 +8,8 @@
 #include <memory>
 #include <unordered_set>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 struct GuardElimination {
   GuardElimination(std::shared_ptr<Graph> graph)
@@ -462,4 +463,5 @@ void EliminateRedundantGuards(std::shared_ptr<Graph> graph) {
   ge.run();
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

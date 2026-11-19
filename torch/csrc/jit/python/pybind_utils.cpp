@@ -14,7 +14,6 @@
 
 #include <limits>
 #include <optional>
-#include <utility>
 
 namespace torch::jit {
 
@@ -33,17 +32,6 @@ ToIValueAllowNumbersAsTensors::~ToIValueAllowNumbersAsTensors() {
 // C++->Python. We need this because otherwise we may get the old Python object
 // if C++ creates a new object at the memory location of the deleted object.
 void clear_registered_instances(void* ptr) {
-#if IS_PYBIND_2_13_PLUS
-  py::detail::with_instance_map(
-      ptr, [&](py::detail::instance_map& registered_instances) {
-        auto range = registered_instances.equal_range(ptr);
-        for (auto it = range.first; it != range.second; ++it) {
-          auto vh = it->second->get_value_and_holder();
-          vh.set_instance_registered(false);
-        }
-        registered_instances.erase(ptr);
-      });
-#else
   auto& registered_instances =
       pybind11::detail::get_internals().registered_instances;
   auto range = registered_instances.equal_range(ptr);
@@ -52,14 +40,13 @@ void clear_registered_instances(void* ptr) {
     vh.set_instance_registered(false);
   }
   registered_instances.erase(ptr);
-#endif
 }
 
 // WARNING: Precondition for this function is that, e.g., you have tested if a
 // SymIntList is in fact only ints, and if so, you called this with T=int64_t.
 // This precondition is NOT checked at runtime.
 template <typename T>
-static IValue listToIValue(py::handle obj) {
+IValue listToIValue(py::handle obj) {
   c10::List<T> rs;
   for (auto it = obj.begin(); it != obj.end(); it++) {
     auto elm = *it;
@@ -281,7 +268,7 @@ IValue toIValue(py::handle obj, const TypePtr& type, std::optional<int32_t> N) {
       auto thp_stream = reinterpret_cast<THPStream*>(obj.ptr());
       auto stream = c10::Stream::unpack3(
           thp_stream->stream_id,
-          static_cast<c10::DeviceIndex>(thp_stream->device_index),
+          thp_stream->device_index,
           static_cast<c10::DeviceType>(thp_stream->device_type));
       return stream;
     }
@@ -468,9 +455,8 @@ IValue toIValue(py::handle obj, const TypePtr& type, std::optional<int32_t> N) {
       } else {
         // We inspect the value to found the compiled TorchScript class
         // and then create a ivalue::Object from that class type.
-        py::str qualified_name =
-            py::module::import("torch._jit_internal")
-                .attr("_qualified_name")(py::type::handle_of(obj));
+        py::str qualified_name = py::module::import("torch._jit_internal")
+                                     .attr("_qualified_name")(obj.get_type());
         auto pyCu = get_python_cu();
         classType = pyCu->get_class(c10::QualifiedName(qualified_name));
         if (!classType) {
@@ -533,7 +519,7 @@ IValue toIValue(py::handle obj, const TypePtr& type, std::optional<int32_t> N) {
 #ifdef USE_RPC
       return obj.cast<torch::distributed::rpc::PyRRef>().toIValue();
 #else
-      TORCH_CHECK(false, "RRef is only supported with the distributed package");
+      AT_ERROR("RRef is only supported with the distributed package");
 #endif
     } break;
     case TypeKind::PyObjectType: {
@@ -613,7 +599,7 @@ py::object toPyObject(IValue ivalue) {
       }
     } else {
       guardAgainstNamedTensor<at::Tensor>(tensor);
-      return py::cast(std::move(tensor));
+      return py::cast(autograd::Variable(std::move(tensor)));
     }
   } else if (ivalue.isStorage()) {
     return py::cast(std::move(ivalue).toStorage());
@@ -642,11 +628,7 @@ py::object toPyObject(IValue ivalue) {
     for (const auto i : c10::irange(list.size())) {
       t[i] = toPyObject(IValue{list.get(i)});
     }
-#if C10_RETURN_MOVE_IF_OLD_COMPILER
     return std::move(t);
-#else
-    return t;
-#endif
   } else if (ivalue.isTuple()) {
     auto tuple = std::move(ivalue).toTuple();
     const auto& elements = tuple->elements();
@@ -681,11 +663,7 @@ py::object toPyObject(IValue ivalue) {
           .attr("_create_named_tuple")(
               t, unqualName, fieldNames, py::make_tuple(defaults));
     } else {
-#if C10_RETURN_MOVE_IF_OLD_COMPILER
       return std::move(t);
-#else
-      return t;
-#endif
     }
   } else if (ivalue.isDevice()) {
     return py::cast(std::move(ivalue).toDevice());
@@ -698,11 +676,7 @@ py::object toPyObject(IValue ivalue) {
       py_dict[toPyObject(IValue{pair.key()})] =
           toPyObject(IValue{pair.value()});
     }
-#if C10_RETURN_MOVE_IF_OLD_COMPILER
     return std::move(py_dict);
-#else
-    return py_dict;
-#endif
   } else if (ivalue.isRRef()) {
 #ifdef USE_RPC
     auto RRefPtr =
@@ -710,7 +684,7 @@ py::object toPyObject(IValue ivalue) {
             std::move(ivalue).toRRef());
     return py::cast(torch::distributed::rpc::PyRRef(RRefPtr));
 #else
-    TORCH_CHECK(false, "RRef is only supported with the distributed package");
+    AT_ERROR("RRef is only supported with the distributed package");
 #endif
   } else if (ivalue.isObject()) {
     const auto obj = std::move(ivalue).toObject();
@@ -723,7 +697,7 @@ py::object toPyObject(IValue ivalue) {
       return py::cast(Object(obj));
     }
     const auto classType = pyCu->get_class(c10::QualifiedName(obj->name()));
-    AT_ASSERT(classType, c10::str(obj->name(), " is not found."));
+    AT_ASSERT(classType);
     auto pyClass = getScriptedClassOrError(obj->type());
     auto pyObj = pyClass.attr("__new__")(pyClass);
 
@@ -764,8 +738,7 @@ py::object toPyObject(IValue ivalue) {
   } else if (ivalue.isSymBool()) {
     return py::cast(std::move(ivalue).toSymBool());
   } else {
-    TORCH_CHECK(
-        false,
+    AT_ERROR(
         "Missing cases in 'toPyObject'! Can't convert ",
         ivalue.tagKind(),
         " to a Python object");
@@ -774,13 +747,14 @@ py::object toPyObject(IValue ivalue) {
 
 std::pair<std::shared_ptr<Operator>, Stack> getOpWithStack(
     const std::vector<std::shared_ptr<Operator>>& operations,
-    const py::args& args,
+    py::args args,
     const py::kwargs& kwargs) {
   Stack stack;
   if (operations.size() == 1) {
     std::shared_ptr<Operator> op = operations.at(0);
     // Create a stack full of the arguments and keyword arguments.
-    stack = createStackForSchema(op->schema(), args, kwargs, std::nullopt);
+    stack = createStackForSchema(
+        op->schema(), std::move(args), kwargs, c10::nullopt);
 
     return std::make_pair(std::move(op), std::move(stack));
   } else {
@@ -788,7 +762,7 @@ std::pair<std::shared_ptr<Operator>, Stack> getOpWithStack(
     std::shared_ptr<Operator> found_op = nullptr;
     for (const auto& op : operations) {
       try {
-        stack = createStackForSchema(op->schema(), args, kwargs, std::nullopt);
+        stack = createStackForSchema(op->schema(), args, kwargs, c10::nullopt);
         found_op = op;
         break;
       } catch (schema_match_error& error) {
@@ -814,11 +788,11 @@ std::pair<std::shared_ptr<Operator>, Stack> getOpWithStack(
 // schema.
 bool checkSchemaAllowFakeScriptObject(
     const FunctionSchema& schema,
-    const py::args& args,
+    py::args args,
     const py::kwargs& kwargs) {
   bool match = false;
   try {
-    match = matchSchemaAllowFakeScriptObject(schema, args, kwargs);
+    match = matchSchemaAllowFakeScriptObject(schema, std::move(args), kwargs);
   } catch (schema_match_error& error) {
     throw std::runtime_error(error.what());
   }
@@ -827,7 +801,7 @@ bool checkSchemaAllowFakeScriptObject(
 
 py::object invokeOperatorFromPython(
     const std::vector<std::shared_ptr<Operator>>& operations,
-    const py::args& args,
+    py::args args,
     const py::kwargs& kwargs,
     std::optional<c10::DispatchKey> dk) {
   auto [found_op, stack] = getOpWithStack(operations, args, kwargs);
@@ -848,7 +822,7 @@ std::optional<py::object> _maybe_handle_torch_function(
     const std::string& method_name,
     const std::string& overload_name,
     bool is_overload,
-    const py::args& args,
+    py::args args,
     const py::kwargs& kwargs) {
   std::vector<PyObject*> overloaded_args;
   size_t total_arg_num = args.size() + kwargs.size();
@@ -903,7 +877,7 @@ std::optional<py::object> _maybe_handle_torch_function(
 py::object _get_operation_for_overload_or_packet(
     const std::vector<std::shared_ptr<Operator>>& operations,
     Symbol symbol,
-    const py::args& args,
+    py::args args,
     const py::kwargs& kwargs,
     bool is_overload,
     std::optional<c10::DispatchKey> dk) {

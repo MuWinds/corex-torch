@@ -12,9 +12,9 @@ namespace py = pybind11;
 
 namespace torch::jit {
 
-static std::optional<std::string> maybeConvertToString(const py::object& obj) {
+std::optional<std::string> maybeConvertToString(const py::object& obj) {
   if (obj.is_none()) {
-    return std::nullopt;
+    return c10::nullopt;
   }
   std::stringstream ss;
   ss << py::str(obj);
@@ -23,12 +23,12 @@ static std::optional<std::string> maybeConvertToString(const py::object& obj) {
 
 struct SourceRangeFactory {
   SourceRangeFactory(
-      const std::string& text,
+      std::string text,
       const py::object& filename,
       size_t file_lineno,
       size_t leading_whitespace_chars)
       : source_(std::make_shared<Source>(
-            text,
+            std::move(text),
             maybeConvertToString(filename),
             file_lineno)),
         leading_whitespace_chars_(leading_whitespace_chars) {}
@@ -36,15 +36,17 @@ struct SourceRangeFactory {
   SourceRange create(int line, int start_col, int end_col) {
     auto [start_byte_offset, end_byte_offset] = line_col_to_byte_offs(
         line,
+        // NOLINTNEXTLINE(cppcoreguidelines-narrowing-conversions,bugprone-narrowing-conversions)
         start_col + leading_whitespace_chars_,
+        // NOLINTNEXTLINE(cppcoreguidelines-narrowing-conversions,bugprone-narrowing-conversions)
         end_col + leading_whitespace_chars_);
     return SourceRange(source_, start_byte_offset, end_byte_offset);
   }
 
   std::tuple<size_t, size_t> line_col_to_byte_offs(
       int line,
-      size_t start_col,
-      size_t end_col) {
+      int start_col,
+      int end_col) {
     // lines are counted from 1.
     line--;
     auto line_start = source_->offset_for_line(line);
@@ -58,16 +60,14 @@ struct SourceRangeFactory {
 };
 
 template <typename T>
-static List<T> wrap_list(
-    const SourceRange& fallback_pos,
-    std::vector<T>&& vec) {
+List<T> wrap_list(const SourceRange& fallback_pos, std::vector<T>&& vec) {
   if (vec.empty())
     return List<T>::create(fallback_pos, std::move(vec));
   return List<T>::create(vec.front().range(), std::move(vec));
 }
 
 template <typename T>
-static Maybe<T> wrap_maybe(const SourceRange& fallback_pos, T* val) {
+Maybe<T> wrap_maybe(const SourceRange& fallback_pos, T* val) {
   return val ? Maybe<T>::create(val->range(), *val)
              : Maybe<T>::create(fallback_pos);
 }
@@ -180,7 +180,7 @@ void initTreeViewBindings(PyObject* module) {
           return std::optional<Ident>(property.setter().get().name());
         }
 
-        return std::optional<Ident>(std::nullopt);
+        return std::optional<Ident>(c10::nullopt);
       });
 
   py::class_<ClassDef, TreeView>(m, "ClassDef")

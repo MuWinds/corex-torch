@@ -2,10 +2,9 @@
 #include <ATen/native/mkl/LinearAlgebra.h>
 #include <ATen/Config.h>
 
-C10_DIAGNOSTIC_PUSH_AND_IGNORED_IF_DEFINED("-Wunused-parameter")
 #if !AT_MKL_ENABLED()
 
-namespace at::native {
+namespace at { namespace native {
 
 void mkl_gemm_batched(
     const TransposeType trans_A, const TransposeType trans_B,
@@ -55,14 +54,14 @@ void mkl_gemm_f16f16f32(
   TORCH_INTERNAL_ASSERT(false, "mkl_gemm_f16f16f32: ATen not compiled with MKL support");
 }
 
-}
+}}
 
 #else // AT_MKL_ENABLED
 
 #include <mkl.h>
 #include <c10/util/irange.h>
 
-namespace at::native {
+namespace at { namespace native {
 
 static CBLAS_TRANSPOSE to_cblas(TransposeType x) {
   switch (x) {
@@ -151,7 +150,6 @@ void mkl_gemm_f16f16f32(
 #endif
 }
 
-} // namespace at::native
+}} // namespace at::native
 
 #endif
-C10_DIAGNOSTIC_POP()

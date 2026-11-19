@@ -5,7 +5,6 @@
 #include <torch/csrc/autograd/functions/pybind.h>
 #include <torch/csrc/autograd/functions/tensor.h>
 #include <torch/csrc/autograd/generated/python_functions.h>
-#include <torch/csrc/autograd/python_autograd.h>
 #include <torch/csrc/autograd/python_cpp_function.h>
 #include <torch/csrc/autograd/python_variable.h>
 #ifdef USE_DISTRIBUTED
@@ -71,10 +70,10 @@ template <
     typename T,
     typename ValueT,
     typename ParamsT,
-    ValueT ParamsT::* ptr,
+    ValueT ParamsT::*ptr,
     typename ConvertArgT,
     PyObject* (*Convert)(ConvertArgT)>
-static PyObject* getTupleAttr(PyObject* obj, void* _unused) {
+PyObject* getTupleAttr(PyObject* obj, void* _unused) {
   HANDLE_TH_ERRORS
   THPCppFunction* self = (THPCppFunction*)obj;
   auto& arr = ((T*)(self->cdata.get()))->*ptr;
@@ -93,10 +92,10 @@ template <
     typename T,
     typename ValueT,
     typename ParamsT,
-    ValueT ParamsT::* ptr,
+    ValueT ParamsT::*ptr,
     typename ConvertArgT,
     PyObject* (*Convert)(ConvertArgT)>
-static PyObject* getValueAttr(PyObject* obj, void* _unused) {
+PyObject* getValueAttr(PyObject* obj, void* _unused) {
   HANDLE_TH_ERRORS
   THPCppFunction* self = (THPCppFunction*)obj;
   auto& val = ((T*)(self->cdata.get()))->*ptr;

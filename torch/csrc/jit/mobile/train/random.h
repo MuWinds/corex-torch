@@ -7,12 +7,16 @@
 #include <cstddef>
 #include <vector>
 
-namespace torch::serialize {
+namespace torch {
+namespace serialize {
 class OutputArchive;
 class InputArchive;
-} // namespace torch::serialize
+} // namespace serialize
+} // namespace torch
 
-namespace torch::jit::mobile {
+namespace torch {
+namespace jit {
+namespace mobile {
 
 /// A lighter `Sampler` that returns indices randomly and cannot be
 /// serialized.
@@ -28,10 +32,10 @@ class TORCH_API RandomSampler : public torch::data::samplers::Sampler<> {
   ~RandomSampler() override;
 
   /// Resets the `RandomSampler` to a new set of indices.
-  void reset(std::optional<size_t> new_size = std::nullopt) override;
+  void reset(optional<size_t> new_size = nullopt) override;
 
   /// Returns the next batch of indices.
-  std::optional<std::vector<size_t>> next(size_t batch_size) override;
+  optional<std::vector<size_t>> next(size_t batch_size) override;
 
   /// Serializes the `RandomSampler` to the `archive`.
   void save(serialize::OutputArchive& archive) const override;
@@ -47,4 +51,6 @@ class TORCH_API RandomSampler : public torch::data::samplers::Sampler<> {
   int64_t index_ = 0;
 };
 
-} // namespace torch::jit::mobile
+} // namespace mobile
+} // namespace jit
+} // namespace torch

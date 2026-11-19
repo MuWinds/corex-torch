@@ -16,7 +16,8 @@
 
 #include <utility>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 std::optional<std::vector<IValue>> runNodeIfInputsAreConstant(
     const Node* n,
@@ -27,14 +28,14 @@ std::optional<std::vector<IValue>> runNodeIfInputsAreConstant(
     if (auto ival = toIValue(input)) {
       stack.push_back(*ival);
     } else {
-      return std::nullopt;
+      return c10::nullopt;
     }
   }
 
   switch (n->kind()) {
     case prim::ListUnpack: {
       if (stack.back().toList().size() != n->outputs().size()) {
-        return std::nullopt;
+        return c10::nullopt;
       }
       listUnpack(stack, n->outputs().size());
     } break;
@@ -77,14 +78,14 @@ std::optional<std::vector<IValue>> runNodeIfInputsAreConstant(
         // vararg schemas require the number of inputs at the top of the stack
         // but this is broken in other places in constant prop, so disable it
         // for now
-        return std::nullopt;
+        return c10::nullopt;
       }
 
       try {
         auto op = n->getOperation();
         op(stack);
       } catch (...) {
-        return std::nullopt;
+        return c10::nullopt;
       }
     } break;
   }
@@ -94,13 +95,13 @@ std::optional<std::vector<IValue>> runNodeIfInputsAreConstant(
       const at::Tensor& t = v.toTensor();
       if (t.defined() && t.requires_grad()) {
         // requires grad tensors cannot be constants
-        return std::nullopt;
+        return c10::nullopt;
       }
     }
     // Weak form of const propagation
     if (ignore_custom_classes) {
       if (v.isCustomClass()) {
-        return std::nullopt;
+        return c10::nullopt;
       }
     }
     // see [Constant Object Weak CompilationUnit Reference]
@@ -122,7 +123,7 @@ std::optional<std::vector<IValue>> runNodeIfInputsAreConstant(
     }
     if (v.isObject()) {
       if (!v.toObject()->is_weak_compilation_ref()) {
-        return std::nullopt;
+        return c10::nullopt;
       }
     }
   }
@@ -347,7 +348,8 @@ struct ConstantPropagator {
   }
 
   bool supportedNode(Node* n) {
-    bool no_mutation = false;
+    // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+    bool no_mutation;
     if (aliasing_types_) {
       no_mutation = !getOrCreateAliasDb()->hasWriters(n);
     } else {
@@ -432,4 +434,5 @@ bool ConstantPropagationImmutableTypes(std::shared_ptr<Graph>& graph) {
   return made_change;
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

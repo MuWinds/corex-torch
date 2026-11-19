@@ -2,7 +2,8 @@
 
 #include <torch/csrc/jit/frontend/ir_emitter.h>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 // Closure nodes are emitted as a tuple of (function %, context tuple %)
 // Inside the closure the closure is then unpacked so that all closed over
@@ -81,4 +82,5 @@ void inlineForkedClosures(std::shared_ptr<Graph>& to_clean) {
   inlineForkedClosures(to_clean->block());
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

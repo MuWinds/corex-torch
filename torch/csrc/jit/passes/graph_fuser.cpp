@@ -18,7 +18,8 @@
 #include <unordered_map>
 #include <utility>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 namespace {
 
@@ -414,7 +415,7 @@ struct GraphFuser {
     return group;
   }
 
-  std::optional<Node*> tryFuse(Node* consumer, Value* producer) {
+  at::optional<Node*> tryFuse(Node* consumer, Value* producer) {
     // this handles cases where producer can be moved _into_ the fusion group of
     // consumer.
     // TODO: extend to fusion of consumer into _producer's_ fusion blob
@@ -430,13 +431,13 @@ struct GraphFuser {
         aliasDb_->moveBeforeTopologicallyValid(producer->node(), consumer);
 
     if (!shouldFuse) {
-      return std::nullopt;
+      return at::nullopt;
     }
 
     if ((consumer->inputs().size() + consumer->outputs().size() +
          producer->node()->inputs().size() +
          producer->node()->outputs().size()) > subgraph_arg_limit_) {
-      return std::nullopt;
+      return at::nullopt;
     }
 
     auto group = consumer;
@@ -493,7 +494,7 @@ struct GraphFuser {
     AT_ASSERT(group->kind() == prim::FusionGroup);
     auto it = std::find(group->inputs().begin(), group->inputs().end(), input);
     if (it == group->inputs().end()) {
-      return std::nullopt;
+      return c10::nullopt;
     }
     size_t input_index = it - group->inputs().begin();
     auto& subgraph = getSubgraph(group);
@@ -504,7 +505,7 @@ struct GraphFuser {
       AT_ASSERT(subgraph_input->uses().size() == 1);
       return node;
     }
-    return std::nullopt;
+    return c10::nullopt;
   }
 
   void fuseChunkByReusingExistingFusedChunk(
@@ -829,7 +830,8 @@ struct GraphFuser {
     }
 
     bchunk->removeInput(producer_index);
-    for ([[maybe_unused]] const auto i : c10::irange(nchunks)) {
+    for (const auto i : c10::irange(nchunks)) {
+      (void)i; // Suppress unused variable warning
       bchunk->eraseOutput(nchunks * producer_index);
     }
 
@@ -1155,8 +1157,9 @@ struct GraphFuser {
     while (any_changed) {
       any_changed = false;
       for (auto it = block_->nodes().rbegin(); it != block_->nodes().rend();) {
-        auto [tmp_it, changed] = scanNode(*it);
-        it = tmp_it;
+        // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+        bool changed;
+        std::tie(it, changed) = scanNode(*it);
         any_changed |= changed;
       }
     }
@@ -1281,4 +1284,5 @@ void CustomFuseGraph(
   Lint(&db);
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

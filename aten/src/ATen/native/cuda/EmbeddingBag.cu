@@ -6,7 +6,6 @@
 #include <ATen/cuda/Atomic.cuh>
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/DeviceUtils.cuh>
-#include <ATen/native/EmbeddingBag.h>
 #include <ATen/TensorUtils.h>
 
 #ifndef AT_PER_OPERATOR_HEADERS
@@ -43,6 +42,10 @@ void embedding_dense_backward_cuda_scan(Tensor &sorted_indices, Tensor &count);
 #endif
 
 namespace {
+
+constexpr int MODE_SUM = 0;
+constexpr int MODE_MEAN = 1;
+constexpr int MODE_MAX = 2;
 
 std::pair<Tensor, Tensor> promoteIndicesAndOffsets(
     const Tensor& indices,
@@ -136,10 +139,9 @@ __global__ void EmbeddingBag_updateOutputKernel_sum_mean(
       accscalar_t weightFeatSum = 0;
       int64_t bag_size_ = 0;
       for (int64_t emb = begin; emb < end; emb++) {
-        index_t input_idx = input[emb];
-        bool pad = (input_idx == padding_idx);
-        CUDA_KERNEL_ASSERT(0 <= input_idx && input_idx < numRows);
-        const int64_t weightRow = input_idx * weight_stride0;
+        bool pad = (input[emb] == padding_idx);
+        CUDA_KERNEL_ASSERT(input[emb] < numRows);
+        const int64_t weightRow = input[emb] * weight_stride0;
         scalar_t weightValue = weightFeat[weightRow];
         weightValue = pad ? static_cast<scalar_t>(0) : weightValue;
         if (per_sample_weights) {
@@ -155,7 +157,7 @@ __global__ void EmbeddingBag_updateOutputKernel_sum_mean(
           offset2bag[emb] = bag;
         }
       }
-      if (mode == static_cast<int64_t>(EmbeddingBagMode::MEAN)) {
+      if (mode == MODE_MEAN) {
         if (bag_size_ != 0) {
           weightFeatSum = weightFeatSum / static_cast<accscalar_t>(bag_size_);
         }
@@ -210,7 +212,7 @@ Tensor embedding_bag_backward_cuda_sum_avg(
       auto count_data = count.mutable_data_ptr<index_t>();
       cuda::cub::inclusive_sum_by_key(
         sorted_data,
-        NO_ROCM(at_cuda_detail)ROCM_HIPCUB(::cub)::ConstantInputIterator<index_t>(1),
+        at_cuda_detail::cub::ConstantInputIterator<index_t>(1),
         count_data,
         num_indices
       );
@@ -222,7 +224,7 @@ Tensor embedding_bag_backward_cuda_sum_avg(
         thrust::make_reverse_iterator(sorted_data + num_indices),
         thrust::make_reverse_iterator(count_data + num_indices),
         thrust::make_reverse_iterator(count_data + num_indices),
-        NO_ROCM(at_cuda_detail)ROCM_HIPCUB(::cub)::Max(),
+        at_cuda_detail::cub::Max(),
         num_indices
       );
     });
@@ -233,7 +235,7 @@ Tensor embedding_bag_backward_cuda_sum_avg(
 #endif
   }
   return embedding_backward_cuda_kernel(grad, orig_indices, sorted_indices,
-      count, num_weights, padding_idx, mode == EmbeddingBagMode::MEAN, offset2bag,
+      count, num_weights, padding_idx, mode == MODE_MEAN, offset2bag,
       bag_size, per_sample_weights);
 }
 
@@ -384,7 +386,7 @@ _embedding_bag_cuda(const Tensor &weight, const Tensor &indices_,
 
   Tensor max_indices;
 
-  if (mode == EmbeddingBagMode::MAX) {
+  if (mode == MODE_MAX) {
     max_indices = at::empty({numBags, featureSize}, indices.options());
   } else {
     // No need to allocate if we aren't doing a backwards pass
@@ -399,7 +401,7 @@ _embedding_bag_cuda(const Tensor &weight, const Tensor &indices_,
   int grid = 1024;
   AT_DISPATCH_FLOATING_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, weight.scalar_type(), "embedding_bag_cuda", [&] {
     AT_DISPATCH_INDEX_TYPES(indices.scalar_type(), "embedding_bag_cuda", [&] () {
-      if (mode == EmbeddingBagMode::MAX) {
+      if (mode == MODE_MAX) {
         EmbeddingBag_updateOutputKernel_max<scalar_t, index_t><<<grid, block, 0, stream>>>(
             indices.const_data_ptr<index_t>(), offsets.const_data_ptr<index_t>(),
             weight.const_data_ptr<scalar_t>(), output.mutable_data_ptr<scalar_t>(),
@@ -448,22 +450,22 @@ Tensor _embedding_bag_dense_backward_cuda(const Tensor &grad_, const Tensor &ind
   checkSameGPU("embedding_bag_cuda", grad_arg, indices_arg);
 
 
-  switch (static_cast<EmbeddingBagMode>(mode)) {
-    case EmbeddingBagMode::SUM:
-    case EmbeddingBagMode::MEAN:
-      if (mode == EmbeddingBagMode::MEAN)
+  switch (mode) {
+    case MODE_SUM:
+    case MODE_MEAN:
+      if (mode == MODE_MEAN)
         AT_ASSERT(!per_sample_weights.defined());
       return embedding_bag_backward_cuda_sum_avg(grad, indices, offset2bag,
               bag_size_, num_weights, scale_grad_by_freq, mode,
               per_sample_weights, padding_idx);
 
-    case EmbeddingBagMode::MAX:
+    case MODE_MAX:
       AT_ASSERT(!per_sample_weights.defined());
       return embedding_bag_backward_cuda_max(grad, max_indices, num_weights,
               padding_idx);
 
     default:
-      TORCH_CHECK(false,
+      AT_ERROR(
           "Unknown mode for embedding_bag_backward_cuda ", mode);
   }
 }
@@ -514,7 +516,7 @@ Tensor _embedding_bag_per_sample_weights_backward_cuda(
     int64_t mode,
     int64_t padding_idx) {
   TORCH_CHECK(
-      mode == EmbeddingBagMode::SUM,
+      mode == MODE_SUM,
       "embedding_bag_backward: per_sample_weights only supported for mode='sum'");
 
   AT_ASSERT(grad.dim() == 2);

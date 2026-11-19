@@ -6,14 +6,13 @@
 #include <torch/csrc/jit/mobile/type_parser.h>
 #include <torch/csrc/jit/serialization/pickle.h>
 #include <algorithm>
-#include <memory>
 
 namespace torch::jit {
 
 // "Whether to emit compact debug_pkl when saving a model to .pt file."
 // "Compact file is smaller but cannot be loaded by old torch binaries."
 // TODO(qihan) remove when all binaries are using string table.
-static thread_local bool should_use_format_with_string_table_ = true;
+thread_local bool should_use_format_with_string_table_ = true;
 
 class SourceRangeSerializer {
  public:
@@ -43,7 +42,7 @@ class SourceRangeSerializer {
   int64_t store_text_and_get_index(const std::string& text_view);
 
   std::vector<c10::IValue> texts_;
-  std::unordered_map<std::string_view, int64_t> text_to_idx_;
+  std::unordered_map<c10::string_view, int64_t> text_to_idx_;
 };
 
 SourceRange SourceRangeDeserializer::deserialize(const c10::IValue& iv) {
@@ -69,14 +68,14 @@ std::shared_ptr<Source> SourceRangeDeserializer::deserialize_source(
     const auto& textIndex = tup_elems[0].toIntList();
     int64_t fnameIndex = tup_elems[1].toInt();
     int64_t starting_line_no_ = tup_elems[2].toInt();
-    std::optional<std::string> filename = std::nullopt;
+    std::optional<std::string> filename = c10::nullopt;
 
     TORCH_CHECK(
         (uint64_t)fnameIndex < text_table_.size(),
         "Text table index is out of range")
     filename = *text_table_[fnameIndex];
 
-    std::vector<std::string_view> pieces;
+    std::vector<c10::string_view> pieces;
     std::vector<std::shared_ptr<std::string>> strs;
 
     for (int64_t i : textIndex) {
@@ -211,15 +210,15 @@ void ConcreteSourceRangeUnpickler::unpickle() {
 
   const auto& ivalues = ivaluesTuple->elements();
   TORCH_CHECK(
-      !ivalues.empty(), "Invalid unpickle operation: empty ivalues tuple");
+      ivalues.size(), "Invalid unpickle operation: empty ivalues tuple");
   unpickled_records = std::make_shared<SourceRangeRecords>();
   IValue lines;
   if (ivalues[0].isString() &&
       kFormatWithStringTable == ivalues[0].toStringRef()) {
-    deserializer = std::make_shared<SourceRangeDeserializer>(ivalues[1]);
+    deserializer.reset(new SourceRangeDeserializer(ivalues[1]));
     lines = ivalues[2];
   } else {
-    deserializer = std::make_shared<SourceRangeDeserializer>();
+    deserializer.reset(new SourceRangeDeserializer());
     lines = ivaluesTuple;
   }
   for (auto& val : lines.toTuple()->elements()) {
@@ -249,7 +248,7 @@ std::optional<SourceRange> ConcreteSourceRangeUnpickler::
     return (entry - 1)->range;
   }
 
-  return std::nullopt;
+  return c10::nullopt;
 }
 
 TORCH_API void setShouldUseFormatWithStringTable(

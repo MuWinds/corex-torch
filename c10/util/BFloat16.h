@@ -10,14 +10,17 @@
 #include <iosfwd>
 #include <ostream>
 
-#if defined(__CUDACC__) && !defined(USE_ROCM)
+#if defined(__CUDACC__) && (!defined(USE_ROCM) || defined(__ILUVATAR__))
 #include <cuda_bf16.h>
 #endif
 
+#if defined(SYCL_EXT_ONEAPI_BFLOAT16_MATH_FUNCTIONS)
 #if defined(CL_SYCL_LANGUAGE_VERSION)
 #include <CL/sycl.hpp> // for SYCL 1.2.1
-#elif defined(SYCL_LANGUAGE_VERSION)
+#else
 #include <sycl/sycl.hpp> // for SYCL 2020
+#endif
+#include <ext/oneapi/bfloat16.hpp>
 #endif
 
 namespace c10 {
@@ -28,7 +31,7 @@ inline C10_HOST_DEVICE float f32_from_bits(uint16_t src) {
   uint32_t tmp = src;
   tmp <<= 16;
 
-#if defined(USE_ROCM) && defined(__HIPCC__)
+#if defined(USE_ROCM)
   float* tempRes;
 
   // We should be using memcpy in order to respect the strict aliasing rule
@@ -45,7 +48,7 @@ inline C10_HOST_DEVICE float f32_from_bits(uint16_t src) {
 inline C10_HOST_DEVICE uint16_t bits_from_f32(float src) {
   uint32_t res = 0;
 
-#if defined(USE_ROCM) && defined(__HIPCC__)
+#if defined(USE_ROCM)
   // We should be using memcpy in order to respect the strict aliasing rule
   // but it fails in the HIP environment.
   uint32_t* tempRes = reinterpret_cast<uint32_t*>(&src);
@@ -58,7 +61,7 @@ inline C10_HOST_DEVICE uint16_t bits_from_f32(float src) {
 }
 
 inline C10_HOST_DEVICE uint16_t round_to_nearest_even(float src) {
-#if defined(USE_ROCM) && defined(__HIPCC__)
+#if defined(USE_ROCM)
   if (src != src) {
 #elif defined(_MSC_VER)
   if (isnan(src)) {
@@ -69,8 +72,8 @@ inline C10_HOST_DEVICE uint16_t round_to_nearest_even(float src) {
   } else {
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
     union {
-      uint32_t U32; // NOLINT(facebook-hte-BadMemberName)
-      float F32; // NOLINT(facebook-hte-BadMemberName)
+      uint32_t U32;
+      float F32;
     };
 
     F32 = src;
@@ -84,7 +87,7 @@ struct alignas(2) BFloat16 {
   uint16_t x;
 
   // HIP wants __host__ __device__ tag, CUDA does not
-#if defined(USE_ROCM) && defined(__HIPCC__)
+#if defined(USE_ROCM) || defined(__ILUVATAR__)
   C10_HOST_DEVICE BFloat16() = default;
 #else
   BFloat16() = default;
@@ -97,10 +100,10 @@ struct alignas(2) BFloat16 {
 
   constexpr C10_HOST_DEVICE BFloat16(unsigned short bits, from_bits_t)
       : x(bits) {}
-  /* implicit */ inline C10_HOST_DEVICE BFloat16(float value);
+  inline C10_HOST_DEVICE BFloat16(float value);
   inline C10_HOST_DEVICE operator float() const;
 
-#if defined(__CUDACC__) && !defined(USE_ROCM)
+#if defined(__CUDACC__) && (!defined(USE_ROCM) || defined(__ILUVATAR__))
   inline C10_HOST_DEVICE BFloat16(const __nv_bfloat16& value);
   explicit inline C10_HOST_DEVICE operator __nv_bfloat16() const;
 #endif

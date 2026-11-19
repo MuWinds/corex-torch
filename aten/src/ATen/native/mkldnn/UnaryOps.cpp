@@ -11,8 +11,8 @@
 
 #if !AT_MKLDNN_ENABLED()
 
-
-namespace at::native {
+namespace at {
+namespace native {
 
 Tensor mkldnn_sigmoid(const Tensor& self) {
   TORCH_CHECK(false, "mkldnn_sigmoid: ATen not compiled with MKLDNN support");
@@ -30,14 +30,15 @@ Tensor& mkldnn_tanh_(Tensor& self) {
   TORCH_CHECK(false, "mkldnn_tanh_: ATen not compiled with MKLDNN support");
 }
 
-} // namespace at::native
-
+} // namespace native
+} // namespace at
 
 #else // AT_MKLDNN_ENABLED
 
 #include <ATen/native/mkldnn/MKLDNNCommon.h>
 
-namespace at::native {
+namespace at {
+namespace native {
 
 Tensor mkldnn_sigmoid(const Tensor& self) {
   ideep::tensor& x = itensor_from_mkldnn(self);
@@ -71,6 +72,7 @@ Tensor& mkldnn_tanh_(Tensor& self) {
   return self;
 }
 
+} // namespace native
 } // namespace at
 
 #endif // AT_MKLDNN_ENABLED

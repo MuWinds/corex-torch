@@ -9,11 +9,13 @@
 
 namespace F = torch::nn::functional;
 
-namespace torch::nn {
+namespace torch {
+namespace nn {
 
 LayerNormImpl::LayerNormImpl(LayerNormOptions options_)
     : options(std::move(options_)) {
-  LayerNormImpl::reset();
+  // NOLINTNEXTLINE(clang-analyzer-optin.cplusplus.VirtualCall)
+  reset();
 }
 
 void LayerNormImpl::reset() {
@@ -85,7 +87,8 @@ torch::Tensor CrossMapLRN2dImpl::forward(const torch::Tensor& input) {
 
 GroupNormImpl::GroupNormImpl(const GroupNormOptions& options_)
     : options(options_) { // NOLINT(modernize-pass-by-value)
-  GroupNormImpl::reset();
+  // NOLINTNEXTLINE(clang-analyzer-optin.cplusplus.VirtualCall)
+  reset();
 }
 
 void GroupNormImpl::reset() {
@@ -118,4 +121,5 @@ void GroupNormImpl::pretty_print(std::ostream& stream) const {
          << ", affine=" << options.affine() << ")";
 }
 
-} // namespace torch::nn
+} // namespace nn
+} // namespace torch

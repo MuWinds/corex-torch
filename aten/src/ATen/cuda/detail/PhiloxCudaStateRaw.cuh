@@ -20,7 +20,11 @@ struct PhiloxCudaState {
   PhiloxCudaState(int64_t* seed,
                   int64_t* offset_extragraph,
                   uint32_t offset_intragraph) {
+#ifdef __ILUVATAR_WORKAROUND__
+    seed_.val = static_cast<uint64_t>(*seed);
+#else
     seed_.ptr = seed;
+#endif
     offset_.ptr = offset_extragraph;
     offset_intragraph_ = offset_intragraph;
     captured_ = true;

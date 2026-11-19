@@ -1,20 +1,21 @@
 #pragma once
 
-#include <ATen/core/ivalue.h>
 #include <c10/macros/Export.h>
 #include <torch/csrc/jit/mobile/compatibility/runtime_compatibility.h>
 
 #include <istream>
 #include <memory>
 #include <unordered_map>
-#include <vector>
 
-namespace caffe2::serialize {
+namespace caffe2 {
+namespace serialize {
 class PyTorchStreamReader;
 class ReadAdapterInterface;
-} // namespace caffe2::serialize
+} // namespace serialize
+} // namespace caffe2
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 // The family of methods below to get bytecode version from a model
 // Throws if not passed in a well formed model
@@ -23,7 +24,7 @@ TORCH_API uint64_t _get_model_bytecode_version(std::istream& in);
 TORCH_API uint64_t _get_model_bytecode_version(const std::string& filename);
 
 TORCH_API uint64_t _get_model_bytecode_version(
-    const std::shared_ptr<caffe2::serialize::ReadAdapterInterface>& rai);
+    std::shared_ptr<caffe2::serialize::ReadAdapterInterface> rai);
 
 uint64_t _get_model_bytecode_version(
     const std::vector<c10::IValue>& bytecode_ivalues);
@@ -46,7 +47,7 @@ c10::IValue readArchive(
     caffe2::serialize::PyTorchStreamReader& stream_reader);
 
 bool check_zip_file(
-    const std::shared_ptr<caffe2::serialize::ReadAdapterInterface>& rai);
+    std::shared_ptr<caffe2::serialize::ReadAdapterInterface> rai);
 
 // The family of methods below to get the root ops and information from a model
 TORCH_API std::unordered_map<std::string, OperatorInfo> _get_model_ops_and_info(
@@ -93,12 +94,13 @@ enum ModelCompatibilityStatus {
 
 struct ModelCompatCheckResult {
   ModelCompatibilityStatus status;
-  std::vector<std::string> errors{};
+  std::vector<std::string> errors;
 };
 // Takes in information about a runtime and a model and returns if the two are
 // compatible with one another.
 TORCH_API ModelCompatCheckResult is_compatible(
     RuntimeCompatibilityInfo runtime_info,
-    const ModelCompatibilityInfo& model_info);
+    ModelCompatibilityInfo model_info);
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

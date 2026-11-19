@@ -30,9 +30,13 @@ on:
       python-version:
         required: false
         type: string
-        default: "3.12"
+        default: "3.8"
         description: |
-          The python version to be used. Will be 3.9 by default
+          The python version to be used. Will be 3.8 by default
+      environment-file:
+        required: false
+        type: string
+        description: Set the conda environment file used to setup macOS build.
       test-matrix:
         required: false
         type: string
@@ -67,11 +71,11 @@ jobs:
       test-matrix: ${{ steps.filter.outputs.test-matrix }}
     steps:
       - name: Clean up disk space before running MacOS workflow
-        uses: pytorch/test-infra/.github/actions/check-disk-space@release/2.8
+        uses: pytorch/test-infra/.github/actions/check-disk-space@release/2.4
 
       # [see note: pytorch repo ref]
       - name: Checkout PyTorch
-        uses: pytorch/pytorch/.github/actions/checkout-pytorch@release/2.8
+        uses: pytorch/pytorch/.github/actions/checkout-pytorch@release/2.4
 
       - name: Set xcode version
         env:
@@ -81,14 +85,26 @@ jobs:
             echo "DEVELOPER_DIR=/Applications/Xcode_${XCODE_VERSION}.app/Contents/Developer" >> "${GITHUB_ENV}"
           fi
 
-      - name: Setup Python
-        uses: pytorch/test-infra/.github/actions/setup-python@release/2.8
+      - name: Setup miniconda
+        if: inputs.environment-file == ''
+        uses: pytorch/test-infra/.github/actions/setup-miniconda@release/2.4
         with:
           python-version: ${{ inputs.python-version }}
-          pip-requirements-file: .github/requirements/pip-requirements-macOS.txt
+          environment-file: .github/requirements/conda-env-${{ runner.os }}-${{ runner.arch }}
+          pip-requirements-file: .github/requirements/pip-requirements-${{ runner.os }}.txt
+
+      # This option is used when cross-compiling arm64 from x86-64. Specifically, we need arm64 conda
+      # environment even though the arch is x86-64
+      - name: Setup miniconda using the provided environment file
+        if: inputs.environment-file != ''
+        uses: pytorch/test-infra/.github/actions/setup-miniconda@release/2.4
+        with:
+          python-version: ${{ inputs.python-version }}
+          environment-file: ${{ inputs.environment-file }}
+          pip-requirements-file: .github/requirements/pip-requirements-${{ runner.os }}.txt
 
       - name: Install sccache (only for non-forked PRs, and pushes to trunk)
-        uses: nick-fields/retry@7152eba30c6575329ac0576536151aca5a72780e # v3.0.0
+        uses: nick-fields/retry@v2.8.2
         if: ${{ github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository }}
         with:
           timeout_minutes: 5
@@ -123,7 +139,7 @@ jobs:
             else
               # The runner has access to the S3 bucket via IAM profile without the need
               # for any credential
-              echo "SCCACHE_BUCKET=ossci-compiler-cache-circleci-v2" >> "${GITHUB_ENV}"0
+              echo "SCCACHE_BUCKET=ossci-compiler-cache-circleci-v2" >> "${GITHUB_ENV}"
               echo "SCCACHE_S3_KEY_PREFIX=${GITHUB_WORKFLOW}" >> "${GITHUB_ENV}"
             fi
 
@@ -170,7 +186,7 @@ jobs:
           zip -1 -r artifacts.zip dist/ build/.ninja_log build/compile_commands.json .additional_ci_files
 
       - name: Store PyTorch Build Artifacts on GHA
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@v3
         if: inputs.build-generates-artifacts && steps.build.outcome != 'skipped'
         with:
           name: ${{ env.BUILD_ENVIRONMENT }}
@@ -179,7 +195,7 @@ jobs:
           path: artifacts.zip
 
       - name: Upload sccache stats to GHA
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@v3
         # Only if sccache is installed, see above
         if: ${{ (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) && steps.build.outcome != 'skipped' }}
         with:
@@ -191,4 +207,4 @@ jobs:
       - name: Clean up disk space
         if: always()
         continue-on-error: true
-        uses: pytorch/test-infra/.github/actions/check-disk-space@release/2.8
+        uses: pytorch/test-infra/.github/actions/check-disk-space@release/2.4

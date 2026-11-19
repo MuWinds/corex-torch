@@ -8,9 +8,6 @@ import pandas as pd
 from tabulate import tabulate
 
 
-log = logging.getLogger(__name__)
-
-
 def gmean(s):
     return s.product() ** (1 / len(s))
 
@@ -70,7 +67,7 @@ def main(directory, amp, float32, perf_compare):
         try:
             dfs[os.path.basename(f)].append(pd.read_csv(f))
         except Exception:
-            log.warning("failed parsing %s", f)
+            logging.warning("failed parsing %s", f)
             raise
 
     # dtype -> statistic -> benchmark -> compiler -> value

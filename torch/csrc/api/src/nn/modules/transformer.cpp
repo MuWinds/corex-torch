@@ -8,18 +8,20 @@
 
 namespace F = torch::nn::functional;
 
-namespace torch::nn {
+namespace torch {
+namespace nn {
 
 // ========================TransformerEncoderLayerImpl=========================
 TransformerEncoderLayerImpl::TransformerEncoderLayerImpl(
     TransformerEncoderLayerOptions options_)
     : options(std::move(options_)) {
-  TransformerEncoderLayerImpl::reset();
+  // NOLINTNEXTLINE(clang-analyzer-optin.cplusplus.VirtualCall)
+  reset();
 }
 
 void TransformerEncoderLayerImpl::reset() {
   // NOTE: reset() is for initializing the model only, calling reset() after the
-  // model is created will throw exceptions. Call reset_parameter() if the
+  // model is created will throw exceptionss. Call reset_parameter() if the
   // created model needs a reset
 
   self_attn = this->register_module(
@@ -76,7 +78,8 @@ Tensor TransformerEncoderLayerImpl::forward(
   } else if (std::holds_alternative<std::function<Tensor(const Tensor&)>>(
                  options.activation())) {
     auto callable_activation =
-        std::get<std::function<Tensor(const Tensor&)>>(options.activation());
+        *std::get_if<std::function<Tensor(const Tensor&)>>(
+            &options.activation());
     src2 = linear2(dropout(callable_activation(linear1(ret))));
   } else {
     TORCH_CHECK(false, "activation should be kGELU, kReLU, or a callable");
@@ -90,7 +93,8 @@ Tensor TransformerEncoderLayerImpl::forward(
 TransformerDecoderLayerImpl::TransformerDecoderLayerImpl(
     TransformerDecoderLayerOptions options_)
     : options(std::move(options_)) {
-  TransformerDecoderLayerImpl::reset();
+  // NOLINTNEXTLINE(clang-analyzer-optin.cplusplus.VirtualCall)
+  reset();
 }
 
 void TransformerDecoderLayerImpl::reset() {
@@ -201,7 +205,8 @@ Tensor TransformerDecoderLayerImpl::activation(const Tensor& input) {
   } else if (std::holds_alternative<std::function<Tensor(const Tensor&)>>(
                  options.activation())) {
     auto callable_activation =
-        std::get<std::function<Tensor(const Tensor&)>>(options.activation());
+        *std::get_if<std::function<Tensor(const Tensor&)>>(
+            &options.activation());
     return callable_activation(input);
   } else {
     TORCH_CHECK(false, "activation should be kGELU, kReLU, or a callable");
@@ -212,12 +217,14 @@ Tensor TransformerDecoderLayerImpl::activation(const Tensor& input) {
 TransformerEncoderImpl::TransformerEncoderImpl(
     TransformerEncoderOptions options_)
     : options(std::move(options_)) {
-  TransformerEncoderImpl::reset();
+  // NOLINTNEXTLINE(clang-analyzer-optin.cplusplus.VirtualCall)
+  reset();
 }
 
 void TransformerEncoderImpl::reset() {
   layers = this->register_module("layers", ModuleList());
-  for ([[maybe_unused]] const auto i : c10::irange(options.num_layers())) {
+  for (const auto i : c10::irange(options.num_layers())) {
+    (void)i; // Suppress unused variable warning
     layers->push_back(options.encoder_layer()->clone());
   }
 
@@ -277,12 +284,14 @@ Tensor TransformerEncoderImpl::forward(
 TransformerDecoderImpl::TransformerDecoderImpl(
     TransformerDecoderOptions options_)
     : options(std::move(options_)) {
-  TransformerDecoderImpl::reset();
+  // NOLINTNEXTLINE(clang-analyzer-optin.cplusplus.VirtualCall)
+  reset();
 }
 
 void TransformerDecoderImpl::reset() {
   layers = this->register_module("layers", ModuleList());
-  for ([[maybe_unused]] const auto i : c10::irange(options.num_layers())) {
+  for (const auto i : c10::irange(options.num_layers())) {
+    (void)i; // Suppress unused variable warning
     layers->push_back(options.decoder_layer()->clone());
   }
 
@@ -355,7 +364,8 @@ Tensor TransformerDecoderImpl::forward(
 // =======================================TransformerImpl================================
 TransformerImpl::TransformerImpl(TransformerOptions options_)
     : options(std::move(options_)) {
-  TransformerImpl::reset();
+  // NOLINTNEXTLINE(clang-analyzer-optin.cplusplus.VirtualCall)
+  reset();
 }
 
 void TransformerImpl::reset() {
@@ -476,4 +486,5 @@ Tensor TransformerImpl::generate_square_subsequent_mask(int64_t sz) {
   }
 }
 
-} // namespace torch::nn
+} // namespace nn
+} // namespace torch

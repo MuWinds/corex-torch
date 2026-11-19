@@ -6,7 +6,8 @@
 #include <torch/custom_class.h>
 #include <unordered_map>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 struct Slot {
   c10::intrusive_ptr<c10::ivalue::Object> obj;
@@ -152,4 +153,5 @@ std::pair<std::shared_ptr<Graph>, std::vector<IValue>> LowerGraph(
   return std::make_pair(result.first, loadTensors(result.second));
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

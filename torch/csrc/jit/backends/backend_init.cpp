@@ -7,10 +7,11 @@
 #include <torch/csrc/jit/python/pybind_utils.h>
 #include <torch/csrc/utils/pybind.h>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 // Get all types that are shared in the module hierarchy rooted at \p mod.
-static std::unordered_set<TypePtr> getSharedModuleTypes(Module& mod) {
+std::unordered_set<TypePtr> getSharedModuleTypes(Module& mod) {
   // Maintain a set of all TypePtrs.
   std::unordered_set<TypePtr> types;
   // Maintain another set of TypePtrs that have been encountered more than once.
@@ -32,7 +33,7 @@ static std::unordered_set<TypePtr> getSharedModuleTypes(Module& mod) {
 // Selectively lower \p mod to a backend. \p to_backend
 // is called to lower modules. \p modules_to_lower contains
 // qualified names of submodules of \p mod that should be lowered.
-static void toBackendSelectiveImpl(
+void toBackendSelectiveImpl(
     Module& mod,
     const py::function& to_backend,
     const std::vector<std::string>& modules_to_lower,
@@ -118,7 +119,7 @@ static void toBackendSelectiveImpl(
   }
 }
 
-static Module codegen_func(
+Module codegen_func(
     const std::string& backend_name,
     const Module& orig_module,
     const py::dict& method_compile_spec) {
@@ -188,4 +189,5 @@ void initJitBackendBindings(PyObject* module) {
             "Object ", py::str(orig_module), " is not a ScriptModule"));
       });
 }
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

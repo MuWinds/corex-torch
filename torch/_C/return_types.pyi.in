@@ -1,11 +1,25 @@
 # ${generated_comment}
-# mypy: allow-untyped-defs
 
-from typing import Final, NoReturn
-from typing_extensions import Self
+from typing import (
+    Any,
+    Callable,
+    ContextManager,
+    Iterator,
+    List,
+    Literal,
+    NamedTuple,
+    NoReturn,
+    Optional,
+    overload,
+    Sequence,
+    Tuple,
+    Type,
+    TypeVar,
+    Union,
+)
 
-from torch import SymInt, Tensor
-from torch.types import (  # noqa: F401
+from torch import contiguous_format, Generator, inf, memory_format, strided, Tensor, SymInt
+from torch.types import (
     _bool,
     _device,
     _dtype,
@@ -17,10 +31,6 @@ from torch.types import (  # noqa: F401
     Number,
 )
 
-${return_types___all__}
-
-def pytree_register_structseq(cls: type) -> None: ...
-
 ${structseq_defs}
 
-all_return_types: list[type] = ...
+all_return_types: List[Type] = []

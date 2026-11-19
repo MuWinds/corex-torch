@@ -20,7 +20,8 @@
 #include <utility>
 #include <vector>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 namespace {
 
 using Tensor = at::Tensor;
@@ -254,4 +255,5 @@ TORCH_API bool FrozenConcatLinear(std::shared_ptr<Graph>& graph) {
   return changed;
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

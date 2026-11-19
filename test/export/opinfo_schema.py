@@ -12,7 +12,6 @@ from torch.testing._internal.common_methods_invocations import op_db
 from torch.testing._internal.common_utils import TestCase
 from torch.utils._pytree import tree_map
 
-
 # Simplified naming for C++ classes
 SchemaArgument = torch._C._SchemaArgument
 SchemaArgType = torch._C._SchemaArgType
@@ -32,7 +31,7 @@ class PreDispatchSchemaCheckMode(SchemaCheckMode):
     later decompose and become functional.
     """
 
-    def __init__(self) -> None:
+    def __init__(self):
         self._dispatch_key = torch._C.DispatchKey.PreDispatch
         super().__init__()
 
@@ -41,7 +40,7 @@ class PreDispatchSchemaCheckMode(SchemaCheckMode):
             if isinstance(e, torch.Tensor) and not type(e) == torch.Tensor:
                 try:
                     return e.elem
-                except AttributeError:
+                except AttributeError as t:
                     return e
             return e
 

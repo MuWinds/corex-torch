@@ -2,6 +2,7 @@
 
 import itertools
 import sys
+
 from typing import Union
 
 import torch
@@ -23,7 +24,6 @@ from torch.testing._internal.common_utils import (
     skip_but_pass_in_sandcastle_if,
     TEST_WITH_DEV_DBG_ASAN,
 )
-
 
 _TORCHDISTX_AVAIL = True
 try:
@@ -73,7 +73,7 @@ class MyLinear(nn.Linear):
 class MyBuffer(nn.Module):
     def __init__(self, device: torch.device):
         super().__init__()
-        self.buf = torch.nn.Buffer(torch.empty((3, 3), device=device))
+        self.register_buffer("buf", torch.empty((3, 3), device=device))
 
     def reset_parameters(self, *args, **kwargs):
         torch.manual_seed(42)

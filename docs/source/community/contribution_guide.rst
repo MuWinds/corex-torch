@@ -1,5 +1,3 @@
-:orphan:
-
 .. note::
 
    This page has been deprecated. Please refer to the `Contribution Guide <https://github.com/pytorch/pytorch/wiki/The-Ultimate-Guide-to-PyTorch-Contributions>`_ on the PyTorch Wiki.
@@ -325,13 +323,13 @@ Python Docs
 PyTorch documentation is generated from python source using
 `Sphinx <https://www.sphinx-doc.org/en/master/>`__. Generated HTML is
 copied to the docs folder in the main branch of
-`pytorch.org/docs <https://pytorch.org/docs/main>`__,
+`pytorch.github.io <https://github.com/pytorch/pytorch.github.io/tree/master/docs>`__,
 and is served via GitHub pages.
 
 -  Site: https://pytorch.org/docs
 -  GitHub: https://github.com/pytorch/pytorch/tree/main/docs
 -  Served from:
-   `https://pytorch.org/docs/main <https://pytorch.org/docs/main>`__
+   `https://github.com/pytorch/pytorch.github.io/tree/master/docs <https://github.com/pytorch/pytorch.github.io/tree/master/docs>`__
 
 C++ Docs
 ~~~~~~~~

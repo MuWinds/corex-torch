@@ -15,7 +15,8 @@
 #include <iostream>
 #include <utility>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 namespace {
 
 using Tensor = at::Tensor;
@@ -78,7 +79,7 @@ class TransposeFrozenLinear {
       node->replaceAllUsesWith(bias_result);
     }
     node->destroy();
-  }
+  };
 
   void handleBlockAndSubblocks(Block* block) {}
 
@@ -98,4 +99,5 @@ TORCH_API bool FrozenLinearTranspose(std::shared_ptr<Graph>& graph) {
   return changed;
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

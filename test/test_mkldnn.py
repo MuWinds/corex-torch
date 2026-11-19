@@ -4,7 +4,6 @@ import copy
 import itertools
 import functools
 import unittest
-import warnings
 from contextlib import nullcontext
 
 try:
@@ -154,18 +153,18 @@ class TestMkldnn(TestCase):
         # unsupported types and unsupported types with gpu
         for dtype in [torch.double, torch.uint8, torch.int8,
                       torch.short, torch.int, torch.long]:
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(RuntimeError) as context:
                 torch.randn(1, 2, 3, 4, dtype=dtype, device=torch.device('cpu')).to_mkldnn()
             if torch.cuda.is_available():
-                with self.assertRaises(RuntimeError):
+                with self.assertRaises(RuntimeError) as context:
                     torch.randn(1, 2, 3, 4, dtype=dtype, device=torch.device('cuda')).to_mkldnn()
         # supported type with gpu
         if torch.cuda.is_available():
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(RuntimeError) as context:
                 torch.randn(1, 2, 3, 4, dtype=torch.float, device=torch.device('cuda')).to_mkldnn()
         # some factory functions
         for creator in [torch.ones, torch.randn, torch.rand]:
-            with self.assertRaises(RuntimeError):
+            with self.assertRaises(RuntimeError) as context:
                 creator(1, 2, 3, 4, dtype=torch.float, device=torch.device('cpu'), layout=torch._mkldnn)
 
     def test_mkldnn_conv_shapecheck(self):
@@ -766,7 +765,7 @@ class TestMkldnn(TestCase):
                     y_bf16 = max_pool(x_bf16.to_mkldnn()).to_dense(torch.float32)
                     self.assertEqual(y, y_bf16, atol=0.1, rtol=1e-3)
                 else:
-                    msg = f"mkldnn_max_pool{dim:d}d: bf16 path needs the cpu support avx512bw, avx512vl and avx512dq"
+                    msg = "mkldnn_max_pool%dd: bf16 path needs the cpu support avx512bw, avx512vl and avx512dq" % dim
                     self.assertRaisesRegex(RuntimeError,
                                            msg,
                                            lambda: max_pool(x_bf16.to_mkldnn()))
@@ -884,7 +883,7 @@ class TestMkldnn(TestCase):
                 y_bf16 = avg_pool(x_bf16.to_mkldnn()).to_dense(torch.float)
                 self.assertEqual(y, y_bf16, atol=1e-1, rtol=1e-3)
             else:
-                msg = f"mkldnn_avg_pool{dim:d}d: bf16 path needs the cpu support avx512bw, avx512vl and avx512dq"
+                msg = "mkldnn_avg_pool%dd: bf16 path needs the cpu support avx512bw, avx512vl and avx512dq" % dim
                 self.assertRaisesRegex(RuntimeError,
                                        msg,
                                        lambda: avg_pool(x_bf16.to_mkldnn()))
@@ -1017,7 +1016,7 @@ class TestMkldnn(TestCase):
         # TODO: support training
         for train in [False]:
             bn = bn_module[dim](channels).float().train(train)
-            mkldnn_bn = mkldnn_utils.to_mkldnn(copy.deepcopy(bn))  # noqa: F841
+            mkldnn_bn = mkldnn_utils.to_mkldnn(copy.deepcopy(bn))
             if torch.ops.mkldnn._is_mkldnn_bf16_supported():
                 y = bn(input.to_mkldnn().to_dense())
                 y_bf16 = bn(input.to_mkldnn().to_dense(torch.float))
@@ -1470,30 +1469,24 @@ class TestMkldnn(TestCase):
         params_list = list(params_dict.values())
         return params_list
 
-    def _cast_dtype(self, input, dtype):
-        if dtype == torch.bfloat16:
+    def _cast_dtype(self, input, bf16):
+        if bf16:
             input = input.to(torch.bfloat16)
-        elif dtype == torch.half:
-            input = input.to(torch.half)
         return input
 
+    @unittest.skipIf(IS_WINDOWS, "Limit support for bf16 path")
     def test_lstm(self):
         seed = 2023
         torch.manual_seed(seed)
 
         params_list = self._lstm_params_list()
         for dtype in types:
-            bf16 = dtype == torch.bfloat16
-            fp16 = dtype == torch.half
+            bf16 = True if dtype == torch.bfloat16 and torch.ops.mkldnn._is_mkldnn_bf16_supported() else False
             rtol = 1.3e-6
             atol = 1e-5
-
             if bf16:
                 rtol = 0.02
                 atol = 0.02
-            if fp16:
-                rtol = 1e-3
-                atol = 1e-3
             for input_size, hidden_size, num_layers, bidirectional, bias, batch_first, dropout, batch_size, seq_len, training \
                     in itertools.product(*params_list):
                 num_directions = 2 if bidirectional else 1
@@ -1503,9 +1496,7 @@ class TestMkldnn(TestCase):
                     input = torch.randn(seq_len, batch_size, input_size, dtype=torch.float32)
                 h = torch.randn(num_layers * num_directions, batch_size, hidden_size, dtype=torch.float32)
                 c = torch.randn(num_layers * num_directions, batch_size, hidden_size, dtype=torch.float32)
-                if fp16:
-                    # TODO add traing support when oneDNN support lstm FP16 training
-                    training = False
+
                 model = torch.nn.LSTM(input_size, hidden_size, num_layers, bidirectional=bidirectional,
                                       bias=bias, dropout=dropout, batch_first=batch_first).float()
                 model.train() if training else model.eval()
@@ -1519,25 +1510,15 @@ class TestMkldnn(TestCase):
 
                 model1 = copy.deepcopy(model)
                 model2 = copy.deepcopy(model)
-                with torch.no_grad() if not training else nullcontext():
+                with torch.cpu.amp.autocast(enabled=bf16, dtype=torch.bfloat16), torch.no_grad() if not training else nullcontext():
                     with torch.backends.mkldnn.flags(enabled=False):
                         torch.manual_seed(seed)
-                        output1, (hn1, cn1) = self._cast_dtype(model1, dtype)(
-                            self._cast_dtype(input1, dtype),
-                            (
-                                self._cast_dtype(h1, dtype),
-                                self._cast_dtype(c1, dtype),
-                            ),
-                        )
+                        output1, (hn1, cn1) = self._cast_dtype(model1, bf16)(self._cast_dtype(input1, bf16),
+                                                                             (self._cast_dtype(h1, bf16),
+                                                                             self._cast_dtype(c1, bf16)))
 
                     torch.manual_seed(seed)
-                    output2, (hn2, cn2) = self._cast_dtype(model2, dtype)(
-                        self._cast_dtype(input2, dtype),
-                        (
-                            self._cast_dtype(h2, dtype),
-                            self._cast_dtype(c2, dtype),
-                        ),
-                    )
+                    output2, (hn2, cn2) = model2(input2, (h2, c2))
                     self.assertEqual(output1, output2, rtol=rtol, atol=atol)
                     self.assertEqual(hn1, hn2, rtol=rtol, atol=atol)
                     self.assertEqual(cn1, cn2, rtol=rtol, atol=atol)
@@ -1552,13 +1533,8 @@ class TestMkldnn(TestCase):
 
                         self.assertEqual(input1.grad, input2.grad, rtol=rtol, atol=atol)
                         for name, para in model1.named_parameters():
-                            self.assertEqual(para, getattr(model2, name))
-                            self.assertEqual(
-                                para.grad,
-                                getattr(model2, name).grad,
-                                rtol=rtol,
-                                atol=atol,
-                            )
+                            self.assertEqual(para, self._cast_dtype(getattr(model2, name), bf16))
+                            self.assertEqual(para.grad, self._cast_dtype(getattr(model2, name).grad, bf16), rtol=rtol, atol=atol)
 
                         with torch.backends.mkldnn.flags(enabled=False):
                             torch.manual_seed(seed)
@@ -1612,52 +1588,6 @@ class TestMkldnn(TestCase):
                 ((1, 300, 1), (1, 1, 300), torch.bmm),
             ]:
                 common(self, shape1, shape2, op, dtype)
-
-    def test_mkldnn_setflags_nowarn(self, device):
-        # Regression test for https://github.com/pytorch/pytorch/issues/149829
-        with warnings.catch_warnings(record=True) as w:
-            rc = torch.backends.mkldnn.set_flags()
-            # torch.backends.mkldnn. returns previously set flags
-            # That one should be able to set back without cauinsg a warning
-            torch.backends.mkldnn.set_flags(*rc)
-        # Above should trigger no warnings regardless of configuration
-        self.assertEqual(len(w), 0)
-
-    def test_mkldnn_error_on_zero_stride(self, device):
-        # Regression test for https://github.com/pytorch/pytorch/issues/149274
-        x = torch.rand(1, 2, 3, 3).to_mkldnn()
-        with self.assertRaises(ValueError):
-            torch.mkldnn_max_pool2d(x, kernel_size=3, stride=0)
-
-    def test_mkldnn_scaled_mm(self, device) -> None:
-        # test with input scale, weight scale and output_scale
-        M, N, K = 2, 13, 16
-        x = torch.randn((M, K), device=device) / K
-        y = torch.randn((N, K), device=device).t() / K
-        options = itertools.product(
-            [torch.float8_e4m3fn, torch.float8_e5m2],
-            [torch.float8_e4m3fn, torch.float8_e5m2],
-            [torch.float8_e4m3fn, torch.float8_e5m2, torch.bfloat16, torch.float16, torch.float32])
-        for x_dtype, y_dtype, out_dtype in options:
-            if out_dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
-                if x_dtype != out_dtype:
-                    continue
-            x_fp8 = x.to(x_dtype)
-            y_fp8 = y.to(y_dtype)
-            scale_a = torch.randn(1, device=device)
-            scale_b = torch.randn(1, device=device)
-            scale_out = torch.randn(1, device=device)
-            out_fp32 = torch.mm(x_fp8.to(torch.float) * scale_a, y_fp8.to(torch.float) * scale_b)
-            if out_dtype in (torch.float8_e4m3fn, torch.float8_e5m2):
-                out_emulated = (out_fp32 / scale_out).to(out_dtype)
-            else:
-                out_emulated = out_fp32.to(out_dtype)
-
-            out = torch._scaled_mm(x_fp8, y_fp8, scale_a, scale_b, scale_result=scale_out, out_dtype=out_dtype)
-            if out_dtype is not None:
-                self.assertEqual(out_dtype, out.dtype)
-            self.assertEqual(out_emulated.float(), out.float(), atol=5e-2, rtol=5e-2)
-
 
 
 instantiate_device_type_tests(TestMkldnn, globals(), only_for=('cpu',))

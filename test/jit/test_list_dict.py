@@ -1,5 +1,4 @@
 # Owner(s): ["oncall: jit"]
-# ruff: noqa: F841
 
 import inspect
 import os
@@ -12,19 +11,22 @@ from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 import torch
 import torch.nn as nn
+
 from torch import Tensor
 from torch.testing import FileCheck
-
 
 # Make the helper files in test/ importable
 pytorch_test_dir = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.append(pytorch_test_dir)
-from torch.testing._internal.common_utils import (
-    raise_on_run_directly,
-    skipIfTorchDynamo,
-    TEST_CUDA,
-)
+from torch.testing._internal.common_utils import skipIfTorchDynamo, TEST_CUDA
 from torch.testing._internal.jit_utils import JitTestCase, make_global
+
+if __name__ == "__main__":
+    raise RuntimeError(
+        "This test file is not meant to be run directly, use:\n\n"
+        "\tpython test/test_jit.py TESTNAME\n\n"
+        "instead."
+    )
 
 
 class TestList(JitTestCase):
@@ -252,7 +254,7 @@ class TestList(JitTestCase):
         self.checkScript(foo, ())
 
         def foo2():
-            x: List[int] = list()  # noqa: C408
+            x: List[int] = list()
             x.append(1)
             return (x,)
 
@@ -328,7 +330,7 @@ class TestList(JitTestCase):
 
     def test_dict_keyword_is_correctly_typed(self):
         def fn():
-            x: Dict[str, int] = dict()  # noqa: C408
+            x: Dict[str, int] = dict()
             x["foo"] = 1
             return x
 
@@ -1643,9 +1645,9 @@ class TestDict(JitTestCase):
 
         def test_dictcomprehension_is_typed_from_annotation():
             metasyntactics = ["foo", "bar", "baz"]
-            x: Dict[str, Optional[int]] = {  # noqa: C420, RUF025
+            x: Dict[str, Optional[int]] = {
                 word: None for word in metasyntactics
-            }
+            }  # noqa: RUF025
             return x
 
         self.checkScript(test_dictcomprehension_is_typed_from_annotation, ())
@@ -1821,7 +1823,7 @@ class TestDict(JitTestCase):
     def test_popitem(self):
         @torch.jit.script
         def popitem(
-            x: Dict[str, Tensor],
+            x: Dict[str, Tensor]
         ) -> Tuple[Tuple[str, Tensor], Dict[str, Tensor]]:
             item = x.popitem()
             return item, x
@@ -2023,7 +2025,7 @@ class TestDict(JitTestCase):
         test_func(no_args, ())
 
         def test_dict_constructor():
-            a = dict()  # noqa: C408
+            a = dict()
             a["one"] = torch.tensor(1)
             return a, dict([(1, 2), (2, 3), (1, 4)])  # noqa: C406
 
@@ -2039,7 +2041,7 @@ class TestDict(JitTestCase):
         test_func(test_dict_initializer_list, ())
 
         def test_dict_error():
-            a = dict()  # noqa: C408
+            a = dict()
             a[1] = 2
             return a
 
@@ -2188,7 +2190,7 @@ class TestNamedTuple(JitTestCase):
             t: int
 
         class MyModule(types.ModuleType):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__("MyModule")
 
             def __getattr__(self, attr):
@@ -2343,7 +2345,7 @@ class TestNamedTuple(JitTestCase):
             t: "int"
 
         class MyModule(types.ModuleType):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__("MyModule")
 
             def __getattr__(self, attr):
@@ -2847,6 +2849,7 @@ class TestScriptList(JitTestCase):
         with self.assertRaises(TypeError):
             script_data.append("str")
 
+    @skipIfTorchDynamo("https://github.com/pytorch/torchdynamo/issues/1991")
     def test_clear(self):
         """
         Test clear.
@@ -2972,7 +2975,7 @@ class TestScriptList(JitTestCase):
         class Test(torch.nn.Module):
             segments_groupby_col: Dict[str, List[str]]
 
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.segments_groupby_col = get_dict()
                 self.col1 = "a"
@@ -2992,7 +2995,3 @@ class TestScriptList(JitTestCase):
         for i in range(300):
             test = Test()
             test_script = torch.jit.script(test)
-
-
-if __name__ == "__main__":
-    raise_on_run_directly("test/test_jit.py")

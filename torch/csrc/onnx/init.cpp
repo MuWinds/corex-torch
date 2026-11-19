@@ -155,8 +155,9 @@ void initONNXBindings(PyObject* module) {
           "_jit_pass_onnx_unpack_quantized_weights",
           ::torch::wrap_pybind_function(
               [](std::shared_ptr<Graph>& graph,
-                 std::map<std::string, IValue>& paramsDict) {
-                UnpackQuantizedWeights(graph, paramsDict);
+                 std::map<std::string, IValue>& paramsDict,
+                 bool caffe2) {
+                UnpackQuantizedWeights(graph, paramsDict, caffe2);
                 return paramsDict;
               }),
           pybind11::return_value_policy::move)
@@ -218,7 +219,7 @@ void initONNXBindings(PyObject* module) {
                   &std::cerr, [](std::ostream*) {});
             } else {
               std::cerr << "ERROR: only `stdout` and `stderr`"
-                        << "are supported as `stream_name`" << '\n';
+                        << "are supported as `stream_name`" << std::endl;
             }
             ::torch::jit::onnx::set_log_output_stream(out);
           },
@@ -231,7 +232,7 @@ void initONNXBindings(PyObject* module) {
               for (auto arg : args) {
                 out << ::c10::str(arg);
               }
-              out << '\n';
+              out << std::endl;
             }
           },
           "Write `args` to the previously specified ONNX log stream.")
@@ -291,5 +292,7 @@ void initONNXBindings(PyObject* module) {
       .value("TRAINING", TrainingMode::TRAINING);
 
   onnx.attr("PRODUCER_VERSION") = py::str(TORCH_VERSION);
+
+  onnx.attr("_CAFFE2_ATEN_FALLBACK") = false;
 }
 } // namespace torch::onnx

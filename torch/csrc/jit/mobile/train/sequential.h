@@ -7,12 +7,16 @@
 #include <cstddef>
 #include <vector>
 
-namespace torch::serialize {
+namespace torch {
+namespace serialize {
 class OutputArchive;
 class InputArchive;
-} // namespace torch::serialize
+} // namespace serialize
+} // namespace torch
 
-namespace torch::jit::mobile {
+namespace torch {
+namespace jit {
+namespace mobile {
 
 /// A lighter `Sampler` that returns indices sequentially and cannot be
 /// serialized.
@@ -23,10 +27,10 @@ class TORCH_API SequentialSampler : public torch::data::samplers::Sampler<> {
   explicit SequentialSampler(size_t size);
 
   /// Resets the `SequentialSampler` to zero.
-  void reset(std::optional<size_t> new_size = std::nullopt) override;
+  void reset(optional<size_t> new_size = nullopt) override;
 
   /// Returns the next batch of indices.
-  std::optional<std::vector<size_t>> next(size_t batch_size) override;
+  optional<std::vector<size_t>> next(size_t batch_size) override;
 
   /// Not supported for mobile SequentialSampler
   void save(serialize::OutputArchive& archive) const override;
@@ -42,4 +46,6 @@ class TORCH_API SequentialSampler : public torch::data::samplers::Sampler<> {
   size_t index_{0};
 };
 
-} // namespace torch::jit::mobile
+} // namespace mobile
+} // namespace jit
+} // namespace torch

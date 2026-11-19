@@ -21,10 +21,7 @@
 #include <llvm/Analysis/LoopAnalysisManager.h>
 #include <llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h>
 #include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
-// Fixes compilation warnings when gcc-11 is used
-C10_DIAGNOSTIC_PUSH_AND_IGNORED_IF_DEFINED("-Wmismatched-new-delete")
 #include <llvm/IR/IRBuilder.h>
-C10_DIAGNOSTIC_POP()
 #include <llvm/IR/LegacyPassManager.h>
 #include <llvm/IR/MDBuilder.h>
 #include <llvm/IR/PassManager.h>
@@ -88,15 +85,15 @@ C10_DEFINE_bool(
 namespace torch::jit::tensorexpr {
 
 std::optional<std::string>& LLVMTargetTriple() {
-  static std::optional<std::string> triple = std::nullopt;
+  static std::optional<std::string> triple = c10::nullopt;
   return triple;
 }
 std::optional<std::string>& LLVMTargetCPU() {
-  static std::optional<std::string> cpu = std::nullopt;
+  static std::optional<std::string> cpu = c10::nullopt;
   return cpu;
 }
 std::optional<std::string>& LLVMTargetAttrs() {
-  static std::optional<std::string> attrs = std::nullopt;
+  static std::optional<std::string> attrs = c10::nullopt;
   return attrs;
 }
 bool& LLVMAOTWorkflow() {
@@ -312,48 +309,48 @@ class LLVMCodeGenImpl : public IRVisitor {
       std::optional<std::string> triple,
       std::optional<std::string> cpu,
       std::optional<std::string> attrs);
-  ~LLVMCodeGenImpl() override = default;
+  ~LLVMCodeGenImpl() = default;
 
   llvm::JITTargetAddress getKernelAddress() const;
   std::unique_ptr<llvm::orc::PytorchLLVMJIT> releaseJIT();
 
-  void visit(const AddPtr& v) override;
-  void visit(const SubPtr& v) override;
-  void visit(const MulPtr& v) override;
-  void visit(const DivPtr& v) override;
-  void visit(const ModPtr& v) override;
-  void visit(const MaxPtr& v) override;
-  void visit(const MinPtr& v) override;
-  void visit(const AndPtr& v) override;
-  void visit(const OrPtr& v) override;
-  void visit(const XorPtr& v) override;
-  void visit(const LshiftPtr& v) override;
-  void visit(const RshiftPtr& v) override;
-  void visit(const CompareSelectPtr& v) override;
+  void visit(AddPtr v) override;
+  void visit(SubPtr v) override;
+  void visit(MulPtr v) override;
+  void visit(DivPtr v) override;
+  void visit(ModPtr v) override;
+  void visit(MaxPtr v) override;
+  void visit(MinPtr v) override;
+  void visit(AndPtr v) override;
+  void visit(OrPtr v) override;
+  void visit(XorPtr v) override;
+  void visit(LshiftPtr v) override;
+  void visit(RshiftPtr v) override;
+  void visit(CompareSelectPtr v) override;
 
-#define IMM_VISIT_DECLARE(_1, Name) void visit(const Name##ImmPtr& v) override;
-  AT_FORALL_SCALAR_TYPES_AND3(Bool, Half, BFloat16, IMM_VISIT_DECLARE)
+#define IMM_VISIT_DECLARE(_1, Name) void visit(Name##ImmPtr v) override;
+  AT_FORALL_SCALAR_TYPES_AND3(Bool, Half, BFloat16, IMM_VISIT_DECLARE);
 #undef IMM_VISIT_DECLARE
 
-  void visit(const CastPtr& v) override;
-  void visit(const BitCastPtr& v) override;
-  void visit(const VarPtr& v) override;
-  void visit(const RampPtr& v) override;
-  void visit(const LoadPtr& v) override;
-  void visit(const ForPtr& v) override;
-  void visit(const BlockPtr& v) override;
-  void visit(const StorePtr& v) override;
-  void visit(const BroadcastPtr& v) override;
-  void visit(const IfThenElsePtr& v) override;
-  void visit(const IntrinsicsPtr& v) override;
-  void visit(const AllocatePtr& v) override;
-  void visit(const FreePtr& v) override;
-  void visit(const FreeExtPtr& v) override;
-  void visit(const PlacementAllocatePtr& v) override;
-  void visit(const LetPtr& v) override;
-  void visit(const CondPtr& v) override;
-  void visit(const ExternalCallPtr& v) override;
-  void visit(const ExternalCallWithAllocPtr& v) override;
+  void visit(CastPtr v) override;
+  void visit(BitCastPtr v) override;
+  void visit(VarPtr v) override;
+  void visit(RampPtr v) override;
+  void visit(LoadPtr v) override;
+  void visit(ForPtr v) override;
+  void visit(BlockPtr v) override;
+  void visit(StorePtr v) override;
+  void visit(BroadcastPtr v) override;
+  void visit(IfThenElsePtr v) override;
+  void visit(IntrinsicsPtr v) override;
+  void visit(AllocatePtr v) override;
+  void visit(FreePtr v) override;
+  void visit(FreeExtPtr v) override;
+  void visit(PlacementAllocatePtr v) override;
+  void visit(LetPtr v) override;
+  void visit(CondPtr v) override;
+  void visit(ExternalCallPtr v) override;
+  void visit(ExternalCallWithAllocPtr v) override;
 
   void emitIsNan(IntrinsicsPtr v);
 
@@ -535,13 +532,7 @@ LLVMCodeGenImpl::LLVMCodeGenImpl(
 
   module_ = std::make_unique<llvm::Module>("pytorch", getContext());
   module_->setDataLayout(jit_->getDataLayout());
-  module_->setTargetTriple(
-#if LLVM_VERSION_MAJOR >= 21
-      llvm::Triple(jit_->getTargetMachine().getTargetTriple())
-#else
-      jit_->getTargetMachine().getTargetTriple().str()
-#endif
-  );
+  module_->setTargetTriple(jit_->getTargetMachine().getTargetTriple().str());
 
   // We support float16 ops by casting expr inputs to float32
   // and then casting the result back to float16
@@ -635,20 +626,6 @@ void LLVMCodeGenImpl::emitWrapper(const std::vector<llvm::Type*>& params) {
       module_.get());
 #endif
 
-  {
-    // Work around UBSAN crashes which reads 8 byte in front of every function.
-    // Otherwise, if the function was placed at the beginning of a page, reading
-    // 8B before the page could trigger a wild-addr-read ASAN failure if the
-    // page before this function was not mapped.
-    // - https://reviews.llvm.org/D148665
-    // - https://github.com/llvm/llvm-project/issues/65253
-    // Place the variable just before the function,
-    // the optimizer might otherwise disable this workaround.
-    // https://llvm.org/docs/LangRef.html#prefix-data
-    wrapper->setPrefixData(llvm::Constant::getNullValue(
-        llvm::ArrayType::get(llvm::Type::getInt8Ty(getContext()), 8)));
-  }
-
   auto wrapBB = llvm::BasicBlock::Create(getContext(), "wrapBB", wrapper);
   irb_.SetInsertPoint(wrapBB);
   llvm::SmallVector<llvm::Value*, 6> wrappedArgs;
@@ -693,7 +670,7 @@ void LLVMCodeGenImpl::emitWrapper(const std::vector<llvm::Type*>& params) {
 
 class LLVMIntrinsicsExpander : public GenericIntrinsicsExpander {
  private:
-  ExprPtr mutate(const IntrinsicsPtr& v) override {
+  ExprPtr mutate(IntrinsicsPtr v) override {
     if (v->op_type() == kTanh) {
       ScalarType stype = v->dtype().scalar_type();
       if (stype == ScalarType::Float) {
@@ -782,7 +759,7 @@ void LLVMCodeGenImpl::emitKernel(
 
 // TODO: The binary ops are copypasta.
 
-void LLVMCodeGenImpl::visit(const AddPtr& v) {
+void LLVMCodeGenImpl::visit(AddPtr v) {
   v->lhs()->accept(this);
   auto lhs = this->value_;
   bool lfp = lhs->getType()->isFPOrFPVectorTy();
@@ -800,7 +777,7 @@ void LLVMCodeGenImpl::visit(const AddPtr& v) {
   }
 }
 
-void LLVMCodeGenImpl::visit(const SubPtr& v) {
+void LLVMCodeGenImpl::visit(SubPtr v) {
   v->lhs()->accept(this);
   auto lhs = this->value_;
   bool lfp = lhs->getType()->isFPOrFPVectorTy();
@@ -818,7 +795,7 @@ void LLVMCodeGenImpl::visit(const SubPtr& v) {
   }
 }
 
-void LLVMCodeGenImpl::visit(const MulPtr& v) {
+void LLVMCodeGenImpl::visit(MulPtr v) {
   v->lhs()->accept(this);
   auto lhs = this->value_;
   bool lfp = lhs->getType()->isFPOrFPVectorTy();
@@ -836,7 +813,7 @@ void LLVMCodeGenImpl::visit(const MulPtr& v) {
   }
 }
 
-void LLVMCodeGenImpl::visit(const DivPtr& v) {
+void LLVMCodeGenImpl::visit(DivPtr v) {
   v->lhs()->accept(this);
   auto lhs = this->value_;
   bool lfp = lhs->getType()->isFPOrFPVectorTy();
@@ -854,7 +831,7 @@ void LLVMCodeGenImpl::visit(const DivPtr& v) {
   }
 }
 
-void LLVMCodeGenImpl::visit(const AndPtr& v) {
+void LLVMCodeGenImpl::visit(AndPtr v) {
   v->lhs()->accept(this);
   auto lhs = this->value_;
   bool lfp = lhs->getType()->isFPOrFPVectorTy();
@@ -869,7 +846,7 @@ void LLVMCodeGenImpl::visit(const AndPtr& v) {
   }
 }
 
-void LLVMCodeGenImpl::visit(const OrPtr& v) {
+void LLVMCodeGenImpl::visit(OrPtr v) {
   v->lhs()->accept(this);
   auto lhs = this->value_;
   bool lfp = lhs->getType()->isFPOrFPVectorTy();
@@ -884,7 +861,7 @@ void LLVMCodeGenImpl::visit(const OrPtr& v) {
   }
 }
 
-void LLVMCodeGenImpl::visit(const XorPtr& v) {
+void LLVMCodeGenImpl::visit(XorPtr v) {
   v->lhs()->accept(this);
   auto lhs = this->value_;
   bool lfp = lhs->getType()->isFPOrFPVectorTy();
@@ -899,7 +876,7 @@ void LLVMCodeGenImpl::visit(const XorPtr& v) {
   }
 }
 
-void LLVMCodeGenImpl::visit(const LshiftPtr& v) {
+void LLVMCodeGenImpl::visit(LshiftPtr v) {
   v->lhs()->accept(this);
   auto lhs = this->value_;
   bool lfp = lhs->getType()->isFPOrFPVectorTy();
@@ -914,7 +891,7 @@ void LLVMCodeGenImpl::visit(const LshiftPtr& v) {
   }
 }
 
-void LLVMCodeGenImpl::visit(const RshiftPtr& v) {
+void LLVMCodeGenImpl::visit(RshiftPtr v) {
   v->lhs()->accept(this);
   auto lhs = this->value_;
   bool lfp = lhs->getType()->isFPOrFPVectorTy();
@@ -933,7 +910,7 @@ void LLVMCodeGenImpl::visit(const RshiftPtr& v) {
   }
 }
 
-void LLVMCodeGenImpl::visit(const ModPtr& v) {
+void LLVMCodeGenImpl::visit(ModPtr v) {
   v->lhs()->accept(this);
   auto lhs = this->value_;
   bool lfp = lhs->getType()->isFPOrFPVectorTy();
@@ -948,7 +925,7 @@ void LLVMCodeGenImpl::visit(const ModPtr& v) {
   }
 }
 
-void LLVMCodeGenImpl::visit(const MaxPtr& v) {
+void LLVMCodeGenImpl::visit(MaxPtr v) {
   v->lhs()->accept(this);
   auto lhs = this->value_;
   v->rhs()->accept(this);
@@ -971,7 +948,7 @@ void LLVMCodeGenImpl::visit(const MaxPtr& v) {
           irb_.CreateFCmp(llvm::FCmpInst::FCMP_OGT, lhs, rhs), lhs, rhs));
 }
 
-void LLVMCodeGenImpl::visit(const MinPtr& v) {
+void LLVMCodeGenImpl::visit(MinPtr v) {
   v->lhs()->accept(this);
   auto lhs = this->value_;
   v->rhs()->accept(this);
@@ -993,7 +970,7 @@ void LLVMCodeGenImpl::visit(const MinPtr& v) {
           irb_.CreateFCmp(llvm::FCmpInst::FCMP_OLT, lhs, rhs), lhs, rhs));
 }
 
-void LLVMCodeGenImpl::visit(const CompareSelectPtr& v) {
+void LLVMCodeGenImpl::visit(CompareSelectPtr v) {
   auto genUnbiased = [this, v]() -> llvm::Value* {
     v->lhs()->accept(this);
     auto lhs = this->value_;
@@ -1084,35 +1061,33 @@ void LLVMCodeGenImpl::visit(const CompareSelectPtr& v) {
 }
 
 template <typename T>
-std::enable_if_t<std::is_integral_v<T>, llvm::Value*> getFromType(
-    llvm::Type* type,
-    T value) {
-  return llvm::ConstantInt::get(type, value, std::is_signed_v<T>);
+typename std::enable_if<std::is_integral<T>::value, llvm::Value*>::type
+getFromType(llvm::Type* type, T value) {
+  return llvm::ConstantInt::get(type, value, std::is_signed<T>::value);
 }
 
 template <typename T>
-std::enable_if_t<std::is_floating_point_v<T>, llvm::Value*> getFromType(
-    llvm::Type* type,
-    T value) {
+typename std::enable_if<std::is_floating_point<T>::value, llvm::Value*>::type
+getFromType(llvm::Type* type, T value) {
   return llvm::ConstantFP::get(type, value);
 }
 
 #define IMM_VISIT_DECLARE(Type, Name)                  \
-  void LLVMCodeGenImpl::visit(const Name##ImmPtr& v) { \
+  void LLVMCodeGenImpl::visit(Name##ImmPtr v) {        \
     value_ = getFromType<Type>(Name##Ty_, v->value()); \
   }
 AT_FORALL_SCALAR_TYPES(IMM_VISIT_DECLARE);
 #undef IMM_VISIT_DECLARE
 
-void LLVMCodeGenImpl::visit(const HalfImmPtr& v) {
+void LLVMCodeGenImpl::visit(HalfImmPtr v) {
   value_ = llvm::ConstantFP::get(HalfTy_, v->value());
 }
 
-void LLVMCodeGenImpl::visit(const BFloat16ImmPtr& v) {
+void LLVMCodeGenImpl::visit(BFloat16ImmPtr v) {
   value_ = llvm::ConstantInt::get(ShortTy_, v->value().x);
 }
 
-void LLVMCodeGenImpl::visit(const BoolImmPtr& v) {
+void LLVMCodeGenImpl::visit(BoolImmPtr v) {
   value_ = llvm::ConstantInt::get(BoolTy_, v->value());
 }
 
@@ -1124,7 +1099,7 @@ static llvm::Type* llvmTypeToVec(llvm::Type* type, int lanes) {
   }
 }
 
-void LLVMCodeGenImpl::visit(const CastPtr& v) {
+void LLVMCodeGenImpl::visit(CastPtr v) {
   v->src_value()->accept(this);
 
   auto dst_type = v->dtype().scalar_type();
@@ -1271,7 +1246,7 @@ void LLVMCodeGenImpl::visit(const CastPtr& v) {
   }
 }
 
-void LLVMCodeGenImpl::visit(const BitCastPtr& v) {
+void LLVMCodeGenImpl::visit(BitCastPtr v) {
   v->src_value()->accept(this);
 
   llvm::Type* dstType = dtypeToLLVM(v->dtype());
@@ -1290,7 +1265,7 @@ void LLVMCodeGenImpl::visit(const BitCastPtr& v) {
   value_ = irb_.CreateBitOrPointerCast(value_, dstType);
 }
 
-void LLVMCodeGenImpl::visit(const VarPtr& v) {
+void LLVMCodeGenImpl::visit(VarPtr v) {
   value_ = varToValue(v);
 }
 
@@ -1322,7 +1297,7 @@ void LLVMCodeGenImpl::replaceVarMapping(
   }
 }
 
-void LLVMCodeGenImpl::visit(const RampPtr& v) {
+void LLVMCodeGenImpl::visit(RampPtr v) {
   v->base()->accept(this);
   auto base = this->value_;
   v->stride()->accept(this);
@@ -1422,7 +1397,7 @@ llvm::Value* LLVMCodeGenImpl::emitMaskedLoad(
   return phi;
 }
 
-void LLVMCodeGenImpl::visit(const LoadPtr& v) {
+void LLVMCodeGenImpl::visit(LoadPtr v) {
   if (v->dtype().lanes() == 1) {
     v->base_handle()->accept(this);
     auto base = this->value_;
@@ -1698,7 +1673,7 @@ void LLVMCodeGenImpl::processParallelFor(ForPtr v) {
   value_ = llvm::ConstantInt::get(IntTy_, 0);
 }
 
-void LLVMCodeGenImpl::visit(const ForPtr& v) {
+void LLVMCodeGenImpl::visit(ForPtr v) {
   if (v->is_parallel()) {
     processParallelFor(v);
     return;
@@ -1754,7 +1729,7 @@ void LLVMCodeGenImpl::visit(const ForPtr& v) {
   value_ = llvm::ConstantInt::get(IntTy_, 0);
 }
 
-void LLVMCodeGenImpl::visit(const BlockPtr& v) {
+void LLVMCodeGenImpl::visit(BlockPtr v) {
   BlockPtr last = scope_;
   scope_ = v;
 
@@ -1820,7 +1795,7 @@ void LLVMCodeGenImpl::emitMaskedStore(
   irb_.SetInsertPoint(tailblock);
 }
 
-void LLVMCodeGenImpl::visit(const StorePtr& v) {
+void LLVMCodeGenImpl::visit(StorePtr v) {
   if (v->value()->dtype().lanes() == 1) {
     v->base_handle()->accept(this);
     auto base = this->value_;
@@ -1883,13 +1858,13 @@ void LLVMCodeGenImpl::visit(const StorePtr& v) {
   value_ = llvm::ConstantInt::get(IntTy_, 0);
 }
 
-void LLVMCodeGenImpl::visit(const BroadcastPtr& v) {
+void LLVMCodeGenImpl::visit(BroadcastPtr v) {
   v->value()->accept(this);
   int lanes = v->lanes();
   value_ = irb_.CreateVectorSplat(lanes, value_);
 }
 
-void LLVMCodeGenImpl::visit(const IfThenElsePtr& v) {
+void LLVMCodeGenImpl::visit(IfThenElsePtr v) {
   v->condition()->accept(this);
   llvm::Value* condition = value_;
   llvm::Value* c = irb_.CreateICmpNE(
@@ -2016,7 +1991,7 @@ LLVMCodeGenImpl::SimdCallee LLVMCodeGenImpl::getSimdFunction(
   return SimdCallee{callee.getFunctionType(), callee.getCallee(), useSimd};
 }
 
-void LLVMCodeGenImpl::visit(const IntrinsicsPtr& v) {
+void LLVMCodeGenImpl::visit(IntrinsicsPtr v) {
   llvm::FunctionType* call_ty = nullptr;
   llvm::Value* call_fn = nullptr;
   bool call_simd_sleef = false;
@@ -2213,7 +2188,7 @@ void LLVMCodeGenImpl::handleBufReuse(BufPtr buf, BufPtr buf_to_reuse) {
   varToVal_[buf->base_handle()] = ptr;
 }
 
-void LLVMCodeGenImpl::visit(const ExternalCallPtr& v) {
+void LLVMCodeGenImpl::visit(ExternalCallPtr v) {
   auto& func_registry = getNNCFunctionRegistry();
   if (!func_registry.count(v->func_name())) {
     throw unimplemented_lowering(v);
@@ -2367,7 +2342,7 @@ void LLVMCodeGenImpl::visit(const ExternalCallPtr& v) {
   value_ = llvm::ConstantInt::get(IntTy_, 0);
 }
 
-void LLVMCodeGenImpl::visit(const ExternalCallWithAllocPtr& v) {
+void LLVMCodeGenImpl::visit(ExternalCallWithAllocPtr v) {
   auto& func_registry = getNNCFunctionRegistry();
   if (!func_registry.count(v->func_name())) {
     throw unimplemented_lowering(v);
@@ -2584,7 +2559,7 @@ void LLVMCodeGenImpl::visit(const ExternalCallWithAllocPtr& v) {
   value_ = llvm::ConstantInt::get(IntTy_, 0);
 }
 
-void LLVMCodeGenImpl::visit(const AllocatePtr& v) {
+void LLVMCodeGenImpl::visit(AllocatePtr v) {
   llvm::Value* size =
       llvm::ConstantInt::getSigned(LongTy_, v->dtype().byte_size());
   for (ExprPtr e : v->dims()) {
@@ -2603,10 +2578,8 @@ void LLVMCodeGenImpl::visit(const AllocatePtr& v) {
   }
 
 #if LLVM_VERSION_MAJOR > 17
-  irb_.SetInsertPoint(irb_.GetInsertBlock());
   llvm::Instruction* I = irb_.CreateMalloc(
       LongTy_, dtypeToLLVM(v->dtype()), size, nullptr, nullptr, "");
-  varToVal_[v->buffer_var()] = I;
 #else
   llvm::Instruction* I = llvm::CallInst::CreateMalloc(
       irb_.GetInsertBlock(),
@@ -2615,14 +2588,14 @@ void LLVMCodeGenImpl::visit(const AllocatePtr& v) {
       size,
       nullptr,
       nullptr);
+#endif
   // Insert the bitcast into the block.
   irb_.SetInsertPoint(irb_.GetInsertBlock());
   llvm::Value* malloc = irb_.Insert(I);
   varToVal_[v->buffer_var()] = malloc;
-#endif
 }
 
-void LLVMCodeGenImpl::visit(const PlacementAllocatePtr& v) {
+void LLVMCodeGenImpl::visit(PlacementAllocatePtr v) {
   auto buf_to_reuse = v->buf_to_reuse();
   auto buf = v->buf();
 
@@ -2634,7 +2607,7 @@ void LLVMCodeGenImpl::visit(const PlacementAllocatePtr& v) {
   handleBufReuse(buf, buf_to_reuse);
 }
 
-void LLVMCodeGenImpl::visit(const FreePtr& v) {
+void LLVMCodeGenImpl::visit(FreePtr v) {
   value_ = llvm::ConstantInt::get(IntTy_, 0);
 
   llvm::Value* ptr = bufsExtToFreeVal_.count(v->buffer_var())
@@ -2643,14 +2616,14 @@ void LLVMCodeGenImpl::visit(const FreePtr& v) {
 
   if (!llvm::isa<llvm::AllocaInst>(ptr)) {
 #if LLVM_VERSION_MAJOR > 17
-    irb_.CreateFree(ptr);
+    irb_.Insert(irb_.CreateFree(ptr));
 #else
     irb_.Insert(llvm::CallInst::CreateFree(ptr, irb_.GetInsertBlock()));
 #endif
   }
 }
 
-void LLVMCodeGenImpl::visit(const FreeExtPtr& v) {
+void LLVMCodeGenImpl::visit(FreeExtPtr v) {
   value_ = llvm::ConstantInt::get(IntTy_, 0);
   const auto& bufs = v->bufs();
   const auto bufs_num = bufs.size();
@@ -2711,7 +2684,7 @@ void LLVMCodeGenImpl::visit(const FreeExtPtr& v) {
   value_ = llvm::ConstantInt::get(IntTy_, 0);
 }
 
-void LLVMCodeGenImpl::visit(const LetPtr& v) {
+void LLVMCodeGenImpl::visit(LetPtr v) {
   v->value()->accept(this);
   if (!varToVal_.count(v->var())) {
     varToVal_.emplace(v->var(), value_);
@@ -2721,7 +2694,7 @@ void LLVMCodeGenImpl::visit(const LetPtr& v) {
   }
 }
 
-void LLVMCodeGenImpl::visit(const CondPtr& v) {
+void LLVMCodeGenImpl::visit(CondPtr v) {
   // Even if true_stmt and false_stmt are nullptr,
   // in case condition is a function call with side effect,
   // we still evaluate it.
@@ -2781,8 +2754,8 @@ void LLVMCodeGenImpl::optimize(llvm::Module& M) {
   // options.
   llvm::PassBuilder PB(&TM);
 
-#if LLVM_VERSION_MAJOR >= 18 && LLVM_VERSION_MAJOR < 19
-  TM.registerPassBuilderCallbacks(PB, false);
+#if LLVM_VERSION_MAJOR >= 18
+  TM.registerPassBuilderCallbacks(PB, false /* PopulateClassToPassNames */);
 #else
   TM.registerPassBuilderCallbacks(PB);
 #endif

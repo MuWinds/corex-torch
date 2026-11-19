@@ -1,20 +1,20 @@
 # mypy: allow-untyped-defs
 import contextlib
-from typing import Any, Optional, Union
+from collections import defaultdict
+from typing import Any, Dict, Iterator, Optional, Set, Tuple, Union
 from typing_extensions import deprecated
 
 import torch
 from torch import Tensor
 from torch.nn.utils._named_member_accessor import NamedMemberAccessor
 
-
 __all__ = ["functional_call"]
 
 
 def _untie_named_tensors_map(
     module: "torch.nn.Module",
-    parameters_and_buffers: dict[str, Tensor],
-) -> dict[str, Tensor]:
+    parameters_and_buffers: Dict[str, Tensor],
+) -> Dict[str, Tensor]:
     """
     Unties all tied tensors in the module to parameters_and_buffers.
 
@@ -41,20 +41,18 @@ def _untie_named_tensors_map(
         ValueError: if there are more than one user-given values for the same tied tensor.
     """
     # A map of {name: tensor} for all tensors (including tied ones) in the module.
-    all_named_tensors: dict[str, Tensor] = {}
+    all_named_tensors: Dict[str, Tensor] = {}
     all_named_tensors.update(module.named_parameters(remove_duplicate=False))
     all_named_tensors.update(module.named_buffers(remove_duplicate=False))
 
     # A map of {tensor: set(all_tied_names)} for all tensor names in the module.
-    tensor_to_tied_names_map: dict[Tensor, set[str]] = {}
+    tensor_to_tied_names_map: Dict[Tensor, Set[str]] = defaultdict(set)
     for name, tensor in all_named_tensors.items():
-        if tensor not in tensor_to_tied_names_map:
-            tensor_to_tied_names_map[tensor] = set()
         tensor_to_tied_names_map[tensor].add(name)
 
     # A map of {tied_name: set(all_tied_names)} for all tensor names in the module.
     # If a name is not tied, it will not be in this map.
-    tied_names_map: dict[str, set[str]] = {}
+    tied_names_map: Dict[str, Set[str]] = {}
     for tied_names in tensor_to_tied_names_map.values():
         if len(tied_names) > 1:
             for tied_name in tied_names:
@@ -62,13 +60,7 @@ def _untie_named_tensors_map(
 
     # Make sure the user didn't pass multiple values for the same tied tensor.
     given_names = set(parameters_and_buffers.keys())
-    # same as given_names.intersection(tied_names_map.keys()) but dynamo can't
-    # handle that
-    given_names_for_tied_tensors: set[str] = set()
-    for name in given_names:
-        if name in tied_names_map:
-            given_names_for_tied_tensors.add(name)
-
+    given_names_for_tied_tensors = given_names.intersection(tied_names_map.keys())
     for given_name in given_names_for_tied_tensors:
         tied_names = tied_names_map[given_name]
         if (
@@ -98,14 +90,12 @@ def _untie_named_tensors_map(
 @contextlib.contextmanager
 def _reparametrize_module(
     module: "torch.nn.Module",
-    parameters_and_buffers: dict[str, Tensor],
+    parameters_and_buffers: Dict[str, Tensor],
+    *,
     tie_weights: bool = False,
     strict: bool = False,
     stack_weights: bool = False,
-):
-    parameters_and_buffers = parameters_and_buffers
-    stack_weights = stack_weights
-
+) -> Iterator[None]:
     if tie_weights:
         untied_parameters_and_buffers = _untie_named_tensors_map(
             module, parameters_and_buffers
@@ -132,7 +122,7 @@ def _reparametrize_module(
                 )
             )
 
-    orig_parameters_and_buffers: dict[str, Tensor] = {}
+    orig_parameters_and_buffers: Dict[str, Tensor] = {}
     try:
         orig_parameters_and_buffers, _ = accessor.swap_tensors_dict(
             untied_parameters_and_buffers, allow_missing=True
@@ -167,9 +157,9 @@ def _reparametrize_module(
 )
 def functional_call(
     module: "torch.nn.Module",
-    parameters_and_buffers: dict[str, Tensor],
-    args: Optional[Union[Any, tuple]] = None,
-    kwargs: Optional[dict[str, Any]] = None,
+    parameters_and_buffers: Dict[str, Tensor],
+    args: Union[Any, Tuple],
+    kwargs: Optional[Dict[str, Any]] = None,
     *,
     tie_weights: bool = True,
     strict: bool = False,
@@ -245,9 +235,9 @@ def functional_call(
 
 def _functional_call(
     module: "torch.nn.Module",
-    parameters_and_buffers: dict[str, Tensor],
-    args: Optional[Union[Any, tuple]] = None,
-    kwargs: Optional[dict[str, Any]] = None,
+    parameters_and_buffers: Dict[str, Tensor],
+    args: Union[Any, Tuple],
+    kwargs: Optional[Dict[str, Any]] = None,
     *,
     tie_weights: bool = True,
     strict: bool = False,
@@ -272,9 +262,7 @@ def _functional_call(
         )
     if kwargs is None:
         kwargs = {}
-    if args is None:
-        args = ()
-    elif not isinstance(args, tuple):
+    if not isinstance(args, tuple):
         args = (args,)
     with _reparametrize_module(
         module, parameters_and_buffers, tie_weights=tie_weights, strict=strict

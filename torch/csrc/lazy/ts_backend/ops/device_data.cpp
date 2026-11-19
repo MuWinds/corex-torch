@@ -5,7 +5,8 @@
 
 #include <sstream>
 
-namespace torch::lazy {
+namespace torch {
+namespace lazy {
 
 DeviceData::DeviceData(std::shared_ptr<BackendData> data)
     : TsNode(
@@ -25,16 +26,17 @@ const DeviceData* DeviceData::Cast(const Node* node) {
   return NodeCast<DeviceData>(node);
 }
 
-NodePtr DeviceData::Create(const std::shared_ptr<BackendData>& data) {
+NodePtr DeviceData::Create(std::shared_ptr<BackendData> data) {
   NodePtr node = ReuseOrMakeNode<DeviceData>(data);
   // ReuseOrMakeNode may return a reused node which has the same shape,
   // however, we need to replace the old data_ with the new one.
   // Ditching the old data_ is safe because tracing is done iteration
-  // by iteration, and after we launch the async device execution for the
+  // by iteration, and after we lauch the async device execution for the
   // previous iteration, data_ in DeviceData nodes are not needed anymore.
   DeviceData* device_data = static_cast<DeviceData*>(node.get());
   device_data->SetData(data);
   return node;
 }
 
-} // namespace torch::lazy
+} // namespace lazy
+} // namespace torch

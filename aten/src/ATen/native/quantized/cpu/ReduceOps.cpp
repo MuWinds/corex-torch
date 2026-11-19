@@ -20,13 +20,14 @@
 #include <ATen/ops/zeros_like_ops.h>
 #endif
 
-namespace at::native {
+namespace at {
+namespace native {
 
 DEFINE_DISPATCH(qmean_inner_dim_stub);
 DEFINE_DISPATCH(qstd_inner_dim_stub);
 
 // If mean/std is taken in the innermost dims, the fast path can be used.
-static inline bool is_innnermost_dim(
+inline bool is_innnermost_dim(
     const Tensor& self,
     OptionalIntArrayRef opt_dim) {
   if (!opt_dim.has_value()) {
@@ -43,7 +44,7 @@ static inline bool is_innnermost_dim(
   return is_innermost;
 }
 
-static inline bool is_mean_inner_dim_fast_path(
+inline bool is_mean_inner_dim_fast_path(
     const Tensor& self,
     OptionalIntArrayRef opt_dim,
     std::optional<ScalarType> opt_dtype) {
@@ -165,14 +166,24 @@ Tensor mean_quantized_cpu(
     const Tensor& self,
     OptionalIntArrayRef opt_dim,
     bool keepdim,
-    std::optional<ScalarType> dtype) {
+    optional<ScalarType> dtype) {
   Tensor result;
   mean_out_quantized_cpu(self, opt_dim, keepdim, dtype, result);
   return result;
 }
 
+static Tensor& mean_out_quantized_cpu(
+    Tensor& result,
+    const Tensor& self,
+    DimnameList dim,
+    bool keepdim,
+    std::optional<ScalarType> opt_dtype) {
+  return mean_out_quantized_cpu(
+      self, dimnames_to_positions(self, dim), keepdim, opt_dtype, result);
+}
+
 // qstd
-static inline bool is_std_inner_dim_fast_path(
+inline bool is_std_inner_dim_fast_path(
     const Tensor& self,
     OptionalIntArrayRef dim,
     const std::optional<Scalar>& correction) {
@@ -226,4 +237,5 @@ Tensor std_quantized_cpu(
   return result;
 }
 
-} // namespace at::native
+} // namespace native
+} // namespace at

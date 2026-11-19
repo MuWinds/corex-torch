@@ -10,9 +10,9 @@
 #include <ATen/ops/_fused_sgd.h>
 #include <ATen/ops/_fused_sgd_native.h>
 #endif
+namespace at {
 
-
-namespace at::native {
+namespace native {
 
 
 void _fused_sgd_kernel_cpu_(
@@ -39,7 +39,7 @@ void _fused_sgd_kernel_cpu_(
   TORCH_CHECK(grads.size() == n_tensors);
   bool no_momentum_buffer = momentum == 0.0;
   if (no_momentum_buffer) {
-    TORCH_CHECK(momentum_buffer_list.empty());
+    TORCH_CHECK(momentum_buffer_list.size() == 0);
   } else {
     TORCH_CHECK(momentum_buffer_list.size() == n_tensors);
   }
@@ -82,4 +82,5 @@ void _fused_sgd_kernel_cpu_(
 
 DEFINE_DISPATCH(fused_sgd_stub);
 
+}
 }

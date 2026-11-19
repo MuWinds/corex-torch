@@ -1,0 +1,63 @@
+--- /data/home/2024240384035/build/pytorch-2.1.0/aten/src/ATen/native/cuda/PersistentSoftmax.cuh	2023-09-22 06:25:09.000000000 +0800
++++ /data/software/Anaconda3/2024.10-1/envs/py310/lib/python3.10/site-packages/torch/include/ATen/native/cuda/PersistentSoftmax.cuh	2025-03-13 11:53:02.378028406 +0800
+@@ -72,7 +72,11 @@
+     constexpr int next_power_of_two = 1 << log2_elements;
+     constexpr int WARP_SIZE = (next_power_of_two < C10_WARP_SIZE) ? next_power_of_two : C10_WARP_SIZE;
+     constexpr int WARP_ITERATIONS = next_power_of_two / WARP_SIZE;
++#ifndef __ILUVATAR_WORKAROUND__
+     constexpr int WARP_BATCH = (next_power_of_two <= 128) ? 2 : 1;
++#else
++    constexpr int WARP_BATCH = 1;
++#endif
+ 
+     int first_batch = (blockDim.y * blockIdx.x + threadIdx.y) * WARP_BATCH;
+ 
+@@ -219,7 +223,11 @@
+     constexpr int next_power_of_two = 1 << log2_elements;
+     constexpr int WARP_SIZE = (next_power_of_two < C10_WARP_SIZE) ? next_power_of_two : C10_WARP_SIZE;
+     constexpr int WARP_ITERATIONS = next_power_of_two / WARP_SIZE;
++#ifndef __ILUVATAR_WORKAROUND__
+     constexpr int WARP_BATCH = (next_power_of_two <= 128) ? 2 : 1;
++#else
++    constexpr int WARP_BATCH = 1;
++#endif
+ 
+     int first_batch = (blockDim.y * blockIdx.x + threadIdx.y) * WARP_BATCH;
+ 
+@@ -314,12 +322,16 @@
+         int warp_size = at::cuda::warp_size();
+         warp_size = (next_power_of_two < warp_size) ? next_power_of_two : warp_size;
+ 
++#ifndef __ILUVATAR_WORKAROUND__
+         // This value must match the WARP_BATCH constexpr value computed inside softmax_warp_forward.
+         int batches_per_warp = (next_power_of_two <= 128) ? 2 : 1;
+ 
+         // use 128 threads per block to maximimize gpu utilization
+         constexpr int threads_per_block = 128;
+-
++#else
++        int batches_per_warp = 1;
++	    constexpr int threads_per_block = 64;
++#endif
+         int warps_per_block = (threads_per_block / warp_size);
+         int batches_per_block = warps_per_block * batches_per_warp;
+         int blocks = (batch_count + batches_per_block - 1) / batches_per_block;
+@@ -363,13 +375,16 @@
+         // This value must match the WARP_SIZE constexpr value computed inside softmax_warp_backward.
+         int warp_size = at::cuda::warp_size();
+         warp_size = (next_power_of_two < warp_size) ? next_power_of_two : warp_size;
+-
++#ifndef __ILUVATAR_WORKAROUND__
+         // This value must match the WARP_BATCH constexpr value computed inside softmax_warp_backward.
+         int batches_per_warp = (next_power_of_two <= 128) ? 2 : 1;
+ 
+         // use 128 threads per block to maximimize gpu utilization
+         constexpr int threads_per_block = 128;
+-
++#else
++        int batches_per_warp = 1;
++        constexpr int threads_per_block = 64;
++#endif
+         int warps_per_block = (threads_per_block / warp_size);
+         int batches_per_block = warps_per_block * batches_per_warp;
+         int blocks = (batch_count + batches_per_block - 1) / batches_per_block;

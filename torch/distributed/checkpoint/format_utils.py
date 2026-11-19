@@ -2,7 +2,7 @@
 import argparse
 import os
 from enum import Enum
-from typing import cast, Optional, Union
+from typing import cast, Dict, List, Optional, Union
 
 import torch
 import torch.distributed as dist
@@ -84,9 +84,7 @@ class BroadcastingTorchSaveReader(StorageReader):
         # TODO: read on each host, instead of only the coordinator
         if self.is_coordinator:
             assert self.checkpoint_id is not None
-            torch_state_dict = torch.load(
-                self.checkpoint_id, map_location="cpu", weights_only=False
-            )
+            torch_state_dict = torch.load(self.checkpoint_id, map_location="cpu")
             if planner.flatten_state_dict:
                 torch_state_dict, _ = flatten_state_dict(torch_state_dict)
         else:
@@ -101,8 +99,7 @@ class BroadcastingTorchSaveReader(StorageReader):
 
             #  Broadcast the tensor from the coordinator rank
             if self.is_coordinator:
-                pg_device = dist.distributed_c10d._get_pg_default_device()
-                tensor = torch_state_dict[req.storage_index.fqn].to(pg_device)
+                tensor = torch_state_dict[req.storage_index.fqn].cuda()
             else:
                 tensor = torch.empty_like(planner.state_dict[req.storage_index.fqn])
 
@@ -133,7 +130,7 @@ class BroadcastingTorchSaveReader(StorageReader):
         """Implementation of the StorageReader method"""
         return plan
 
-    def prepare_global_plan(self, global_plan: list[LoadPlan]) -> list[LoadPlan]:
+    def prepare_global_plan(self, global_plan: List[LoadPlan]) -> List[LoadPlan]:
         """Implementation of the StorageReader method"""
         return global_plan
 
@@ -177,7 +174,7 @@ class DynamicMetaLoadPlanner(DefaultLoadPlanner):
         """Setups of the planner, extnding default behavior by creating the Metadata object from the state dict"""
         super().set_up_planner(state_dict, metadata, is_coordinator)
 
-        state_dict_metadata: dict[str, STORAGE_TYPES] = {}
+        state_dict_metadata: Dict[str, STORAGE_TYPES] = {}
         for key, tensor in self.state_dict.items():
             if not torch.is_tensor(tensor):
                 raise RuntimeError(
@@ -233,7 +230,7 @@ def torch_save_to_dcp(
         To avoid OOM, it's recommended to only run this function on a single rank.
     """
 
-    state_dict = torch.load(torch_save_path, weights_only=False)
+    state_dict = torch.load(torch_save_path)
     # we don't need stateful behavior here because the expectation is anything loaded by
     # torch.load would not contain stateful objects.
     _save_state_dict(

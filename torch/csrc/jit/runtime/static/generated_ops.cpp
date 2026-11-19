@@ -56,7 +56,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::angle, aten_angle, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::angle(Tensor self) -> Tensor"))) {
@@ -73,7 +73,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::angle, aten_angle, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::sgn, aten_sgn, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::sgn(Tensor self) -> Tensor"))) {
@@ -90,7 +90,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::sgn, aten_sgn, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::acos, aten_acos, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::acos(Tensor self) -> Tensor"))) {
@@ -107,7 +107,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::acos, aten_acos, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::arccos, aten_arccos, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::arccos(Tensor self) -> Tensor"))) {
@@ -124,7 +124,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::arccos, aten_arccos, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::_add_relu, aten__add_relu, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -144,7 +144,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::_add_relu, aten__add_relu, [](Node* n) -> SROper
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::addmv, aten_addmv, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -166,7 +166,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::addmv, aten_addmv, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::addr, aten_addr, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -188,30 +188,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::addr, aten_addr, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
-
-REGISTER_OPERATOR_FUNCTOR(
-    aten::_test_functorch_fallback,
-    aten__test_functorch_fallback,
-    [](Node* n) -> SROperator {
-      if (n->matches(torch::schema(
-              "aten::_test_functorch_fallback(Tensor self, Tensor other) -> Tensor"))) {
-        return [](ProcessedNode* p_node) {
-          const auto& self = p_node->Input(0).toTensor();
-          const auto& other = p_node->Input(1).toTensor();
-          if (p_node->Output(0).isNone()) {
-            p_node->Output(0) =
-                at::native::_test_functorch_fallback(self, other);
-            return;
-          }
-          auto& out = p_node->Output(0).toTensor();
-          fastResizeToZero(out);
-          at::native::_test_functorch_fallback_out(self, other, out);
-        };
-      }
-      LogAndDumpSchema(n);
-      return nullptr;
-    })
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::argmax, aten_argmax, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -231,7 +208,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::argmax, aten_argmax, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::acosh, aten_acosh, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::acosh(Tensor self) -> Tensor"))) {
@@ -248,7 +225,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::acosh, aten_acosh, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::asinh, aten_asinh, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::asinh(Tensor self) -> Tensor"))) {
@@ -265,7 +242,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::asinh, aten_asinh, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::arcsinh,
@@ -285,7 +262,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::atanh, aten_atanh, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::atanh(Tensor self) -> Tensor"))) {
@@ -302,7 +279,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::atanh, aten_atanh, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::arctanh,
@@ -322,7 +299,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::asin, aten_asin, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::asin(Tensor self) -> Tensor"))) {
@@ -339,7 +316,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::asin, aten_asin, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::arcsin, aten_arcsin, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::arcsin(Tensor self) -> Tensor"))) {
@@ -356,7 +333,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::arcsin, aten_arcsin, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::atan, aten_atan, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::atan(Tensor self) -> Tensor"))) {
@@ -373,7 +350,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::atan, aten_atan, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::arctan, aten_arctan, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::arctan(Tensor self) -> Tensor"))) {
@@ -390,7 +367,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::arctan, aten_arctan, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::baddbmm, aten_baddbmm, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -412,7 +389,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::baddbmm, aten_baddbmm, [](Node* n) -> SROperator
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::bitwise_not,
@@ -433,7 +410,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::copysign,
@@ -455,7 +432,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::logical_not,
@@ -476,7 +453,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::logical_xor,
@@ -498,7 +475,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::logical_and,
@@ -520,7 +497,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::logical_or,
@@ -542,7 +519,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::ceil, aten_ceil, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::ceil(Tensor self) -> Tensor"))) {
@@ -559,7 +536,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::ceil, aten_ceil, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::clamp_max,
@@ -596,7 +573,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::clip, aten_clip, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -616,7 +593,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::clip, aten_clip, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::complex,
@@ -638,7 +615,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::polar, aten_polar, [](Node* n) -> SROperator {
   if (n->matches(
@@ -657,7 +634,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::polar, aten_polar, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::cos, aten_cos, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::cos(Tensor self) -> Tensor"))) {
@@ -674,7 +651,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::cos, aten_cos, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::cosh, aten_cosh, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::cosh(Tensor self) -> Tensor"))) {
@@ -691,7 +668,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::cosh, aten_cosh, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::cumprod, aten_cumprod, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -711,7 +688,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::cumprod, aten_cumprod, [](Node* n) -> SROperator
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::diff, aten_diff, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -733,7 +710,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::diff, aten_diff, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::divide, aten_divide, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -752,7 +729,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::divide, aten_divide, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::true_divide,
@@ -774,7 +751,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::dot, aten_dot, [](Node* n) -> SROperator {
   if (n->matches(
@@ -793,7 +770,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::dot, aten_dot, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::vdot, aten_vdot, [](Node* n) -> SROperator {
   if (n->matches(
@@ -812,7 +789,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::vdot, aten_vdot, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::erf, aten_erf, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::erf(Tensor self) -> Tensor"))) {
@@ -829,7 +806,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::erf, aten_erf, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::erfc, aten_erfc, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::erfc(Tensor self) -> Tensor"))) {
@@ -846,7 +823,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::erfc, aten_erfc, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::exp, aten_exp, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::exp(Tensor self) -> Tensor"))) {
@@ -863,7 +840,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::exp, aten_exp, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::exp2, aten_exp2, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::exp2(Tensor self) -> Tensor"))) {
@@ -880,7 +857,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::exp2, aten_exp2, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::expm1, aten_expm1, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::expm1(Tensor self) -> Tensor"))) {
@@ -897,7 +874,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::expm1, aten_expm1, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::floor, aten_floor, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::floor(Tensor self) -> Tensor"))) {
@@ -914,7 +891,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::floor, aten_floor, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::frac, aten_frac, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::frac(Tensor self) -> Tensor"))) {
@@ -931,7 +908,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::frac, aten_frac, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::gcd, aten_gcd, [](Node* n) -> SROperator {
   if (n->matches(
@@ -950,7 +927,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::gcd, aten_gcd, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::lcm, aten_lcm, [](Node* n) -> SROperator {
   if (n->matches(
@@ -969,7 +946,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::lcm, aten_lcm, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::index_copy, aten_index_copy, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -990,7 +967,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::index_copy, aten_index_copy, [](Node* n) -> SROp
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::isin, aten_isin, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -1048,7 +1025,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::isin, aten_isin, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::kron, aten_kron, [](Node* n) -> SROperator {
   if (n->matches(
@@ -1067,7 +1044,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::kron, aten_kron, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::ldexp, aten_ldexp, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -1086,7 +1063,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::ldexp, aten_ldexp, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::log10, aten_log10, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::log10(Tensor self) -> Tensor"))) {
@@ -1103,7 +1080,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::log10, aten_log10, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::log1p, aten_log1p, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::log1p(Tensor self) -> Tensor"))) {
@@ -1120,7 +1097,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::log1p, aten_log1p, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::log2, aten_log2, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::log2(Tensor self) -> Tensor"))) {
@@ -1137,7 +1114,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::log2, aten_log2, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::logaddexp,
@@ -1159,7 +1136,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::logaddexp2,
@@ -1181,7 +1158,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::xlogy, aten_xlogy, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -1200,7 +1177,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::xlogy, aten_xlogy, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::_log_softmax,
@@ -1223,7 +1200,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::_log_softmax_backward_data,
@@ -1249,7 +1226,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::_logcumsumexp,
@@ -1271,7 +1248,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::logcumsumexp,
@@ -1293,7 +1270,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::matrix_power,
@@ -1315,7 +1292,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::mm, aten_mm, [](Node* n) -> SROperator {
   if (n->matches(
@@ -1334,7 +1311,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::mm, aten_mm, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::multiply,
@@ -1356,7 +1333,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::mv, aten_mv, [](Node* n) -> SROperator {
   if (n->matches(
@@ -1375,7 +1352,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::mv, aten_mv, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::mvlgamma,
@@ -1397,7 +1374,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::rad2deg,
@@ -1417,7 +1394,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::deg2rad,
@@ -1437,7 +1414,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::reciprocal,
@@ -1458,7 +1435,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::neg, aten_neg, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::neg(Tensor self) -> Tensor"))) {
@@ -1475,7 +1452,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::neg, aten_neg, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::negative,
@@ -1495,7 +1472,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::round, aten_round, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::round(Tensor self) -> Tensor"))) {
@@ -1527,7 +1504,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::round, aten_round, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::gelu, aten_gelu, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -1546,7 +1523,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::gelu, aten_gelu, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::gelu_backward,
@@ -1571,7 +1548,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::hardshrink,
@@ -1593,7 +1570,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::hardshrink_backward,
@@ -1617,7 +1594,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::rsqrt, aten_rsqrt, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::rsqrt(Tensor self) -> Tensor"))) {
@@ -1634,7 +1611,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::rsqrt, aten_rsqrt, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::silu, aten_silu, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::silu(Tensor self) -> Tensor"))) {
@@ -1651,7 +1628,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::silu, aten_silu, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::silu_backward,
@@ -1673,7 +1650,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::mish, aten_mish, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::mish(Tensor self) -> Tensor"))) {
@@ -1690,7 +1667,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::mish, aten_mish, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::sin, aten_sin, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::sin(Tensor self) -> Tensor"))) {
@@ -1707,7 +1684,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::sin, aten_sin, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::sinc, aten_sinc, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::sinc(Tensor self) -> Tensor"))) {
@@ -1724,7 +1701,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::sinc, aten_sinc, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::sinh, aten_sinh, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::sinh(Tensor self) -> Tensor"))) {
@@ -1741,7 +1718,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::sinh, aten_sinh, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::_softmax, aten__softmax, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -1761,7 +1738,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::_softmax, aten__softmax, [](Node* n) -> SROperat
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::_softmax_backward_data,
@@ -1787,7 +1764,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::sqrt, aten_sqrt, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::sqrt(Tensor self) -> Tensor"))) {
@@ -1804,7 +1781,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::sqrt, aten_sqrt, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::square, aten_square, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::square(Tensor self) -> Tensor"))) {
@@ -1821,7 +1798,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::square, aten_square, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::prod, aten_prod, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -1857,7 +1834,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::prod, aten_prod, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::tan, aten_tan, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::tan(Tensor self) -> Tensor"))) {
@@ -1874,7 +1851,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::tan, aten_tan, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::threshold, aten_threshold, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -1894,7 +1871,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::threshold, aten_threshold, [](Node* n) -> SROper
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::threshold_backward,
@@ -1919,7 +1896,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::trunc, aten_trunc, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::trunc(Tensor self) -> Tensor"))) {
@@ -1936,7 +1913,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::trunc, aten_trunc, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::fix, aten_fix, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::fix(Tensor self) -> Tensor"))) {
@@ -1953,7 +1930,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::fix, aten_fix, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::nuclear_norm,
@@ -1975,7 +1952,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::subtract, aten_subtract, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -1995,7 +1972,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::subtract, aten_subtract, [](Node* n) -> SROperat
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::heaviside,
@@ -2017,7 +1994,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::_addmm_activation,
@@ -2045,7 +2022,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::index_add, aten_index_add, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -2067,7 +2044,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::index_add, aten_index_add, [](Node* n) -> SROper
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::scatter, aten_scatter, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -2141,7 +2118,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::scatter, aten_scatter, [](Node* n) -> SROperator
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::scatter_add, aten_scatter_add, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -2162,7 +2139,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::scatter_add, aten_scatter_add, [](Node* n) -> SR
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::scatter_reduce,
@@ -2190,7 +2167,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::eq, aten_eq, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -2224,7 +2201,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::eq, aten_eq, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::bitwise_and,
@@ -2246,7 +2223,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::bitwise_or,
@@ -2268,7 +2245,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::bitwise_xor,
@@ -2290,7 +2267,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::bitwise_left_shift,
@@ -2312,7 +2289,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::bitwise_right_shift,
@@ -2334,7 +2311,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::tril, aten_tril, [](Node* n) -> SROperator {
   if (n->matches(
@@ -2353,7 +2330,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::tril, aten_tril, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::triu, aten_triu, [](Node* n) -> SROperator {
   if (n->matches(
@@ -2372,7 +2349,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::triu, aten_triu, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::digamma,
@@ -2392,7 +2369,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::lerp, aten_lerp, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -2428,7 +2405,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::lerp, aten_lerp, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::addbmm, aten_addbmm, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -2451,26 +2428,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::addbmm, aten_addbmm, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
-
-REGISTER_OPERATOR_FUNCTOR(aten::diag, aten_diag, [](Node* n) -> SROperator {
-  if (n->matches(
-          torch::schema("aten::diag(Tensor self, int diagonal=0) -> Tensor"))) {
-    return [](ProcessedNode* p_node) {
-      const auto& self = p_node->Input(0).toTensor();
-      const auto diagonal = p_node->Input(1).toInt();
-      if (p_node->Output(0).isNone()) {
-        p_node->Output(0) = at::native::diag(self, diagonal);
-        return;
-      }
-      auto& out = p_node->Output(0).toTensor();
-      fastResizeToZero(out);
-      at::native::diag_out(self, diagonal, out);
-    };
-  }
-  LogAndDumpSchema(n);
-  return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::cross, aten_cross, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -2490,7 +2448,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::cross, aten_cross, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::ne, aten_ne, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -2524,7 +2482,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::ne, aten_ne, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::ge, aten_ge, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -2558,7 +2516,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::ge, aten_ge, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::le, aten_le, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -2592,7 +2550,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::le, aten_le, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::gt, aten_gt, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -2626,7 +2584,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::gt, aten_gt, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::lt, aten_lt, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -2660,7 +2618,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::lt, aten_lt, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::take, aten_take, [](Node* n) -> SROperator {
   if (n->matches(
@@ -2679,7 +2637,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::take, aten_take, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::take_along_dim,
@@ -2702,7 +2660,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::masked_select,
@@ -2724,31 +2682,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
-
-REGISTER_OPERATOR_FUNCTOR(
-    aten::nonzero_static,
-    aten_nonzero_static,
-    [](Node* n) -> SROperator {
-      if (n->matches(torch::schema(
-              "aten::nonzero_static(Tensor self, *, int size, int fill_value=-1) -> Tensor"))) {
-        return [](ProcessedNode* p_node) {
-          const auto& self = p_node->Input(0).toTensor();
-          const auto size = p_node->Input(1).toInt();
-          const auto fill_value = p_node->Input(2).toInt();
-          if (p_node->Output(0).isNone()) {
-            p_node->Output(0) =
-                at::native::nonzero_static_cpu(self, size, fill_value);
-            return;
-          }
-          auto& out = p_node->Output(0).toTensor();
-          fastResizeToZero(out);
-          at::native::nonzero_static_out_cpu(self, size, fill_value, out);
-        };
-      }
-      LogAndDumpSchema(n);
-      return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::gather, aten_gather, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -2769,7 +2703,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::gather, aten_gather, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::addcmul, aten_addcmul, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -2790,7 +2724,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::addcmul, aten_addcmul, [](Node* n) -> SROperator
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::addcdiv, aten_addcdiv, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -2811,7 +2745,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::addcdiv, aten_addcdiv, [](Node* n) -> SROperator
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::linalg_solve_triangular,
@@ -2838,7 +2772,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::cholesky_solve,
@@ -2861,7 +2795,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::cholesky_inverse,
@@ -2883,7 +2817,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::orgqr, aten_orgqr, [](Node* n) -> SROperator {
   if (n->matches(
@@ -2902,7 +2836,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::orgqr, aten_orgqr, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::ormqr, aten_ormqr, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -2925,7 +2859,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::ormqr, aten_ormqr, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::lgamma, aten_lgamma, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::lgamma(Tensor self) -> Tensor"))) {
@@ -2942,7 +2876,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::lgamma, aten_lgamma, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::polygamma,
@@ -2964,7 +2898,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::erfinv, aten_erfinv, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::erfinv(Tensor self) -> Tensor"))) {
@@ -2981,7 +2915,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::erfinv, aten_erfinv, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::i0, aten_i0, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::i0(Tensor self) -> Tensor"))) {
@@ -2998,7 +2932,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::i0, aten_i0, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::signbit,
@@ -3018,7 +2952,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::atan2, aten_atan2, [](Node* n) -> SROperator {
   if (n->matches(
@@ -3037,7 +2971,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::atan2, aten_atan2, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::arctan2,
@@ -3059,7 +2993,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::histc, aten_histc, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -3080,7 +3014,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::histc, aten_histc, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::hypot, aten_hypot, [](Node* n) -> SROperator {
   if (n->matches(
@@ -3099,7 +3033,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::hypot, aten_hypot, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::igamma, aten_igamma, [](Node* n) -> SROperator {
   if (n->matches(
@@ -3118,7 +3052,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::igamma, aten_igamma, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::igammac,
@@ -3140,7 +3074,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::nextafter,
@@ -3162,7 +3096,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::fmin, aten_fmin, [](Node* n) -> SROperator {
   if (n->matches(
@@ -3181,7 +3115,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::fmin, aten_fmin, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::fmax, aten_fmax, [](Node* n) -> SROperator {
   if (n->matches(
@@ -3200,7 +3134,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::fmax, aten_fmax, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::maximum,
@@ -3222,7 +3156,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::minimum,
@@ -3244,7 +3178,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::min, aten_min, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -3263,7 +3197,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::min, aten_min, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::quantile, aten_quantile, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -3286,7 +3220,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::quantile, aten_quantile, [](Node* n) -> SROperat
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::nanquantile, aten_nanquantile, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -3309,7 +3243,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::nanquantile, aten_nanquantile, [](Node* n) -> SR
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::msort, aten_msort, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::msort(Tensor self) -> Tensor"))) {
@@ -3326,7 +3260,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::msort, aten_msort, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::renorm, aten_renorm, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -3347,7 +3281,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::renorm, aten_renorm, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::_convert_indices_from_coo_to_csr,
@@ -3372,7 +3306,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::_convert_indices_from_csr_to_coo,
@@ -3398,7 +3332,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::mse_loss, aten_mse_loss, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -3418,7 +3352,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::mse_loss, aten_mse_loss, [](Node* n) -> SROperat
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::multi_margin_loss,
@@ -3446,7 +3380,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::multilabel_margin_loss,
@@ -3470,7 +3404,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::soft_margin_loss,
@@ -3494,7 +3428,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::elu, aten_elu, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -3515,7 +3449,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::elu, aten_elu, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::elu_backward,
@@ -3554,7 +3488,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::glu, aten_glu, [](Node* n) -> SROperator {
   if (n->matches(
@@ -3573,7 +3507,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::glu, aten_glu, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::hardsigmoid,
@@ -3594,7 +3528,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::hardsigmoid_backward,
@@ -3617,7 +3551,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::hardtanh, aten_hardtanh, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -3637,7 +3571,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::hardtanh, aten_hardtanh, [](Node* n) -> SROperat
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::hardswish,
@@ -3657,7 +3591,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::leaky_relu_backward,
@@ -3683,7 +3617,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::log_sigmoid,
@@ -3704,7 +3638,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::softplus, aten_softplus, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -3724,7 +3658,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::softplus, aten_softplus, [](Node* n) -> SROperat
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::softplus_backward,
@@ -3750,7 +3684,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::softshrink,
@@ -3772,7 +3706,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::softshrink_backward,
@@ -3797,7 +3731,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::adaptive_max_pool2d_backward,
@@ -3822,7 +3756,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::adaptive_max_pool3d_backward,
@@ -3847,7 +3781,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::sigmoid_backward,
@@ -3869,7 +3803,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::tanh_backward,
@@ -3891,7 +3825,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::isposinf,
@@ -3911,7 +3845,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::isneginf,
@@ -3931,7 +3865,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::special_entr,
@@ -3952,7 +3886,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::special_ndtri,
@@ -3973,7 +3907,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::special_log_ndtr,
@@ -3994,7 +3928,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::special_expm1,
@@ -4015,7 +3949,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::special_exp2,
@@ -4036,7 +3970,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::special_psi,
@@ -4057,7 +3991,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::special_digamma,
@@ -4078,7 +4012,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::special_gammaln,
@@ -4099,7 +4033,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::special_erf,
@@ -4120,7 +4054,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::special_erfc,
@@ -4141,7 +4075,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::special_erfcx,
@@ -4162,7 +4096,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::special_erfinv,
@@ -4183,7 +4117,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::special_ndtr,
@@ -4204,7 +4138,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::special_xlog1py,
@@ -4226,7 +4160,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::special_xlogy,
@@ -4248,7 +4182,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::special_zeta,
@@ -4270,7 +4204,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::special_i0,
@@ -4291,7 +4225,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::special_i0e,
@@ -4312,7 +4246,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::special_i1,
@@ -4333,7 +4267,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::special_i1e,
@@ -4354,7 +4288,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::special_polygamma,
@@ -4376,7 +4310,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::special_expit,
@@ -4397,7 +4331,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::special_sinc,
@@ -4418,7 +4352,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::special_round,
@@ -4440,7 +4374,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::special_log1p,
@@ -4461,7 +4395,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::special_gammainc,
@@ -4483,7 +4417,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::special_gammaincc,
@@ -4505,7 +4439,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::special_multigammaln,
@@ -4527,7 +4461,133 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
+
+REGISTER_OPERATOR_FUNCTOR(aten::fft_fft, aten_fft_fft, [](Node* n) -> SROperator {
+  if (n->matches(torch::schema(
+          "aten::fft_fft(Tensor self, SymInt? n=None, int dim=-1, str? norm=None) -> Tensor"))) {
+    return [](ProcessedNode* p_node) {
+      const auto& self = p_node->Input(0).toTensor();
+      const auto n = p_node->Input(1).toOptional<c10::SymInt>();
+      const auto dim = p_node->Input(2).toInt();
+      const auto norm = p_node->Input(3).toOptional<c10::string_view>();
+      if (p_node->Output(0).isNone()) {
+        p_node->Output(0) = at::native::fft_fft_symint(self, n, dim, norm);
+        return;
+      }
+      auto& out = p_node->Output(0).toTensor();
+      fastResizeToZero(out);
+      at::native::fft_fft_symint_out(self, n, dim, norm, out);
+    };
+  }
+  LogAndDumpSchema(n);
+  return nullptr;
+});
+
+REGISTER_OPERATOR_FUNCTOR(aten::fft_ifft, aten_fft_ifft, [](Node* n) -> SROperator {
+  if (n->matches(torch::schema(
+          "aten::fft_ifft(Tensor self, SymInt? n=None, int dim=-1, str? norm=None) -> Tensor"))) {
+    return [](ProcessedNode* p_node) {
+      const auto& self = p_node->Input(0).toTensor();
+      const auto n = p_node->Input(1).toOptional<c10::SymInt>();
+      const auto dim = p_node->Input(2).toInt();
+      const auto norm = p_node->Input(3).toOptional<c10::string_view>();
+      if (p_node->Output(0).isNone()) {
+        p_node->Output(0) = at::native::fft_ifft_symint(self, n, dim, norm);
+        return;
+      }
+      auto& out = p_node->Output(0).toTensor();
+      fastResizeToZero(out);
+      at::native::fft_ifft_symint_out(self, n, dim, norm, out);
+    };
+  }
+  LogAndDumpSchema(n);
+  return nullptr;
+});
+
+REGISTER_OPERATOR_FUNCTOR(aten::fft_rfft, aten_fft_rfft, [](Node* n) -> SROperator {
+  if (n->matches(torch::schema(
+          "aten::fft_rfft(Tensor self, SymInt? n=None, int dim=-1, str? norm=None) -> Tensor"))) {
+    return [](ProcessedNode* p_node) {
+      const auto& self = p_node->Input(0).toTensor();
+      const auto n = p_node->Input(1).toOptional<c10::SymInt>();
+      const auto dim = p_node->Input(2).toInt();
+      const auto norm = p_node->Input(3).toOptional<c10::string_view>();
+      if (p_node->Output(0).isNone()) {
+        p_node->Output(0) = at::native::fft_rfft_symint(self, n, dim, norm);
+        return;
+      }
+      auto& out = p_node->Output(0).toTensor();
+      fastResizeToZero(out);
+      at::native::fft_rfft_symint_out(self, n, dim, norm, out);
+    };
+  }
+  LogAndDumpSchema(n);
+  return nullptr;
+});
+
+REGISTER_OPERATOR_FUNCTOR(aten::fft_irfft, aten_fft_irfft, [](Node* n) -> SROperator {
+  if (n->matches(torch::schema(
+          "aten::fft_irfft(Tensor self, SymInt? n=None, int dim=-1, str? norm=None) -> Tensor"))) {
+    return [](ProcessedNode* p_node) {
+      const auto& self = p_node->Input(0).toTensor();
+      const auto n = p_node->Input(1).toOptional<c10::SymInt>();
+      const auto dim = p_node->Input(2).toInt();
+      const auto norm = p_node->Input(3).toOptional<c10::string_view>();
+      if (p_node->Output(0).isNone()) {
+        p_node->Output(0) = at::native::fft_irfft_symint(self, n, dim, norm);
+        return;
+      }
+      auto& out = p_node->Output(0).toTensor();
+      fastResizeToZero(out);
+      at::native::fft_irfft_symint_out(self, n, dim, norm, out);
+    };
+  }
+  LogAndDumpSchema(n);
+  return nullptr;
+});
+
+REGISTER_OPERATOR_FUNCTOR(aten::fft_hfft, aten_fft_hfft, [](Node* n) -> SROperator {
+  if (n->matches(torch::schema(
+          "aten::fft_hfft(Tensor self, SymInt? n=None, int dim=-1, str? norm=None) -> Tensor"))) {
+    return [](ProcessedNode* p_node) {
+      const auto& self = p_node->Input(0).toTensor();
+      const auto n = p_node->Input(1).toOptional<c10::SymInt>();
+      const auto dim = p_node->Input(2).toInt();
+      const auto norm = p_node->Input(3).toOptional<c10::string_view>();
+      if (p_node->Output(0).isNone()) {
+        p_node->Output(0) = at::native::fft_hfft_symint(self, n, dim, norm);
+        return;
+      }
+      auto& out = p_node->Output(0).toTensor();
+      fastResizeToZero(out);
+      at::native::fft_hfft_symint_out(self, n, dim, norm, out);
+    };
+  }
+  LogAndDumpSchema(n);
+  return nullptr;
+});
+
+REGISTER_OPERATOR_FUNCTOR(aten::fft_ihfft, aten_fft_ihfft, [](Node* n) -> SROperator {
+  if (n->matches(torch::schema(
+          "aten::fft_ihfft(Tensor self, SymInt? n=None, int dim=-1, str? norm=None) -> Tensor"))) {
+    return [](ProcessedNode* p_node) {
+      const auto& self = p_node->Input(0).toTensor();
+      const auto n = p_node->Input(1).toOptional<c10::SymInt>();
+      const auto dim = p_node->Input(2).toInt();
+      const auto norm = p_node->Input(3).toOptional<c10::string_view>();
+      if (p_node->Output(0).isNone()) {
+        p_node->Output(0) = at::native::fft_ihfft_symint(self, n, dim, norm);
+        return;
+      }
+      auto& out = p_node->Output(0).toTensor();
+      fastResizeToZero(out);
+      at::native::fft_ihfft_symint_out(self, n, dim, norm, out);
+    };
+  }
+  LogAndDumpSchema(n);
+  return nullptr;
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::linalg_cross,
@@ -4550,7 +4610,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::linalg_det,
@@ -4570,7 +4630,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::linalg_matmul,
@@ -4592,7 +4652,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::linalg_eigvals,
@@ -4613,7 +4673,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::linalg_inv,
@@ -4633,7 +4693,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::inverse,
@@ -4653,7 +4713,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(aten::inner, aten_inner, [](Node* n) -> SROperator {
   if (n->matches(
@@ -4672,7 +4732,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::inner, aten_inner, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(aten::outer, aten_outer, [](Node* n) -> SROperator {
   if (n->matches(
@@ -4691,7 +4751,7 @@ REGISTER_OPERATOR_FUNCTOR(aten::outer, aten_outer, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::linalg_cond,
@@ -4713,7 +4773,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::linalg_solve,
@@ -4736,7 +4796,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::linalg_tensorinv,
@@ -4758,7 +4818,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_OPERATOR_FUNCTOR(
     aten::linalg_matrix_power,
@@ -4780,7 +4840,7 @@ REGISTER_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_NATIVE_OPERATOR_FUNCTOR(
     aten::view_as_real,
@@ -4795,7 +4855,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_NATIVE_OPERATOR_FUNCTOR(
     aten::view_as_complex,
@@ -4810,7 +4870,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_NATIVE_OPERATOR_FUNCTOR(
     aten::real,
@@ -4825,7 +4885,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_NATIVE_OPERATOR_FUNCTOR(
     aten::imag,
@@ -4840,7 +4900,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_NATIVE_OPERATOR_FUNCTOR(
     aten::_conj,
@@ -4855,7 +4915,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_NATIVE_OPERATOR_FUNCTOR(
     aten::conj,
@@ -4870,7 +4930,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_NATIVE_OPERATOR_FUNCTOR(
     aten::resolve_conj,
@@ -4885,7 +4945,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_NATIVE_OPERATOR_FUNCTOR(
     aten::resolve_neg,
@@ -4900,7 +4960,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_NATIVE_OPERATOR_FUNCTOR(
     aten::_neg_view,
@@ -4915,7 +4975,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_NATIVE_OPERATOR_FUNCTOR(aten::diagonal, aten_diagonal, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -4930,7 +4990,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(aten::diagonal, aten_diagonal, [](Node* n) -> S
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_NATIVE_OPERATOR_FUNCTOR(
     aten::linalg_diagonal,
@@ -4949,7 +5009,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_NATIVE_OPERATOR_FUNCTOR(aten::movedim, aten_movedim, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -4963,7 +5023,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(aten::movedim, aten_movedim, [](Node* n) -> SRO
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_NATIVE_OPERATOR_FUNCTOR(aten::moveaxis, aten_moveaxis, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -4977,7 +5037,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(aten::moveaxis, aten_moveaxis, [](Node* n) -> S
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_NATIVE_OPERATOR_FUNCTOR(
     aten::numpy_T,
@@ -4992,7 +5052,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_NATIVE_OPERATOR_FUNCTOR(
     aten::matrix_H,
@@ -5007,7 +5067,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_NATIVE_OPERATOR_FUNCTOR(aten::mT, aten_mT, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::mT(Tensor(a) self) -> Tensor(a)"))) {
@@ -5018,7 +5078,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(aten::mT, aten_mT, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_NATIVE_OPERATOR_FUNCTOR(aten::mH, aten_mH, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::mH(Tensor(a) self) -> Tensor(a)"))) {
@@ -5029,7 +5089,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(aten::mH, aten_mH, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_NATIVE_OPERATOR_FUNCTOR(
     aten::adjoint,
@@ -5044,7 +5104,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_NATIVE_OPERATOR_FUNCTOR(
     aten::ravel,
@@ -5059,7 +5119,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_NATIVE_OPERATOR_FUNCTOR(aten::t, aten_t, [](Node* n) -> SROperator {
   if (n->matches(torch::schema("aten::t(Tensor(a) self) -> Tensor(a)"))) {
@@ -5070,7 +5130,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(aten::t, aten_t, [](Node* n) -> SROperator {
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_NATIVE_OPERATOR_FUNCTOR(
     aten::unsqueeze,
@@ -5086,7 +5146,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_NATIVE_OPERATOR_FUNCTOR(
     aten::view_as,
@@ -5102,7 +5162,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_NATIVE_OPERATOR_FUNCTOR(
     aten::positive,
@@ -5117,7 +5177,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_NATIVE_OPERATOR_FUNCTOR(
     aten::_autocast_to_reduced_precision,
@@ -5137,7 +5197,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_NATIVE_OPERATOR_FUNCTOR(
     aten::_autocast_to_full_precision,
@@ -5155,7 +5215,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_NATIVE_OPERATOR_FUNCTOR(
     aten::swapaxes,
@@ -5172,7 +5232,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_NATIVE_OPERATOR_FUNCTOR(
     aten::swapdims,
@@ -5189,7 +5249,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 REGISTER_NATIVE_OPERATOR_FUNCTOR(aten::unfold, aten_unfold, [](Node* n) -> SROperator {
   if (n->matches(torch::schema(
@@ -5204,7 +5264,7 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(aten::unfold, aten_unfold, [](Node* n) -> SROpe
   }
   LogAndDumpSchema(n);
   return nullptr;
-})
+});
 
 REGISTER_NATIVE_OPERATOR_FUNCTOR(
     aten::alias,
@@ -5219,6 +5279,6 @@ REGISTER_NATIVE_OPERATOR_FUNCTOR(
       }
       LogAndDumpSchema(n);
       return nullptr;
-    })
+    });
 
 } // namespace torch::jit

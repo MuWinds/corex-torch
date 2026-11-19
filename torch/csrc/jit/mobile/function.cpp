@@ -8,15 +8,17 @@
 #include <torch/csrc/jit/runtime/instruction.h>
 #include <torch/csrc/jit/runtime/operator.h>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
+char const* toString(OpCode op);
 namespace mobile {
 Function::Function(c10::QualifiedName name) : name_(std::move(name)) {}
 
 Function::Function(
     c10::QualifiedName name,
     Code code,
-    std::optional<c10::FunctionSchema> schema)
+    at::optional<c10::FunctionSchema> schema)
     : name_(std::move(name)),
       code_(std::move(code)),
       schema_(std::move(schema)) {}
@@ -25,11 +27,7 @@ const c10::QualifiedName& Function::qualname() const {
   return name_;
 }
 
-void Function::append_instruction(
-    OpCode op,
-    int64_t X,
-    int64_t N,
-    int64_t dbg_handle) {
+void Function::append_instruction(OpCode op, int X, int N, int64_t dbg_handle) {
   TORCH_CHECK(
       isOpSupportedInMobile(op),
       toString(op),
@@ -38,7 +36,7 @@ void Function::append_instruction(
   code_.debug_handles_.emplace_back(dbg_handle);
 }
 
-void Function::append_instruction(OpCode op, int64_t X, int64_t N) {
+void Function::append_instruction(OpCode op, int X, int N) {
   TORCH_CHECK(
       isOpSupportedInMobile(op),
       toString(op),
@@ -74,7 +72,7 @@ bool Function::initialize_operators(bool should_check_operators) {
     const auto& opname = code_.op_names_[i];
     int num_args = code_.operator_input_sizes_[i];
     std::optional<int> num_specified_args =
-        num_args < 0 ? std::nullopt : std::optional<int>(num_args);
+        num_args < 0 ? c10::nullopt : std::optional<int>(num_args);
     auto func = makeOperatorFunction(opname, num_specified_args);
     if (!func.has_value()) {
       unsupported_op_names.insert(operator_str(opname));
@@ -168,7 +166,7 @@ const std::vector<int64_t>& Function::getExceptionDebugHandles() const {
 }
 
 std::optional<std::function<void(Stack&)>> makeOperatorFunction(
-    const c10::OperatorName& opname,
+    c10::OperatorName opname,
     std::optional<int> num_specified_args) {
   std::function<void(Stack&)> fn;
   const auto full_name = c10::toString(opname);
@@ -191,7 +189,7 @@ std::optional<std::function<void(Stack&)>> makeOperatorFunction(
           TORCH_CHECK(false, "arguments are missing for operator ", opname);
         }
       } else {
-        return std::nullopt;
+        return c10::nullopt;
       }
     }
   }
@@ -271,4 +269,5 @@ Function& Function::registerFunc(
 }
 
 } // namespace mobile
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

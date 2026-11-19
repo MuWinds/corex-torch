@@ -1,8 +1,11 @@
 # Owner(s): ["module: fx"]
 
+import unittest
+
 import torch
 import torch.fx
-from torch.testing._internal.common_utils import raise_on_run_directly, TestCase
+
+from torch.testing._internal.common_utils import TestCase
 
 
 class MyModuleBase(torch.nn.Module):
@@ -156,4 +159,4 @@ class TestConstParamShapeInControlFlow(TestCase):
 
 
 if __name__ == "__main__":
-    raise_on_run_directly("test/test_fx.py")
+    unittest.main()

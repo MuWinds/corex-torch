@@ -6,7 +6,8 @@
 #include <torch/csrc/jit/mobile/import.h>
 #include <torch/csrc/jit/mobile/module.h>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 // Implementation of Android NNAPI Backend delegate
 
@@ -106,7 +107,7 @@ class NnapiBackend : public PyTorchBackendInterface {
 
   // Runs once per model initialization
   // Cannot be moved to compile(), because init() requires actual inputs
-  void init(const c10::IValue& handle, const c10::List<at::Tensor>& inputs) {
+  void init(c10::IValue handle, c10::List<at::Tensor> inputs) {
     TORCH_CHECK(comp_ == nullptr);
     auto dict = handle.toGenericDict();
 
@@ -133,4 +134,5 @@ constexpr auto backend_name = "nnapi";
 static auto cls = torch::jit::backend<NnapiBackend>(backend_name);
 } // namespace
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

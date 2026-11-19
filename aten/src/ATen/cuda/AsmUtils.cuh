@@ -12,7 +12,7 @@ template <>
 struct Bitfield<unsigned int> {
   static __device__ __host__ __forceinline__
   unsigned int getBitfield(unsigned int val, int pos, int len) {
-#if !defined(__CUDA_ARCH__)
+#if !defined(__CUDA_ARCH__) || defined(__ILUVATAR__)
     pos &= 0xff;
     len &= 0xff;
 
@@ -27,7 +27,7 @@ struct Bitfield<unsigned int> {
 
   static __device__ __host__ __forceinline__
   unsigned int setBitfield(unsigned int val, unsigned int toInsert, int pos, int len) {
-#if !defined(__CUDA_ARCH__)
+#if !defined(__CUDA_ARCH__) || defined(__ILUVATAR__)
     pos &= 0xff;
     len &= 0xff;
 
@@ -50,7 +50,7 @@ template <>
 struct Bitfield<uint64_t> {
   static __device__ __host__ __forceinline__
   uint64_t getBitfield(uint64_t val, int pos, int len) {
-#if !defined(__CUDA_ARCH__)
+#if !defined(__CUDA_ARCH__) || defined(__ILUVATAR__)
     pos &= 0xff;
     len &= 0xff;
 
@@ -65,7 +65,7 @@ struct Bitfield<uint64_t> {
 
   static __device__ __host__ __forceinline__
   uint64_t setBitfield(uint64_t val, uint64_t toInsert, int pos, int len) {
-#if !defined(__CUDA_ARCH__)
+#if !defined(__CUDA_ARCH__) || defined(__ILUVATAR__)
     pos &= 0xff;
     len &= 0xff;
 
@@ -87,6 +87,8 @@ struct Bitfield<uint64_t> {
 __device__ __forceinline__ int getLaneId() {
 #if defined(USE_ROCM)
   return __lane_id();
+#elif defined(__ILUVATAR__)
+  return __ivcorex_lane_id();
 #else
   int laneId;
   asm("mov.s32 %0, %%laneid;" : "=r"(laneId) );
@@ -94,7 +96,7 @@ __device__ __forceinline__ int getLaneId() {
 #endif
 }
 
-#if defined(USE_ROCM)
+#if defined(USE_ROCM) || defined(__ILUVATAR__)
 __device__ __forceinline__ unsigned long long int getLaneMaskLt() {
   const std::uint64_t m = (1ull << getLaneId()) - 1ull;
   return m;
@@ -107,7 +109,7 @@ __device__ __forceinline__ unsigned getLaneMaskLt() {
 }
 #endif
 
-#if defined (USE_ROCM)
+#if defined (USE_ROCM) || defined(__ILUVATAR__)
 __device__ __forceinline__ unsigned long long int getLaneMaskLe() {
   std::uint64_t m = UINT64_MAX >> (sizeof(std::uint64_t) * CHAR_BIT - (getLaneId() + 1));
   return m;
@@ -120,7 +122,7 @@ __device__ __forceinline__ unsigned getLaneMaskLe() {
 }
 #endif
 
-#if defined(USE_ROCM)
+#if defined(USE_ROCM) || defined(__ILUVATAR__)
 __device__ __forceinline__ unsigned long long int getLaneMaskGt() {
   const std::uint64_t m = getLaneMaskLe();
   return m ? ~m : m;
@@ -133,7 +135,7 @@ __device__ __forceinline__ unsigned getLaneMaskGt() {
 }
 #endif
 
-#if defined(USE_ROCM)
+#if defined(USE_ROCM) || defined(__ILUVATAR__)
 __device__ __forceinline__ unsigned long long int getLaneMaskGe() {
   const std::uint64_t m = getLaneMaskLt();
   return ~m;

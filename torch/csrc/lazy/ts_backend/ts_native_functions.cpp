@@ -20,11 +20,10 @@
 #include <torch/csrc/lazy/ts_backend/ts_eager_fallback.h>
 #include <torch/library.h>
 
-#include <utility>
-
 using at::Tensor;
 
-namespace torch::lazy {
+namespace torch {
+namespace lazy {
 namespace {
 
 at::Tensor CreateLtcTensor(
@@ -40,10 +39,10 @@ at::Tensor CreateLtcTensor(
 std::optional<torch::lazy::BackendDevice> GetLtcDevice(
     const std::optional<c10::Device>& device) {
   if (!device) {
-    return std::nullopt;
+    return c10::nullopt;
   }
   if (device->type() != at::kLazy) {
-    return std::nullopt;
+    return c10::nullopt;
   }
   return torch::lazy::atenDeviceToBackendDevice(*device);
 }
@@ -131,7 +130,6 @@ at::Tensor LazyNativeFunctions::_copy_from_and_resize(
     // at this point we know dst is a lazy tensor
     auto* dest_impl =
         dynamic_cast<torch::lazy::LTCTensorImpl*>(dst.unsafeGetTensorImpl());
-    TORCH_CHECK(dest_impl);
     dest_impl->tensor()->UpdateFromTensorOut(self_tensor);
     dest_impl->force_refresh_sizes();
   }
@@ -237,7 +235,7 @@ at::Tensor LazyNativeFunctions::_to_copy(
     // captured IR, or we will try to convert an eager tensor back to a lazy one
     // inside the torchscript executor lazy:0 -> lazy:1 is handled in case3, so
     // we can safely drop the device argument
-    device = std::nullopt;
+    device = c10::nullopt;
 
     torch::lazy::NodePtr node = torch::lazy::ReuseNode<ToCopy>(
         lazy_self->GetIrValue(),
@@ -268,7 +266,7 @@ at::Tensor LazyNativeFunctions::_to_copy(
             std::move(node), lazy_self->GetDevice()));
     return result;
   }
-}
+};
 
 at::Tensor LazyNativeFunctions::empty_symint(
     at::SymIntArrayRef sym_size,
@@ -309,7 +307,7 @@ at::Tensor LazyNativeFunctions::empty_strided_symint(
     std::optional<bool> pin_memory) {
   TORCH_LAZY_FN_COUNTER("lazy::");
   at::Tensor t =
-      empty_symint(sym_size, dtype, layout, device, pin_memory, std::nullopt);
+      empty_symint(sym_size, dtype, layout, device, pin_memory, c10::nullopt);
   auto size = C10_AS_INTARRAYREF_SLOW(sym_size);
   auto stride = C10_AS_INTARRAYREF_SLOW(sym_stride);
   return t.as_strided(size, stride, /*storage_offset=*/0);
@@ -398,7 +396,7 @@ at::Tensor LazyNativeFunctions::lift_fresh(const at::Tensor& tensor) {
 
 // All of the below ops correspond to CompositeExplicitAutograd kernels from
 // core that call into view operators internally. These are all composite ops
-// that LTC can technically reuse / get for free, but we need to
+// that LTC can technically re-use / get for free, but we need to
 // "functionalize" them to remove the view ops before we can use them.
 at::Tensor LazyNativeFunctions::block_diag(at::TensorList tensors) {
   return at::functionalization::functionalize_aten_op<ATEN_OP(
@@ -423,7 +421,7 @@ at::Tensor LazyNativeFunctions::narrow_copy_symint(
     c10::SymInt start,
     c10::SymInt length) {
   return at::functionalization::functionalize_aten_op_symint<ATEN_OP(
-      narrow_copy)>::call(self, dim, std::move(start), std::move(length));
+      narrow_copy)>::call(self, dim, start, length);
 }
 at::Tensor LazyNativeFunctions::pixel_shuffle(
     const at::Tensor& self,
@@ -443,7 +441,7 @@ at::Tensor LazyNativeFunctions::select_backward_symint(
     int64_t dim,
     c10::SymInt index) {
   return at::functionalization::functionalize_aten_op_symint<ATEN_OP(
-      select_backward)>::call(grad_output, input_sizes, dim, std::move(index));
+      select_backward)>::call(grad_output, input_sizes, dim, index);
 }
 at::Tensor LazyNativeFunctions::_trilinear(
     const at::Tensor& i1,
@@ -519,17 +517,11 @@ at::Tensor LazyNativeFunctions::slice_backward_symint(
     c10::SymInt start,
     c10::SymInt end,
     c10::SymInt step) {
-  return at::functionalization::
-      functionalize_aten_op_symint<ATEN_OP(slice_backward)>::call(
-          grad_output,
-          input_sizes,
-          dim,
-          std::move(start),
-          std::move(end),
-          std::move(step));
+  return at::functionalization::functionalize_aten_op_symint<ATEN_OP(
+      slice_backward)>::call(grad_output, input_sizes, dim, start, end, step);
 }
 
-// reuse the composite kernel from core, that way we don't need to provide a
+// re-use the composite kernel from core, that way we don't need to provide a
 // backwards formula for native_group_norm
 std::tuple<Tensor, Tensor, Tensor> LazyNativeFunctions::native_group_norm(
     const at::Tensor& input,
@@ -544,4 +536,5 @@ std::tuple<Tensor, Tensor, Tensor> LazyNativeFunctions::native_group_norm(
       input, weight, bias, N, C, HxW, group, eps);
 }
 
-} // namespace torch::lazy
+} // namespace lazy
+} // namespace torch

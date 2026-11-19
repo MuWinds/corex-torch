@@ -1,4 +1,5 @@
 # Owner(s): ["module: dynamo"]
+
 """ Test functions for linalg module
 
 """
@@ -9,10 +10,13 @@ import subprocess
 import sys
 import textwrap
 import traceback
+
 from unittest import expectedFailure as xfail, skipIf as skipif, SkipTest
 
 import numpy
+
 import pytest
+
 from numpy.linalg.linalg import _multi_dot_matrix_chain_order
 from pytest import raises as assert_raises
 
@@ -23,7 +27,7 @@ from torch.testing._internal.common_utils import (
     slowTest as slow,
     TEST_WITH_TORCHDYNAMO,
     TestCase,
-    xpassIfTorchDynamo_np,
+    xpassIfTorchDynamo,
 )
 
 
@@ -47,13 +51,14 @@ if TEST_WITH_TORCHDYNAMO:
         swapaxes,
     )
     from numpy.linalg import LinAlgError, matrix_power, matrix_rank, multi_dot, norm
-    from numpy.testing import (  # assert_raises_regex, HAS_LAPACK64, IS_WASM
+    from numpy.testing import (
         assert_,
         assert_allclose,
         assert_almost_equal,
         assert_array_equal,
         assert_equal,
         suppress_warnings,
+        #  assert_raises_regex, HAS_LAPACK64, IS_WASM
     )
 
 else:
@@ -87,6 +92,7 @@ else:
         assert_array_equal,
         assert_equal,
         suppress_warnings,
+        #  assert_raises_regex, HAS_LAPACK64, IS_WASM
     )
 
 
@@ -850,7 +856,7 @@ class TestCond(CondCases, TestCase):
         A[0, 1] = np.nan
         for p in ps:
             c = linalg.cond(A, p)
-            assert_(isinstance(c, np.float64))
+            assert_(isinstance(c, np.float_))
             assert_(np.isnan(c))
 
         A = np.ones((3, 2, 2))
@@ -1012,7 +1018,7 @@ class LstsqCases(LinalgSquareTestCase, LinalgNonsquareTestCase):
 
 @instantiate_parametrized_tests
 class TestLstsq(LstsqCases, TestCase):
-    @xpassIfTorchDynamo_np  # (reason="Lstsq: we use the future default =None")
+    @xpassIfTorchDynamo  # (reason="Lstsq: we use the future default =None")
     def test_future_rcond(self):
         a = np.array(
             [
@@ -1757,7 +1763,7 @@ class TestQR(TestCase):
         assert_(isinstance(r2, a_type))
         assert_almost_equal(r2, r1)
 
-    @xpassIfTorchDynamo_np  # (reason="torch does not allow qr(..., mode='raw'")
+    @xpassIfTorchDynamo  # (reason="torch does not allow qr(..., mode='raw'")
     @parametrize("m, n", [(3, 0), (0, 3), (0, 0)])
     def test_qr_empty(self, m, n):
         k = min(m, n)
@@ -1771,7 +1777,7 @@ class TestQR(TestCase):
         assert_equal(h.shape, (n, m))
         assert_equal(tau.shape, (k,))
 
-    @xpassIfTorchDynamo_np  # (reason="torch does not allow qr(..., mode='raw'")
+    @xpassIfTorchDynamo  # (reason="torch does not allow qr(..., mode='raw'")
     def test_mode_raw(self):
         # The factorization is not unique and varies between libraries,
         # so it is not possible to check against known values. Functional
@@ -1907,7 +1913,7 @@ class TestCholesky(TestCase):
 
 
 class TestMisc(TestCase):
-    @xpassIfTorchDynamo_np  # (reason="endianness")
+    @xpassIfTorchDynamo  # (reason="endianness")
     def test_byteorder_check(self):
         # Byte order check should pass for native order
         if sys.byteorder == "little":
@@ -2243,7 +2249,7 @@ class TestTensorsolve(TestCase):
 
 
 class TestMisc2(TestCase):
-    @xpassIfTorchDynamo_np  # (reason="TODO")
+    @xpassIfTorchDynamo  # (reason="TODO")
     def test_unsupported_commontype(self):
         # linalg gracefully handles unsupported type
         arr = np.array([[1, -2], [2, 5]], dtype="float16")

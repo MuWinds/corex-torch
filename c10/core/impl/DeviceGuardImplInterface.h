@@ -8,7 +8,6 @@
 // Just for C10_ANONYMOUS_VARIABLE
 #include <c10/util/Registry.h>
 
-#include <array>
 #include <atomic>
 
 namespace c10 {
@@ -105,7 +104,7 @@ struct C10_API DeviceGuardImplInterface {
   /**
    * Get the current stream for a given device.
    */
-  virtual Stream getStream(Device) const = 0;
+  virtual Stream getStream(Device) const noexcept = 0;
 
   /**
    * Get the default stream for a given device.
@@ -138,7 +137,7 @@ struct C10_API DeviceGuardImplInterface {
    * Return the previous stream for that device. You are NOT required
    * to set the current device to match the device of this stream.
    */
-  virtual Stream exchangeStream(Stream) const = 0;
+  virtual Stream exchangeStream(Stream) const noexcept = 0;
 
   /**
    * Destroys the given event.
@@ -211,15 +210,6 @@ struct C10_API DeviceGuardImplInterface {
    */
   virtual void synchronizeEvent(void* /*event*/) const {
     TORCH_CHECK(false, "Backend doesn't support synchronizing events.");
-  }
-
-  /**
-   * Wait (by blocking the calling thread) until all the work previously
-   * enqueued on the device has been completed.
-   */
-  virtual void synchronizeDevice(const DeviceIndex /*device_index*/) const {
-    TORCH_CHECK(
-        false, "Backend doesn't support synchronizing all streams on device.");
   }
 
   /**
@@ -328,10 +318,10 @@ struct NoOpDeviceGuardImpl final : public DeviceGuardImplInterface {
 // in a Meyer singleton), it implies that you must *leak* objects when
 // putting them in the registry.  This is done by deleting the destructor
 // on DeviceGuardImplInterface.
-extern C10_API std::array<
-    std::atomic<const DeviceGuardImplInterface*>,
-    static_cast<size_t>(DeviceType::COMPILE_TIME_MAX_DEVICE_TYPES)>
-    device_guard_impl_registry;
+// NOLINTNEXTLINE(*c-arrays*)
+extern C10_API std::atomic<const DeviceGuardImplInterface*>
+    device_guard_impl_registry[static_cast<size_t>(
+        DeviceType::COMPILE_TIME_MAX_DEVICE_TYPES)];
 
 // I can't conveniently use c10/util/Registry.h for the following reason:
 // c10/util/Registry.h gives me a slow way of Create'ing a object of some

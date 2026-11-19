@@ -4,7 +4,8 @@
 
 namespace c10 {
 
-namespace detail::infer_schema {
+namespace detail {
+namespace infer_schema {
 namespace {
 
 std::vector<Argument> createArgumentVector(c10::ArrayRef<ArgumentDef> args) {
@@ -39,6 +40,7 @@ FunctionSchema make_function_schema(
     c10::ArrayRef<ArgumentDef> returns) {
   return make_function_schema("", "", arguments, returns);
 }
+} // namespace infer_schema
 } // namespace detail
 
 std::optional<std::string> findSchemaDifferences(
@@ -86,7 +88,7 @@ std::optional<std::string> findSchemaDifferences(
   }
 
   // no differences found
-  return std::nullopt;
+  return c10::nullopt;
 }
 
 } // namespace c10

@@ -3,7 +3,9 @@
 #if AT_MKLDNN_ENABLED()
 #include <ATen/native/mkldnn/ConvPrepack.h>
 
-namespace at::native::mkldnn {
+namespace at {
+namespace native {
+namespace mkldnn {
 
 c10::intrusive_ptr<ConvOpContext> MkldnnConvOpContext::create_context(
     at::Tensor&& weight,
@@ -38,6 +40,8 @@ void MkldnnConvOpContext::run(const Tensor& input, void* output) {
   mkldnn::internal::convolution::run(op_context_, input, output);
 }
 
+} // namespace mkldnn
+} // namespace native
 } // namespace at
 
 #endif // AT_MKLDNN_ENABLED()

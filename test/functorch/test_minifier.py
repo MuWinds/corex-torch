@@ -1,6 +1,7 @@
 # Owner(s): ["module: functorch"]
 
 import torch
+
 from functorch import make_fx
 from functorch.compile import minifier
 from torch._functorch.compile_utils import get_outputs, get_placeholders
@@ -86,7 +87,7 @@ class TestMinifier(TestCase):
 
     def test_module(self):
         class MockModule(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.relu = torch.nn.ReLU()
 

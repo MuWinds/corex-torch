@@ -41,7 +41,7 @@ const Tensor& input,
     bool bidirectional,
     bool batch_first,
     bool train) {
-      TORCH_CHECK(false, "mkldnn_rnn_layer: ATen not compiled with MKLDNN support");
+      AT_ERROR("mkldnn_rnn_layer: ATen not compiled with MKLDNN support");
   }
 
 std::tuple<Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor> mkldnn_rnn_layer_backward(
@@ -68,10 +68,10 @@ std::tuple<Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor> mkldnn_rnn_la
     at::IntArrayRef batch_sizes,
     bool batch_first,
     const at::Tensor& workspace) {
-      TORCH_CHECK(false, "mkldnn_rnn_layer_backward: ATen not compiled with MKLDNN support");
+      AT_ERROR("mkldnn_rnn_layer_backward: ATen not compiled with MKLDNN support");
     }
 
-REGISTER_NO_CPU_DISPATCH(lstm_mkldnn_stub)
+REGISTER_NO_CPU_DISPATCH(lstm_mkldnn_stub);
 
 } // namespace at::native
 
@@ -168,8 +168,12 @@ struct RNNParams {
   }
 };
 
+static std::vector<int64_t> _hidden_size(const RNNParams& rnn) {
+  return {rnn.num_layers * rnn.num_directions, rnn.mini_batch, rnn.hidden_size};
+}
+
 template<bool is_single_direction>
-static std::vector<int64_t> _output_size(const RNNParams& rnn) {
+std::vector<int64_t> _output_size(const RNNParams& rnn) {
   auto output_channels = is_single_direction ? rnn.hidden_size
                                              : rnn.hidden_size * rnn.num_directions;
   return {rnn.seq_length, rnn.mini_batch, output_channels};
@@ -315,9 +319,9 @@ std::tuple<Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor> mkldnn_rnn_la
     at::IntArrayRef batch_sizes,
     bool batch_first,
     const at::Tensor& workspace) {
-  const Tensor& grad_output_r = grad_output_r_opt.value_or(Tensor());
-  const Tensor& grad_hy_r = grad_hy_r_opt.value_or(Tensor());
-  const Tensor& grad_cy_r = grad_cy_r_opt.value_or(Tensor());
+  const Tensor& grad_output_r = c10::value_or_else(grad_output_r_opt, [] {return Tensor();});
+  const Tensor& grad_hy_r = c10::value_or_else(grad_hy_r_opt, [] {return Tensor();});
+  const Tensor& grad_cy_r = c10::value_or_else(grad_cy_r_opt, [] {return Tensor();});
   if (!grad_output_r.defined() && !grad_hy_r.defined() && !grad_cy_r.defined()) {
       return std::make_tuple(Tensor(), Tensor(), Tensor(), Tensor(), Tensor(), Tensor(), Tensor());
   }
@@ -457,7 +461,7 @@ static std::tuple<Tensor, Tensor, Tensor> mkldnn_rnn(
     int64_t mode, int64_t hidden_size,
     int64_t num_layers, bool has_biases, bool batch_first, double dropout_p,
     bool train, bool bidirectional, IntArrayRef batch_sizes) {
-  TORCH_CHECK(batch_sizes.empty(), "mkldnn_rnn doesn't support packed input");
+  TORCH_CHECK(batch_sizes.size() == 0, "mkldnn_rnn doesn't support packed input");
   if (static_cast<ideep::rnn_kind>(mode) != ideep::rnn_kind::LSTM) {
     TORCH_CHECK(!cx_.defined(), "mkldnn_rnn: illegal defined cx for non-LSTM RNN");
   }
@@ -487,36 +491,13 @@ static std::tuple<Tensor, Tensor, Tensor> mkldnn_rnn(
       auto layer_cx = cx[index];
       auto reverse = (direction > 0);
       // bias won't be packed
-      std::tie(
-          layer_output[direction],
-          layer_hy[index],
-          layer_cy[index],
-          std::ignore) =
-          at::mkldnn_rnn_layer(
-              layer_input,
-              layer_weights[0],
-              layer_weights[1],
-              has_biases
-                  ? layer_weights[2]
-                  : at::zeros(
-                        layer_weights[0].sizes(),
-                        layer_weights[0].options().layout(at::Layout::Strided)),
-              has_biases
-                  ? layer_weights[3]
-                  : at::zeros(
-                        layer_weights[1].sizes(),
-                        layer_weights[1].options().layout(at::Layout::Strided)),
-              layer_hx,
-              layer_cx,
-              reverse,
-              batch_sizes,
-              mode,
-              hidden_size,
-              num_layers,
-              has_biases,
-              bidirectional,
-              batch_first,
-              train);
+      auto outputs = at::mkldnn_rnn_layer(layer_input, layer_weights[0], layer_weights[1],
+                                        has_biases ? layer_weights[2] : at::zeros(layer_weights[0].sizes(), layer_weights[0].options().layout(at::Layout::Strided)),
+          has_biases ? layer_weights[3] : at::zeros(layer_weights[1].sizes(), layer_weights[1].options().layout(at::Layout::Strided)), layer_hx,
+          layer_cx, reverse, batch_sizes, mode, hidden_size, num_layers, has_biases, bidirectional, batch_first, train);
+      layer_output[direction] = std::get<0>(outputs);
+      layer_hy[index] = std::get<1>(outputs);
+      layer_cy[index] = std::get<2>(outputs);
     }
     layer_input = num_directions == 1 ? layer_output[0]
                                       : at::cat(layer_output, /*output_channels*/-1);
@@ -546,7 +527,8 @@ std::tuple<Tensor, Tensor> unpack_hidden(const std::tuple<Tensor, Tensor>& hidde
 
 template<typename hidden_type>
 hidden_type pack_hidden(const Tensor& hx, const Tensor& cx) {
-  static_assert(false && sizeof(hidden_type), "pack_hidden not implemented for this type");
+  static_assert(std::is_same<hidden_type, void>::value, "pack_hidden not implemented for this type");
+  AT_ERROR("NOT IMPLEMENTED");
 }
 
 template<>
@@ -576,12 +558,13 @@ void lstm_mkldnn(Tensor& output, Tensor& hy, Tensor& cy,
     int64_t num_layers, double dropout_p, bool train, bool bidirectional, bool batch_first) {
   auto result = mkldnn_impl(input, std::make_tuple(hx[0], hx[1]), params, has_biases,
       ideep::rnn_kind::LSTM, num_layers, dropout_p, train, bidirectional, batch_first);
-  output = std::move(result.first);
-  std::tie(hy, cy) = std::move(result.second);
+  output = result.first;
+  hy = std::get<0>(result.second);
+  cy = std::get<1>(result.second);
 }
 } // anonymous namespace
 
-REGISTER_ALL_CPU_DISPATCH(lstm_mkldnn_stub, &lstm_mkldnn)
+REGISTER_ALL_CPU_DISPATCH(lstm_mkldnn_stub, &lstm_mkldnn);
 
 } // namespace at::native
 

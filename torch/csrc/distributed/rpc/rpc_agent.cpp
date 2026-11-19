@@ -1,7 +1,9 @@
 #include <c10/util/DeadlockDetection.h>
 #include <torch/csrc/distributed/rpc/rpc_agent.h>
 
-namespace torch::distributed::rpc {
+namespace torch {
+namespace distributed {
+namespace rpc {
 
 RegisterWorkerInfoOnce::RegisterWorkerInfoOnce() {
   // WorkerInfo needs to be registered exactly once. Since the op registration
@@ -23,7 +25,7 @@ WorkerInfo::WorkerInfo(std::string name, int64_t id)
 
 WorkerInfo::WorkerInfo(std::string name, worker_id_t id)
     : name_(std::move(name)), id_(id) {
-  bool validSize = name_.length() < MAX_NAME_LEN && !name_.empty();
+  bool validSize = name_.length() < MAX_NAME_LEN && name_.length() > 0;
   bool validChar =
       std::find_if(name_.begin(), name_.end(), [](char c) {
         return !(std::isalnum(c) || c == '-' || c == '_' || c == ':');
@@ -219,6 +221,10 @@ void RpcAgent::rpcRetryCallback(
       // If the RPC Agent has shutdown, we cannot retry messages. Thus we mark
       // the future with an error since the RPC was never completed
       // successfully.
+      std::string errorMessage = c10::str(
+          "RPC Agent is no longer running on Node ",
+          RpcAgent::getWorkerInfo().id_,
+          ". Cannot retry message.");
       earliestRpc->originalFuture_->setError(jitFuture.exception_ptr());
     } else if (earliestRpc->retryCount_ < earliestRpc->options_.maxRetries) {
       // If the previous future completed with an error and we haven't
@@ -329,4 +335,6 @@ std::ostream& operator<<(std::ostream& os, const WorkerInfo& workerInfo) {
             << ", name=" << workerInfo.name_ << ")";
 }
 
-} // namespace torch::distributed::rpc
+} // namespace rpc
+} // namespace distributed
+} // namespace torch

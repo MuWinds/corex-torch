@@ -4,22 +4,23 @@
 #include <torch/csrc/distributed/autograd/rpc_messages/propagate_gradients_req.h>
 #include <torch/csrc/distributed/rpc/rpc_agent.h>
 
-namespace torch::distributed::autograd {
+namespace torch {
+namespace distributed {
+namespace autograd {
 
 using torch::autograd::Variable;
 using torch::autograd::variable_list;
 
 RecvRpcBackward::RecvRpcBackward(
     const AutogradMetadata& autogradMetadata,
-    const ContextPtr& autogradContext,
+    ContextPtr autogradContext,
     rpc::worker_id_t fromWorkerId,
     rpc::DeviceMap deviceMap)
     : autogradMetadata_(autogradMetadata),
-      autogradContext_(autogradContext),
+      autogradContext_(std::move(autogradContext)),
       fromWorkerId_(fromWorkerId),
       deviceMap_(std::move(deviceMap)) {}
 
-// NOLINTNEXTLINE(cppcoreguidelines-rvalue-reference-param-not-moved)
 variable_list RecvRpcBackward::apply(variable_list&& grads) {
   std::vector<Variable> outputGrads;
   for (const auto i : c10::irange(grads.size())) {
@@ -63,4 +64,6 @@ variable_list RecvRpcBackward::apply(variable_list&& grads) {
   return variable_list();
 }
 
-} // namespace torch::distributed::autograd
+} // namespace autograd
+} // namespace distributed
+} // namespace torch

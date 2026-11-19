@@ -6,16 +6,15 @@ from pathlib import Path
 
 import torch
 
+# import torch.ao.nn.quantized as nnq
 from torch.testing._internal.common_quantization import (
     QuantizationTestCase,
     SingleLayerLinearModel,
 )
 from torch.testing._internal.common_quantized import override_quantized_engine
-from torch.testing._internal.common_utils import raise_on_run_directly, IS_ARM64, IS_FBCODE
-import unittest
+from torch.testing._internal.common_utils import IS_ARM64
 
 
-@unittest.skipIf(IS_FBCODE, "some path issues in fbcode")
 class TestQuantizationDocs(QuantizationTestCase):
     r"""
     The tests in this section import code from the quantization docs and check that
@@ -51,7 +50,7 @@ class TestQuantizationDocs(QuantizationTestCase):
                 "been updated to have the correct relative path between "
                 "test_docs.py and the docs."
             )
-            pytorch_root = core_dir.parents[2]
+            pytorch_root = core_dir.parent.parent.parent
             return pytorch_root / path_from_pytorch
 
         path_to_file = get_correct_path(path_from_pytorch)
@@ -141,6 +140,3 @@ class TestQuantizationDocs(QuantizationTestCase):
 
         code = self._get_code(path_from_pytorch, unique_identifier)
         self._test_code(code, global_inputs)
-
-if __name__ == "__main__":
-    raise_on_run_directly("test/test_quantization.py")

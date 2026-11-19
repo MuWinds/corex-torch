@@ -6,8 +6,8 @@
 #include <ATen/native/quantized/FakeQuantAffine.h>
 
 // FakeQuantize Op for PerTensorAffine quantization scheme.
-
-namespace at::native {
+namespace at {
+namespace native {
 
 // Use REGISTER_DISPATCH to run CPU and CUDA backend.
 DEFINE_DISPATCH(fake_quant_tensor_cachemask_stub);
@@ -34,9 +34,9 @@ Tensor fake_quantize_per_tensor_affine(
     int64_t zero_point,
     int64_t quant_min,
     int64_t quant_max) {
-  auto res = at::fake_quantize_per_tensor_affine_cachemask(
+  const auto res = at::fake_quantize_per_tensor_affine_cachemask(
       self, scale, zero_point, quant_min, quant_max);
-  return std::get<0>(std::move(res));
+  return std::get<0>(res);
 }
 
 Tensor fake_quantize_per_tensor_affine(
@@ -45,9 +45,9 @@ Tensor fake_quantize_per_tensor_affine(
     const Tensor& zero_point,
     int64_t quant_min,
     int64_t quant_max) {
-  auto res = at::_fake_quantize_per_tensor_affine_cachemask_tensor_qparams(
+  const auto res = at::_fake_quantize_per_tensor_affine_cachemask_tensor_qparams(
       self, scale, zero_point, at::ones(1, self.options().dtype(at::kLong)), quant_min, quant_max);
-  return std::get<0>(std::move(res));
+  return std::get<0>(res);
 }
 
 /* Fake-quantizes the 'inputs' tensor, saving a mask for the backward pass.
@@ -226,4 +226,5 @@ std::tuple<Tensor, Tensor, Tensor> _fake_quantize_learnable_per_tensor_affine_ba
   return std::make_tuple(dX, dScale, dZeroPoint);
 }
 
-} // namespace at::native
+} // namespace native
+} // namespace at

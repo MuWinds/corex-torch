@@ -2,16 +2,15 @@
 #include <torch/nn/init.h>
 #include <torch/nn/modules/activation.h>
 
-#include <utility>
-
 namespace F = torch::nn::functional;
 
-namespace torch::nn {
+namespace torch {
+namespace nn {
 
 ELUImpl::ELUImpl(const ELUOptions& options_) : options(options_) {}
 
 Tensor ELUImpl::forward(Tensor input) {
-  return F::detail::elu(std::move(input), options.alpha(), options.inplace());
+  return F::detail::elu(input, options.alpha(), options.inplace());
 }
 
 void ELUImpl::reset() {}
@@ -29,7 +28,7 @@ void ELUImpl::pretty_print(std::ostream& stream) const {
 SELUImpl::SELUImpl(const SELUOptions& options_) : options(options_) {}
 
 Tensor SELUImpl::forward(Tensor input) {
-  return F::detail::selu(std::move(input), options.inplace());
+  return F::detail::selu(input, options.inplace());
 }
 
 void SELUImpl::reset() {}
@@ -62,15 +61,13 @@ void HardshrinkImpl::pretty_print(std::ostream& stream) const {
 
 HardtanhImpl::HardtanhImpl(const HardtanhOptions& options_)
     : options(options_) {
-  HardtanhImpl::reset();
+  // NOLINTNEXTLINE(clang-analyzer-optin.cplusplus.VirtualCall)
+  reset();
 }
 
 Tensor HardtanhImpl::forward(Tensor input) {
   return F::detail::hardtanh(
-      std::move(input),
-      options.min_val(),
-      options.max_val(),
-      options.inplace());
+      input, options.min_val(), options.max_val(), options.inplace());
 }
 
 void HardtanhImpl::reset() {
@@ -96,7 +93,7 @@ LeakyReLUImpl::LeakyReLUImpl(const LeakyReLUOptions& options_)
 
 Tensor LeakyReLUImpl::forward(Tensor input) {
   return F::detail::leaky_relu(
-      std::move(input), options.negative_slope(), options.inplace());
+      input, options.negative_slope(), options.inplace());
 }
 
 void LeakyReLUImpl::reset() {}
@@ -133,7 +130,7 @@ void SoftmaxImpl::pretty_print(std::ostream& stream) const {
 }
 
 Tensor SoftmaxImpl::forward(const Tensor& input) {
-  return F::detail::softmax(input, options.dim(), std::nullopt);
+  return F::detail::softmax(input, options.dim(), c10::nullopt);
 }
 
 // ============================================================================
@@ -147,7 +144,7 @@ void SoftminImpl::pretty_print(std::ostream& stream) const {
 }
 
 Tensor SoftminImpl::forward(const Tensor& input) {
-  return F::detail::softmin(input, options.dim(), std::nullopt);
+  return F::detail::softmin(input, options.dim(), c10::nullopt);
 }
 
 // ============================================================================
@@ -162,7 +159,7 @@ void LogSoftmaxImpl::pretty_print(std::ostream& stream) const {
 }
 
 Tensor LogSoftmaxImpl::forward(const Tensor& input) {
-  return F::detail::log_softmax(input, options.dim(), std::nullopt);
+  return F::detail::log_softmax(input, options.dim(), c10::nullopt);
 }
 
 // ============================================================================
@@ -177,13 +174,14 @@ Tensor Softmax2dImpl::forward(const Tensor& input) {
   TORCH_CHECK(
       input.dim() == 4 || input.dim() == 3,
       "Softmax2d requires a 3D or 4D tensor as input");
-  return F::detail::softmax(input, /*dim=*/-3, std::nullopt);
+  return F::detail::softmax(input, /*dim=*/-3, c10::nullopt);
 }
 
 // ============================================================================
 
 PReLUImpl::PReLUImpl(const PReLUOptions& options_) : options(options_) {
-  PReLUImpl::reset();
+  // NOLINTNEXTLINE(clang-analyzer-optin.cplusplus.VirtualCall)
+  reset();
 }
 
 Tensor PReLUImpl::forward(const Tensor& input) {
@@ -205,7 +203,7 @@ void PReLUImpl::pretty_print(std::ostream& stream) const {
 ReLUImpl::ReLUImpl(const ReLUOptions& options_) : options(options_) {}
 
 Tensor ReLUImpl::forward(Tensor input) {
-  return F::detail::relu(std::move(input), options.inplace());
+  return F::detail::relu(input, options.inplace());
 }
 
 void ReLUImpl::reset() {}
@@ -223,7 +221,7 @@ void ReLUImpl::pretty_print(std::ostream& stream) const {
 ReLU6Impl::ReLU6Impl(const ReLU6Options& options_) : options(options_) {}
 
 Tensor ReLU6Impl::forward(Tensor input) {
-  return F::detail::relu6(std::move(input), options.inplace());
+  return F::detail::relu6(input, options.inplace());
 }
 
 void ReLU6Impl::reset() {}
@@ -242,7 +240,7 @@ RReLUImpl::RReLUImpl(const RReLUOptions& options_) : options(options_) {}
 
 Tensor RReLUImpl::forward(Tensor input) {
   return F::detail::rrelu(
-      std::move(input),
+      input,
       options.lower(),
       options.upper(),
       is_training(),
@@ -265,7 +263,7 @@ void RReLUImpl::pretty_print(std::ostream& stream) const {
 CELUImpl::CELUImpl(const CELUOptions& options_) : options(options_) {}
 
 Tensor CELUImpl::forward(Tensor input) {
-  return F::detail::celu(std::move(input), options.alpha(), options.inplace());
+  return F::detail::celu(input, options.alpha(), options.inplace());
 }
 
 void CELUImpl::reset() {}
@@ -416,10 +414,7 @@ ThresholdImpl::ThresholdImpl(const ThresholdOptions& options_)
 
 Tensor ThresholdImpl::forward(Tensor input) {
   return F::detail::threshold(
-      std::move(input),
-      options.threshold(),
-      options.value(),
-      options.inplace());
+      input, options.threshold(), options.value(), options.inplace());
 }
 
 void ThresholdImpl::reset() {}
@@ -438,7 +433,8 @@ void ThresholdImpl::pretty_print(std::ostream& stream) const {
 MultiheadAttentionImpl::MultiheadAttentionImpl(
     const MultiheadAttentionOptions& options_)
     : Cloneable("torch::nn::MultiheadAttention"), options(options_) {
-  MultiheadAttentionImpl::reset();
+  // NOLINTNEXTLINE(clang-analyzer-optin.cplusplus.VirtualCall)
+  reset();
 }
 
 std::tuple<Tensor, Tensor> MultiheadAttentionImpl::forward(
@@ -565,4 +561,5 @@ void MultiheadAttentionImpl::_reset_parameters() {
   }
 }
 
-} // namespace torch::nn
+} // namespace nn
+} // namespace torch

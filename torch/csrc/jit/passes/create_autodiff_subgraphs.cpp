@@ -10,7 +10,8 @@
 #include <torch/csrc/jit/passes/utils/subgraph_utils.h>
 #include <torch/csrc/jit/runtime/autodiff.h>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 namespace {
 
@@ -103,8 +104,9 @@ class SubgraphSlicer {
         any_changed = false;
         for (auto it = workblock.end()->reverseIterator();
              it != workblock.begin()->reverseIterator();) {
-          auto [tmp_it, changed] = scanNode(*it);
-          it = tmp_it;
+          // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+          bool changed;
+          std::tie(it, changed) = scanNode(*it);
           any_changed |= changed;
         }
       }
@@ -285,7 +287,7 @@ class SubgraphSlicer {
         aliasDb_.moveBeforeTopologicallyValid(producer, consumer);
 
     if (!canMerge) {
-      return std::nullopt;
+      return c10::nullopt;
     }
 
     SubgraphUtils::mergeNodeIntoSubgraphAndUpdateAliasing(
@@ -303,11 +305,11 @@ class SubgraphSlicer {
 std::optional<bool> getProfileNodeRequiresGrad(Node* n) {
   TORCH_INTERNAL_ASSERT(n->kind() == prim::profile);
   if (!n->hasAttribute(attr::profiled_type)) {
-    return std::nullopt;
+    return c10::nullopt;
   }
   auto& type = n->ty(attr::profiled_type);
   if (type->castRaw<TensorType>() == nullptr) {
-    return std::nullopt;
+    return c10::nullopt;
   }
   return type->expectRef<TensorType>().requiresGrad();
 }
@@ -372,9 +374,9 @@ std::optional<bool> findRequiresGradForOutput(
     }
 
     if (use.user->kind() == prim::profile) {
-      auto req_grad_use = getProfileNodeRequiresGrad(use.user);
-      if (req_grad_use.has_value()) {
-        return req_grad_use;
+      std::optional<bool> req_grad_use;
+      if ((req_grad_use = getProfileNodeRequiresGrad(use.user)).has_value()) {
+        return req_grad_use.value();
       }
     }
 
@@ -391,16 +393,17 @@ std::optional<bool> findRequiresGradForOutput(
         }
 
         if (dg_use.user->kind() == prim::profile) {
-          auto req_grad_use = getProfileNodeRequiresGrad(dg_use.user);
-          if (req_grad_use.has_value()) {
-            return req_grad_use;
+          std::optional<bool> req_grad_use;
+          if ((req_grad_use = getProfileNodeRequiresGrad(dg_use.user))
+                  .has_value()) {
+            return req_grad_use.value();
           }
         }
       }
     }
   }
 
-  return std::nullopt;
+  return c10::nullopt;
 }
 
 void AddRequiresGradToDifferentiableGraph(
@@ -471,4 +474,5 @@ std::vector<Node*> CreateAutodiffSubgraphs(
   GRAPH_DEBUG("diff_nodes.size() ", diff_nodes.size());
   return diff_nodes;
 }
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

@@ -19,7 +19,8 @@
 #include <cstring>
 
 
-namespace at::native {
+namespace at {
+namespace native {
 
 // Define a typedef to dispatch to nearest_idx or nearest_exact_idx
 typedef int64_t (*nn_compute_source_index_fn_t)(const float, int64_t, int64_t);
@@ -117,7 +118,7 @@ static void upsample_nearest2d_out_frame_nhwc(
 }
 
 template <nn_compute_source_index_fn_t nn_compute_source_index_fn>
-static Tensor _upsample_nearest2d_quantized_cpu(
+Tensor _upsample_nearest2d_quantized_cpu(
     const Tensor& input,
     IntArrayRef output_size,
     std::optional<double> scales_h,
@@ -146,7 +147,7 @@ static Tensor _upsample_nearest2d_quantized_cpu(
         input.options().memory_format(input.suggest_memory_format()),
         input.q_scale(),
         input.q_zero_point(),
-        std::nullopt);
+        c10::nullopt);
 
     // special case: just copy
     if (input_height == output_height && input_width == output_width) {
@@ -217,4 +218,5 @@ Tensor _upsample_nearest_exact2d_quantized_cpu(
   return _upsample_nearest2d_quantized_cpu<nearest_neighbor_exact_compute_source_index>(input, osize, scale_h, scale_w);
 }
 
-} // namespace at::native
+} // namespace native
+} // namespace at

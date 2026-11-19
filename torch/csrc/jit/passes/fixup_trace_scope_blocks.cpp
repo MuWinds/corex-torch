@@ -9,7 +9,8 @@
 
 #include <algorithm>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 namespace {
 
@@ -387,7 +388,7 @@ std::string mangleMethodName(
   for (size_t method_idx = 0;; method_idx++) {
     auto mangled = method_name;
     if (method_idx != 0) {
-      mangled += std::to_string(method_idx);
+      mangled += c10::to_string(method_idx);
     }
     bool found = false;
     for (Function* fn : mod_type->methods()) {
@@ -550,4 +551,5 @@ void FixupTraceScopeBlocks(std::shared_ptr<Graph>& graph, Module* self) {
   }
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

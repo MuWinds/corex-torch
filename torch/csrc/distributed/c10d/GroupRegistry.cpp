@@ -70,11 +70,12 @@ bool get_thread_isolation_mode() {
 
 void register_process_group(
     const std::string& group_name,
-    const c10::intrusive_ptr<c10d::ProcessGroup>& group) {
+    c10::intrusive_ptr<c10d::ProcessGroup> group) {
   if (thread_isolation_mode) {
-    RankLocal<::GroupRegistry>::get().register_group(group_name, group);
+    RankLocal<::GroupRegistry>::get().register_group(
+        group_name, std::move(group));
   } else {
-    process_registry.register_group(group_name, group);
+    process_registry.register_group(group_name, std::move(group));
   }
 }
 

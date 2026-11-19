@@ -12,8 +12,6 @@ using namespace torch;
 using namespace at;
 using namespace c10;
 
-namespace torch::detail {
-
 namespace {
 
 // NB: This is a macro and not a template function (like it was before)
@@ -44,7 +42,6 @@ struct ConcretePyInterpreterVTable final
     : public c10::impl::PyInterpreterVTable {
   std::string name() const override;
 
-  void incref(PyObject* pyobj) const override;
   void decref(PyObject* pyobj, bool has_pyobj_slot) const override;
 
   // TODO: Need to make this work for StorageImpl too. I imagine I'll want to
@@ -65,10 +62,9 @@ struct ConcretePyInterpreterVTable final
       c10::DispatchKey key,
       c10::DispatchKeySet keyset,
       torch::jit::Stack* stack,
-      bool with_keyset,
-      bool with_op) const override {
+      bool with_keyset) const override {
     torch::impl::dispatch::python_op_registration_trampoline_impl(
-        op, key, keyset, stack, with_keyset, with_op);
+        op, key, keyset, stack, with_keyset);
   }
   void throw_abstract_impl_not_imported_error(
       std::string opname,
@@ -159,10 +155,6 @@ class PyInterpreterHolder {
         is_main_interpreter_(
             at::impl::PythonOpRegistrationTrampoline::registerInterpreter(
                 impl_)) {}
-  PyInterpreterHolder(const PyInterpreterHolder&) = delete;
-  PyInterpreterHolder(PyInterpreterHolder&&) = delete;
-  PyInterpreterHolder& operator=(const PyInterpreterHolder&) = delete;
-  PyInterpreterHolder& operator=(PyInterpreterHolder&&) = delete;
   // NB: intentionally leaks the PyInterpreter, as there may still be
   // references to it that are live, living in objects that aren't being
   // destructed while Python is being cleaned up.
@@ -202,7 +194,8 @@ py::object torchDispatchFromTensorImpl(
       c10::intrusive_ptr<c10::TensorImpl, c10::UndefinedTensorImpl>::
           // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
       unsafe_reclaim_from_nonowning(const_cast<c10::TensorImpl*>(self)));
-  auto self_p = py::reinterpret_steal<py::object>(THPVariable_Wrap(self_t));
+  auto self_p =
+      py::reinterpret_steal<py::object>(THPVariable_Wrap(std::move(self_t)));
   // NB: this may not be a python tensor if you got here from a mode!
   // TORCH_INTERNAL_ASSERT(isPythonTensor(self_t));
   append_overloaded_tensor(&overloaded_args, self_p.ptr());
@@ -277,13 +270,30 @@ void ConcretePyInterpreterVTable::decref(PyObject* pyobj, bool has_pyobj_slot)
     }
   }
   Py_DECREF(pyobj);
-}
+};
 
-void ConcretePyInterpreterVTable::incref(PyObject* pyobj) const {
-  if (!Py_IsInitialized())
-    return;
-  pybind11::gil_scoped_acquire gil;
-  Py_INCREF(pyobj);
+py::handle getTorchApiFunction(const c10::OperatorHandle& op) {
+  return op.getPythonOp(getPyInterpreter(), [&]() -> PyObject* {
+    // Parse the name into namespace and name (no overload_name)
+    // TODO: put this into the library
+    const auto& schema = op.schema();
+    const auto& qualified_name = op.operator_name().name;
+    const auto& overload_name = schema.overload_name();
+    auto pos = qualified_name.find("::");
+    TORCH_INTERNAL_ASSERT(pos != std::string::npos, qualified_name);
+    // Make me some null terminated strings
+    std::string ns_str = qualified_name.substr(0, pos);
+    const char* ns = ns_str.c_str();
+    const char* func_name = qualified_name.c_str() + pos + strlen("::");
+
+    py::handle torch_api_function =
+        py::module::import("torch").attr("ops").attr(ns).attr(func_name);
+    if (overload_name.empty()) {
+      return torch_api_function.attr("default").ptr();
+    } else {
+      return torch_api_function.attr(overload_name.c_str()).ptr();
+    }
+  });
 }
 
 bool isPythonTensor(const at::Tensor& tensor) {
@@ -370,12 +380,9 @@ void ConcretePyInterpreterVTable::python_dispatcher(
   }
 
   c10::DispatchKey k = ks.highestPriorityTypeId();
-  PyObject* raw_handler = nullptr;
-  if (PyDict_GetItemRef(cache.ptr(), py::cast(k).ptr(), &raw_handler) < 0) {
-    // There was an error that is not missing key (which would return 0)
-    throw python_error();
-  }
-  auto handler = py::reinterpret_steal<py::object>(raw_handler);
+  // TODO: allow this to be non-owning
+  auto handler = py::reinterpret_borrow<py::object>(
+      PyDict_GetItem(cache.ptr(), py::cast(k).ptr()));
   if (handler.ptr() == nullptr) {
     // Slow path
     handler = torch_api_function_overload.attr("_get_dispatch")(k);
@@ -635,7 +642,7 @@ static c10::ArrayRef<T> get_set_cached_attr(
   // is also to <=5 elements, we don't need to reallocate.
   // Note: I tried removing this optimization and tripped ASAN
   // in a batchnorm kernel here:
-  // https://pipelinesghubeus21.actions.githubusercontent.com/mBh68xKhi8LyM7tp3vECvYXNFvuV4gyVGgmYCteuEZP9JH92QN/_apis/pipelines/1/runs/3373307/signedlogcontent/790?urlExpires=2023-09-15T21%3A13%3A51.4327798Z&urlSigningMethod=HMACV1&urlSignature=tDeX7ZqaARVU5NNwyr5yYqqkWq3A2j4z8FFdqYwGr0Q%3D@lint-ignore
+  // https://pipelinesghubeus21.actions.githubusercontent.com/mBh68xKhi8LyM7tp3vECvYXNFvuV4gyVGgmYCteuEZP9JH92QN/_apis/pipelines/1/runs/3373307/signedlogcontent/790?urlExpires=2023-09-15T21%3A13%3A51.4327798Z&urlSigningMethod=HMACV1&urlSignature=tDeX7ZqaARVU5NNwyr5yYqqkWq3A2j4z8FFdqYwGr0Q%3D
   // We should fix this instead.
   bool needs_resize = false;
   // We need to resize if:
@@ -943,51 +950,26 @@ void ConcretePyInterpreterVTable::reset_backward_hooks(
       Tensor(c10::intrusive_ptr<c10::TensorImpl, c10::UndefinedTensorImpl>::
                  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
              unsafe_reclaim_from_nonowning(const_cast<c10::TensorImpl*>(self)));
-  auto self_p = py::reinterpret_steal<py::object>(THPVariable_Wrap(self_t));
+  auto self_p =
+      py::reinterpret_steal<py::object>(THPVariable_Wrap(std::move(self_t)));
   PyObject_SetAttrString(self_p.ptr(), "_backward_hooks", Py_None);
   END_HANDLE_TH_ERRORS_PYBIND
-}
-
-std::string ConcretePyInterpreterVTable::name() const {
-  std::stringstream ss;
-  ss << getPyInterpreter();
-  return ss.str();
 }
 
 PyInterpreterHolder self_interpreter;
 
 } // anonymous namespace
 
-py::handle getTorchApiFunction(const c10::OperatorHandle& op) {
-  return op.getPythonOp(getPyInterpreter(), [&]() -> PyObject* {
-    // Parse the name into namespace and name (no overload_name)
-    // TODO: put this into the library
-    const auto& schema = op.schema();
-    const auto& qualified_name = op.operator_name().name;
-    const auto& overload_name = schema.overload_name();
-    auto pos = qualified_name.find("::");
-    TORCH_INTERNAL_ASSERT(pos != std::string::npos, qualified_name);
-    // Make me some null terminated strings
-    std::string ns_str = qualified_name.substr(0, pos);
-    const char* ns = ns_str.c_str();
-    const char* func_name = qualified_name.c_str() + pos + strlen("::");
-
-    py::handle torch_api_function =
-        py::module::import("torch").attr("ops").attr(ns).attr(func_name);
-    if (overload_name.empty()) {
-      return torch_api_function.attr("default").ptr();
-    } else {
-      return torch_api_function.attr(overload_name.c_str()).ptr();
-    }
-  });
-}
-
-} // namespace torch::detail
-
 c10::impl::PyInterpreter* getPyInterpreter() {
-  return torch::detail::self_interpreter.get();
+  return self_interpreter.get();
 }
 
 bool isMainPyInterpreter() {
-  return torch::detail::self_interpreter.is_main_interpreter();
+  return self_interpreter.is_main_interpreter();
+}
+
+std::string ConcretePyInterpreterVTable::name() const {
+  std::stringstream ss;
+  ss << getPyInterpreter();
+  return ss.str();
 }

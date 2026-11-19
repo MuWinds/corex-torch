@@ -2,10 +2,14 @@
 
 import copy
 import itertools
+import logging
 import math
+
+from typing import Tuple
 
 import torch
 from torch import nn
+
 from torch.ao.pruning._experimental.data_sparsifier import (
     BaseDataSparsifier,
     DataNormSparsifier,
@@ -14,7 +18,11 @@ from torch.ao.pruning._experimental.data_sparsifier.quantization_utils import (
     post_training_sparse_quantize,
 )
 from torch.nn.utils.parametrize import is_parametrized
-from torch.testing._internal.common_utils import raise_on_run_directly, TestCase
+from torch.testing._internal.common_utils import TestCase
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
 
 
 class ImplementedSparsifier(BaseDataSparsifier):
@@ -47,7 +55,7 @@ class _BaseDataSparsiferTestCase(TestCase):
 
     @staticmethod
     def _get_name_data_config(some_data, defaults=None):
-        if isinstance(some_data, tuple):
+        if isinstance(some_data, Tuple):
             # dealing with data_list
             name, data = some_data
             config = defaults
@@ -475,9 +483,8 @@ class TestBaseDataSparsifier(_BaseDataSparsiferTestCase):
             nn.Parameter(torch.randn(4, 4)),
             nn.Parameter(torch.randn(5, 5)),
         )
-        param4, param5 = (
-            nn.Parameter(torch.randn(1, 1)),
-            nn.Parameter(torch.randn(4, 4)),
+        param4, param5 = nn.Parameter(torch.randn(1, 1)), nn.Parameter(
+            torch.randn(4, 4)
         )
         data_list = [("param1", param1), ("param2", param2), ("param3", param3)]
         defaults = {"test": 3}
@@ -494,7 +501,9 @@ class TestBaseDataSparsifier(_BaseDataSparsiferTestCase):
         (
             emb1,
             emb2,
-        ) = nn.Embedding(10, 3), nn.Embedding(20, 3)
+        ) = nn.Embedding(
+            10, 3
+        ), nn.Embedding(20, 3)
         emb1_bag, emb2_bag = nn.EmbeddingBag(10, 3), nn.EmbeddingBag(20, 3)
 
         emb3, emb3_bag = nn.Embedding(15, 3), nn.EmbeddingBag(20, 3)
@@ -577,9 +586,8 @@ class TestNormDataSparsifiers(_NormDataSparsifierTestCase):
             nn.Parameter(torch.randn(4, 4)),
             nn.Parameter(torch.randn(5, 5)),
         )
-        param4, param5 = (
-            nn.Parameter(torch.randn(10, 10)),
-            nn.Parameter(torch.randn(4, 4)),
+        param4, param5 = nn.Parameter(torch.randn(10, 10)), nn.Parameter(
+            torch.randn(4, 4)
         )
         data_list = [("param1", param1), ("param2", param2), ("param3", param3)]
         defaults = {
@@ -625,7 +633,9 @@ class TestNormDataSparsifiers(_NormDataSparsifierTestCase):
         (
             emb1,
             emb2,
-        ) = nn.Embedding(10, 3), nn.Embedding(20, 3)
+        ) = nn.Embedding(
+            10, 3
+        ), nn.Embedding(20, 3)
         emb1_bag, emb2_bag = nn.EmbeddingBag(10, 3), nn.EmbeddingBag(20, 3)
 
         emb3, emb3_bag = nn.Embedding(15, 3), nn.EmbeddingBag(20, 3)
@@ -677,7 +687,7 @@ class TestNormDataSparsifiers(_NormDataSparsifierTestCase):
 
 
 class Model(nn.Module):
-    def __init__(self) -> None:
+    def __init__(self):
         super().__init__()
         self.emb1 = nn.Embedding(100, 3)
         self.embbag1 = nn.EmbeddingBag(200, 32)
@@ -782,7 +792,3 @@ class TestQuantizationUtils(TestCase):
         assert abs(sl_embbag1 - 0.80) <= 0.05  # +- 5% leeway
         assert abs(sl_emb_seq_0 - 0.80) <= 0.05  # +- 5% leeway
         assert abs(sl_emb_seq_1 - 0.80) <= 0.05  # +- 5% leeway
-
-
-if __name__ == "__main__":
-    raise_on_run_directly("test/test_ao_sparsity.py")

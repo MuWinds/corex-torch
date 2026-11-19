@@ -23,7 +23,8 @@ TEST(CPUCachingAllocatorTest, check_alloc_outside_free_inside) {
   {
     c10::WithCPUCachingAllocatorGuard cachine_allocator_guard(
         &caching_allocator);
-    [[maybe_unused]] float* data_ptr = a.data_ptr<float>();
+    // NOLINTNEXTLINE(clang-analyzer-deadcode.DeadStores)
+    float* data_ptr = a.data_ptr<float>();
     a.reset();
     a = at::rand({23, 23});
   }

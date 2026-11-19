@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <sstream>
 #include <vector>
-#include <cstdint>
 
 namespace caffe2 {
 

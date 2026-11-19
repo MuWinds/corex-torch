@@ -1,0 +1,11 @@
+--- /data/home/2024240384035/build/pytorch-2.1.0/aten/src/ATen/native/cuda/Loops.cuh	2023-09-22 06:25:09.000000000 +0800
++++ /data/software/Anaconda3/2024.10-1/envs/py310/lib/python3.10/site-packages/torch/include/ATen/native/cuda/Loops.cuh	2025-03-13 11:53:02.373028409 +0800
+@@ -74,7 +74,7 @@
+ // Because for some reason trying to enable vectorized
+ // memory access introduce regression on ROCm.
+ 
+-#if !defined(USE_ROCM)
++#if !(defined(USE_ROCM) || defined(__ILUVATAR__))
+   #include <ATen/native/cuda/CUDALoops.cuh>
+ #else
+   #include <ATen/native/cuda/ROCmLoops.cuh>

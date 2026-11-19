@@ -9,10 +9,12 @@
 #include <ATen/ATen.h>
 #include <ATen/cuda/CUDAContext.h>
 
+#include <cstddef>
 #include <memory>
 #include <vector>
 
-namespace torch::autograd {
+namespace torch {
+namespace autograd {
 Scatter::Scatter(
     std::vector<at::Device> devices,
     std::optional<std::vector<int64_t>> chunk_sizes,
@@ -103,19 +105,19 @@ variable_list Gather::apply(variable_list&& inputs) {
         std::move(source_devices),
         std::move(input_sizes),
         dim_,
-        /*streams=*/std::nullopt,
+        /*streams=*/c10::nullopt,
         /*unsqueeze_scalars=*/unsqueeze_scalars);
     grad_fn->set_next_edges(collect_next_edges(inputs));
   }
 
   std::vector<at::Tensor> tensors;
-  if (unsqueeze_scalars) {
-    tensors.reserve(inputs.size());
-    for (auto& variable : inputs) {
+  tensors.reserve(inputs.size());
+  for (auto& variable : inputs) {
+    if (unsqueeze_scalars) {
       tensors.push_back(variable.view(1));
+    } else {
+      tensors.push_back(std::move(variable));
     }
-  } else {
-    tensors = std::move(inputs);
   }
 
   // Disable the autograd during the actual computation
@@ -135,4 +137,5 @@ variable_list Gather::apply(variable_list&& inputs) {
   return {variable};
 }
 
-} // namespace torch::autograd
+} // namespace autograd
+} // namespace torch

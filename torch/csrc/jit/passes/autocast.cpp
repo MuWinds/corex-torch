@@ -4,21 +4,21 @@
 #include <ATen/autocast_mode.h>
 #include <c10/core/ScalarType.h>
 #include <c10/util/Exception.h>
+#include <c10/util/Optional.h>
 #include <torch/csrc/jit/ir/ir.h>
 #include <torch/csrc/jit/jit_log.h>
 #include <torch/csrc/jit/passes/quantization/helper.h>
-#include <atomic>
-#include <optional>
 
 #include <stack>
 #include <unordered_set>
 #include <vector>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 namespace {
 
-std::atomic<bool> autocast_enabled = true;
+bool autocast_enabled = true;
 
 struct AutocastContext {
   bool gpu_enabled = false;
@@ -65,7 +65,7 @@ std::optional<AutocastScope> parseAutocast(
     const AutocastContext& context) {
   if (!isAutocastNode(value)) {
     // Not an autocast...
-    return std::nullopt;
+    return c10::nullopt;
   }
   if (value->node()->kind() == prim::CreateObject) {
     AutocastScope scope;
@@ -79,10 +79,10 @@ std::optional<AutocastScope> parseAutocast(
       if (use.user->kind() == prim::SetAttr &&
           use.user->s(attr::name) == "_enabled") {
         // Search for `prim::SetAttr[name="_enabled"]`
-        enabled = constant_as<bool>(use.user->input(1));
+        auto ret = constant_as<bool>(use.user->input(1));
         TORCH_CHECK(
-            enabled.has_value(),
-            "Autocast _enabled argument must be a constant");
+            ret.has_value(), "Autocast _enabled argument must be a constant");
+        enabled = ret.value();
       } else if (
           use.user->kind() == prim::SetAttr &&
           use.user->s(attr::name) == "device") {
@@ -109,7 +109,7 @@ std::optional<AutocastScope> parseAutocast(
     TORCH_CHECK(
         dtype != c10::ScalarType::Undefined,
         "Autocast has invalid fast_dtype attribute");
-    if (device == "cuda" || device == "mps") {
+    if (device == "cuda") {
       scope.context.gpu_enabled = enabled.value();
       scope.context.gpu_scalar_type = dtype;
     } else if (device == "cpu") {
@@ -132,10 +132,10 @@ std::optional<AutocastScope> parseAutocast(
     //
     // TODO: better error message
     //
-    TORCH_CHECK(false, "Unsupported autocast syntax");
+    AT_ERROR("Unsupported autocast syntax");
   }
 
-  return std::nullopt;
+  return c10::nullopt;
 }
 
 void castTensorInputs(
@@ -269,7 +269,7 @@ void updateAutocastEnabledCheck(Node* node, bool is_jit_enabled) {
 void handleBlock(Block* block, AutocastContext initial_state) {
   std::stack<AutocastScope> autocast_stack;
 
-  std::optional<bool> incompatible_amp = std::nullopt;
+  std::optional<bool> incompatible_amp = c10::nullopt;
 
   // The current autocast enabled/disabled state
   auto current_state = [&] {
@@ -331,7 +331,7 @@ void handleBlock(Block* block, AutocastContext initial_state) {
                 parseAutocast(node->input(), current_state())) {
           if (node->hasUses()) {
             // TODO: better error message
-            TORCH_CHECK(false, "`with autocast() as ...` is not supported");
+            AT_ERROR("`with autocast() as ...` is not supported");
           }
           TORCH_INTERNAL_ASSERT(
               !incompatible_amp.has_value() || !incompatible_amp.value(),
@@ -493,7 +493,7 @@ void handleBlock(Block* block, AutocastContext initial_state) {
       // Banned in autocast, see binary_cross_entropy_banned()
       case aten::binary_cross_entropy:
         if (current_state()) {
-          TORCH_CHECK(false, "Unsafe to autocast");
+          AT_ERROR("Unsafe to autocast");
         }
     }
 
@@ -510,7 +510,9 @@ void handleBlock(Block* block, AutocastContext initial_state) {
 } // namespace
 
 bool setAutocastMode(bool value) {
-  return autocast_enabled.exchange(value);
+  auto old_value = autocast_enabled;
+  autocast_enabled = value;
+  return old_value;
 }
 
 bool autocastEnabled() {
@@ -530,4 +532,5 @@ void Autocast(const std::shared_ptr<Graph>& graph) {
   GRAPH_DUMP("\nAfter Autocast: ", graph);
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

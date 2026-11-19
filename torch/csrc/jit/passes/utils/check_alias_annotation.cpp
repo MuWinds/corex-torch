@@ -6,7 +6,8 @@
 
 #include <c10/util/irange.h>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 namespace {
 
 IValue deepCopy(const IValue& self) {
@@ -22,9 +23,11 @@ IValue deepCopy(const IValue& self) {
 
   // Lists of ivalues should recursively deep copy their contents
   if (self.isList()) {
-    auto source = self.toList();
+    // NOLINTNEXTLINE(performance-move-const-arg)
+    auto source = std::move(self).toList();
     auto newList = c10::impl::GenericList(source.elementType());
     newList.reserve(source.size());
+    // NOLINTNEXTLINE(performance-implicit-conversion-in-loop)
     for (const IValue& value : source) {
       newList.push_back(deepCopy(value));
     }
@@ -193,7 +196,7 @@ std::optional<IValue> toIValueProp(const Value* v) {
         genericList.push_back(*elem);
       } else {
         // One of the list elements isn't constant.
-        return std::nullopt;
+        return c10::nullopt;
       }
     }
 
@@ -210,7 +213,7 @@ std::optional<IValue> toIValueProp(const Value* v) {
       return IValue(
           fmap(genericList, [](const IValue& v) { return v.toTensor(); }));
     } else {
-      return std::nullopt;
+      return c10::nullopt;
     }
   }
 
@@ -219,7 +222,7 @@ std::optional<IValue> toIValueProp(const Value* v) {
       return maybe_stack->at(0);
     }
   }
-  return std::nullopt;
+  return c10::nullopt;
 }
 
 // batch_norm and instance_norm have incorrect annotations, because
@@ -304,4 +307,5 @@ void checkAliasAnnotation(
   checkWrites(inputsToCheck, inputsDeepCopy);
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

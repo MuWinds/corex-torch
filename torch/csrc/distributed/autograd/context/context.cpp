@@ -1,10 +1,14 @@
 #include <torch/csrc/distributed/autograd/context/context.h>
 
+#include <functional>
+
 #include <c10/core/StreamGuard.h>
 #include <c10/util/Exception.h>
 #include <torch/csrc/autograd/functions/accumulate_grad.h>
 
-namespace torch::distributed::autograd {
+namespace torch {
+namespace distributed {
+namespace autograd {
 
 using torch::autograd::AccumulateGrad;
 
@@ -21,7 +25,7 @@ std::unordered_set<rpc::worker_id_t> DistAutogradContext::getKnownWorkerIds()
     const {
   std::lock_guard<std::mutex> guard(lock_);
   return knownWorkerIds_;
-}
+};
 
 void DistAutogradContext::addKnownWorkerId(const rpc::worker_id_t workerId) {
   std::lock_guard<std::mutex> guard(lock_);
@@ -243,7 +247,7 @@ const c10::Dict<torch::Tensor, torch::Tensor> DistAutogradContext::
 
 void DistAutogradContext::runGradCallbackForVariable(
     const torch::autograd::Variable& variable,
-    const GradCallback& cb) {
+    GradCallback&& cb) {
   torch::Tensor grad;
   {
     std::lock_guard<std::mutex> guard(lock_);
@@ -281,4 +285,6 @@ ContextPtr ThreadLocalDistAutogradContext::getContextPtr() {
   return tl_context_ptr;
 }
 
-} // namespace torch::distributed::autograd
+} // namespace autograd
+} // namespace distributed
+} // namespace torch

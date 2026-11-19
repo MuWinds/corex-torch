@@ -51,8 +51,10 @@ multinomial_with_replacement_apply(
   for (const auto i : c10::irange(n_dist)) {
     /* Get normalized cumulative distribution from prob distribution */
     scalar_t sum = 0;
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
+    scalar_t val;
     for (const auto j : c10::irange(n_categories)) {
-      scalar_t val = self_ptr[i * self_stride_0 + j * self_stride_1];
+      val = self_ptr[i * self_stride_0 + j * self_stride_1];
       TORCH_CHECK(
           val >= 0,
           "invalid multinomial distribution (encountering probability entry < 0)");
@@ -90,21 +92,27 @@ multinomial_with_replacement_apply(
       double uniform_sample = uniform(gen);
       /* Do a binary search for the slot in which the prob falls
       ie cum_dist[row][slot-1] < uniform_prob < cum_distr[row][slot] */
-      int64_t left_pointer = 0;
-      int64_t right_pointer = n_categories;
+      int left_pointer = 0;
+      int right_pointer = n_categories;
+      // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+      int mid_pointer;
+      // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
+      scalar_t cum_prob;
+      // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+      int sample_idx;
       /* Make sure the last cumulative distribution bucket sums to 1 */
       cum_dist_ptr[(n_categories - 1) * cum_dist_stride_0] = 1;
 
       while (right_pointer - left_pointer > 0) {
-        int64_t mid_pointer = left_pointer + (right_pointer - left_pointer) / 2;
-        scalar_t cum_prob = cum_dist_ptr[mid_pointer * cum_dist_stride_0];
+        mid_pointer = left_pointer + (right_pointer - left_pointer) / 2;
+        cum_prob = cum_dist_ptr[mid_pointer * cum_dist_stride_0];
         if (cum_prob < uniform_sample) {
           left_pointer = mid_pointer + 1;
         } else {
           right_pointer = mid_pointer;
         }
       }
-      auto sample_idx = left_pointer;
+      sample_idx = left_pointer;
 
       /* store in result tensor (will be incremented for lua compat by wrapper)
        */
@@ -147,8 +155,10 @@ multinomial_with_replacement_apply(
   for (const auto i : c10::irange(n_dist)) {
     /* Get normalized cumulative distribution from prob distribution */
     float sum = 0;
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
+    float val;
     for (const auto j : c10::irange(n_categories)) {
-      float val = self_ptr[i * self_stride_0 + j * self_stride_1];
+      val = self_ptr[i * self_stride_0 + j * self_stride_1];
       TORCH_CHECK(
           val >= 0,
           "invalid multinomial distribution (encountering probability entry < 0)");
@@ -186,21 +196,27 @@ multinomial_with_replacement_apply(
       double uniform_sample = uniform(gen);
       /* Do a binary search for the slot in which the prob falls
       ie cum_dist[row][slot-1] < uniform_prob < cum_distr[row][slot] */
-      int64_t left_pointer = 0;
-      int64_t right_pointer = n_categories;
+      int left_pointer = 0;
+      int right_pointer = n_categories;
+      // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+      int mid_pointer;
+      // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
+      float cum_prob;
+      // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+      int sample_idx;
       /* Make sure the last cumulative distribution bucket sums to 1 */
       cum_dist_ptr[(n_categories - 1) * cum_dist_stride_0] = 1;
 
       while (right_pointer - left_pointer > 0) {
-        int64_t mid_pointer = left_pointer + (right_pointer - left_pointer) / 2;
-        float cum_prob = cum_dist_ptr[mid_pointer * cum_dist_stride_0];
+        mid_pointer = left_pointer + (right_pointer - left_pointer) / 2;
+        cum_prob = cum_dist_ptr[mid_pointer * cum_dist_stride_0];
         if (cum_prob < uniform_sample) {
           left_pointer = mid_pointer + 1;
         } else {
           right_pointer = mid_pointer;
         }
       }
-      auto sample_idx = left_pointer;
+      sample_idx = left_pointer;
 
       /* store in result tensor (will be incremented for lua compat by wrapper)
        */
@@ -225,5 +241,5 @@ static void multinomial_with_replacement_kernel_impl(
 
 REGISTER_DISPATCH(
     multinomial_with_replacement_stub,
-    &multinomial_with_replacement_kernel_impl)
+    &multinomial_with_replacement_kernel_impl);
 } // namespace at::native

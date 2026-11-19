@@ -3,7 +3,9 @@
 
 using namespace torch::autograd;
 
-namespace torch::nn::functions {
+namespace torch {
+namespace nn {
+namespace functions {
 
 Variable CrossMapLRN2d::forward(
     AutogradContext* ctx,
@@ -67,8 +69,7 @@ Variable CrossMapLRN2d::forward(
   ctx->saved_data["scale"]
       .toTensor()
       .mul_(
-          ctx->saved_data["alpha"].toDouble() /
-          static_cast<double>(ctx->saved_data["size"].toInt()))
+          ctx->saved_data["alpha"].toDouble() / ctx->saved_data["size"].toInt())
       .add_(ctx->saved_data["k"].toInt());
 
   torch::pow_out(
@@ -84,7 +85,7 @@ Variable CrossMapLRN2d::forward(
 variable_list CrossMapLRN2d::backward(
     AutogradContext* ctx,
     variable_list grad_outputs) {
-  auto const& grad_output = grad_outputs[0];
+  auto grad_output = grad_outputs[0];
   auto input = ctx->get_saved_variables()[0];
   auto output = ctx->get_saved_variables()[1];
   auto grad_input = torch::empty({0}, grad_output.options());
@@ -101,8 +102,7 @@ variable_list CrossMapLRN2d::backward(
       input.options());
   auto accum_ratio = torch::empty({input_height, input_width}, input.options());
   double cache_ratio_value = 2 * ctx->saved_data["alpha"].toDouble() *
-      ctx->saved_data["beta"].toDouble() /
-      static_cast<double>(ctx->saved_data["size"].toInt());
+      ctx->saved_data["beta"].toDouble() / ctx->saved_data["size"].toInt();
   int64_t inversePrePad = static_cast<int64_t>(
       ctx->saved_data["size"].toInt() -
       (ctx->saved_data["size"].toInt() - 1) / 2);
@@ -136,4 +136,6 @@ variable_list CrossMapLRN2d::backward(
       grad_input, Variable(), Variable(), Variable(), Variable()};
 }
 
-} // namespace torch::nn::functions
+} // namespace functions
+} // namespace nn
+} // namespace torch

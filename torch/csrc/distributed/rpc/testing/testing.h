@@ -2,8 +2,14 @@
 
 #include <torch/csrc/python_headers.h>
 
-namespace torch::distributed::rpc::testing {
+namespace torch {
+namespace distributed {
+namespace rpc {
+namespace testing {
 
 PyMethodDef* python_functions();
 
-} // namespace torch::distributed::rpc::testing
+} // namespace testing
+} // namespace rpc
+} // namespace distributed
+} // namespace torch

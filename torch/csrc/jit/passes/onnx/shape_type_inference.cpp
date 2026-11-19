@@ -12,6 +12,8 @@
 #include <torch/csrc/jit/serialization/onnx.h>
 #include <torch/csrc/utils/python_strings.h>
 
+#include <torch/csrc/onnx/diagnostics/diagnostics.h>
+
 #include <onnx/shape_inference/implementation.h>
 #include <algorithm>
 #include <cmath>
@@ -20,15 +22,16 @@
 #include <unordered_set>
 #include <utility>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
-static inline bool PyNone_Check(PyObject* o) {
+inline bool PyNone_Check(PyObject* o) {
   return o == Py_None;
 }
 
 std::pair<TypePtr, bool> MergeInferredType(
-    const TypePtr& existing_type,
-    const TypePtr& inferred_type) {
+    TypePtr existing_type,
+    TypePtr inferred_type) {
   auto new_list_type = inferred_type->cast<ListType>();
   auto use_inferred_type = false;
   if (new_list_type) {
@@ -72,8 +75,8 @@ std::pair<TypePtr, bool> MergeInferredType(
 
 void MergeInferredTypeAndSetMap(
     Value* dest_v,
-    const TypePtr& existing_type,
-    const TypePtr& inferred_type) {
+    TypePtr existing_type,
+    TypePtr inferred_type) {
   auto [mergedType, inferred] = MergeInferredType(existing_type, inferred_type);
   dest_v->setType(mergedType);
   ConstantValueMap::SetUseInferredType(dest_v->debugName(), inferred);
@@ -82,6 +85,7 @@ void MergeInferredTypeAndSetMap(
 namespace {
 namespace onnx_torch = ::torch::onnx;
 namespace onnx = ::ONNX_NAMESPACE;
+namespace diagnostics = ::torch::onnx::diagnostics;
 
 // SymbolDimMap is a Torch-to-ONNX shape look-up. This is built so it can be
 // returned by the export function. During the export however, when we come
@@ -94,7 +98,7 @@ c10::ShapeSymbol ONNXDimToShapeSymbol(
   if (dim.has_dim_value()) {
     return c10::ShapeSymbol::fromStaticSize(dim.dim_value());
   }
-  std::optional<c10::ShapeSymbol> sym = std::nullopt;
+  std::optional<c10::ShapeSymbol> sym = c10::nullopt;
   if (dim.has_dim_param()) {
     // If this param is already known, assign the same Symbol.
     GRAPH_UPDATE("Got dim_param:", dim.dim_param());
@@ -252,7 +256,7 @@ bool CustomSettype(Node* node) {
 
 Value* CloneValueFromListConstruct(
     Value* v,
-    const std::shared_ptr<Graph>& n_graph,
+    std::shared_ptr<Graph> n_graph,
     int opset_version) {
   auto lc_node = v->node();
   TORCH_INTERNAL_ASSERT(lc_node->kind() == ::c10::prim::ListConstruct);
@@ -263,7 +267,7 @@ Value* CloneValueFromListConstruct(
   // is preserved. If the elemtype is Int, insert a onnx::Concat node into
   // the graph.
   TypePtr elem = v->type()->castRaw<ListType>()->getElementType();
-  std::optional<at::ScalarType> scalar_type = std::nullopt;
+  std::optional<at::ScalarType> scalar_type = c10::nullopt;
   if (elem->cast<IntType>()) {
     scalar_type = at::kLong;
     if (isValidToTransformToONNXConcatNode(v->node())) {
@@ -328,7 +332,7 @@ Node* CloneNodeToGraph(
             // Try to lookup input value and insert it into the graph.
             // If the input value is unknown, set it to graph input in the new
             // graph, and copy over metadata, such as datatype and shape.
-            ::std::optional<at::Tensor> val = ::std::nullopt;
+            ::std::optional<at::Tensor> val = ::c10::nullopt;
             auto v0 = params_dict.find(v->debugName());
             if (v0 != params_dict.end()) {
               val = v0->second.toTensor();
@@ -351,7 +355,7 @@ Node* CloneNodeToGraph(
   return clone_node;
 }
 
-bool HasValidType(const TypePtr& type, const std::string& name) {
+bool HasValidType(TypePtr type, std::string name) {
   if (auto t_type = type->cast<TensorType>()) {
     if (!t_type->scalarType().has_value()) {
       GRAPH_UPDATE("Input ", name, " is missing tensor datatype.");
@@ -367,7 +371,7 @@ bool HasValidType(const TypePtr& type, const std::string& name) {
   return true;
 }
 
-bool IsGraphValidForInference(const std::shared_ptr<Graph>& graph) {
+bool IsGraphValidForInference(std::shared_ptr<Graph> graph) {
   // Verify if every input has type (either Tensor, Sequence or Optional) and
   // scalar type. This is a requirement for ONNX graph inputs.
   for (auto in : graph->inputs()) {
@@ -377,31 +381,34 @@ bool IsGraphValidForInference(const std::shared_ptr<Graph>& graph) {
 }
 
 void ConvertGraphToONNXProto(
-    const std::shared_ptr<Graph>& graph,
+    std::shared_ptr<Graph> graph,
     std::shared_ptr<onnx::ModelProto>& model_proto,
     SymbolDimMap& symbol_dim_map,
     DimSymbolMap& dim_symbol_map,
     int opset_version) {
-  auto
-      [model_proto_tmp,
-       export_map,
-       new_symbol_dim_map,
-       val_use_external_data_format,
-       node_names] =
-          export_onnx(
-              graph,
-              {},
-              opset_version,
-              {},
-              false,
-              onnx_torch::OperatorExportTypes::ONNX,
-              true,
-              true,
-              {},
-              true,
-              false,
-              std::string());
-  model_proto = std::move(model_proto_tmp);
+  RawDataExportMap export_map;
+  bool val_use_external_data_format;
+  SymbolDimMap new_symbol_dim_map;
+  NodeNameMap node_names;
+  std::tie(
+      model_proto,
+      export_map,
+      new_symbol_dim_map,
+      val_use_external_data_format,
+      node_names) =
+      export_onnx(
+          graph,
+          {},
+          opset_version,
+          {},
+          false,
+          onnx_torch::OperatorExportTypes::ONNX,
+          true,
+          true,
+          {},
+          true,
+          false,
+          std::string());
   symbol_dim_map.insert(new_symbol_dim_map.begin(), new_symbol_dim_map.end());
   for (const auto& pair : new_symbol_dim_map) {
     dim_symbol_map[pair.second] = pair.first;
@@ -413,13 +420,13 @@ void ConvertGraphToONNXProto(
 
 std::optional<at::Tensor> ComputeConstantFolding(Node* n, int opset_version) {
   if (n->inputs().empty()) {
-    return std::nullopt;
+    return c10::nullopt;
   }
   std::vector<at::Tensor> inputTensorValues;
   for (auto i : c10::irange(n->inputs().size())) {
     if (TensorTypePtr input_type = n->input(i)->type()->cast<TensorType>()) {
       if (!ConstantValueMap::HasValue(n->input(i)->debugName())) {
-        return std::nullopt;
+        return c10::nullopt;
       }
       auto tensor_value =
           ConstantValueMap::GetValue(n->input(i)->debugName()).value();
@@ -427,7 +434,7 @@ std::optional<at::Tensor> ComputeConstantFolding(Node* n, int opset_version) {
     }
   }
   if (inputTensorValues.size() < n->inputs().size()) {
-    return std::nullopt;
+    return c10::nullopt;
   }
   try {
     return onnx_constant_fold::runTorchBackendForOnnx(
@@ -436,7 +443,7 @@ std::optional<at::Tensor> ComputeConstantFolding(Node* n, int opset_version) {
     auto ex_str = std::string(ex.what());
     ex_str = ex_str.substr(0, ex_str.find('\n'));
     TORCH_WARN("Constant folding in symbolic shape inference fails: ", ex_str);
-    return std::nullopt;
+    return c10::nullopt;
   }
 }
 
@@ -493,7 +500,7 @@ std::optional<::c10::SymbolicShape> ComputeShapeFromReshape(
           std::numeric_limits<uint64_t>::max() / input_shape.static_size()) {
         TORCH_WARN(
             "ComputeShapeFromReshape(), shape_ratio overflows, skip shape inference.");
-        return std::nullopt;
+        return c10::nullopt;
       } else {
         shape_ratio *= static_cast<uint64_t>(input_shape.static_size());
       }
@@ -516,7 +523,7 @@ std::optional<::c10::SymbolicShape> ComputeShapeFromReshape(
     } else {
       auto value = target_shape.value();
       if (sym_map.find(value) == sym_map.end()) {
-        return std::nullopt;
+        return c10::nullopt;
       }
       sym_map[value]--;
       if (sym_map[value] == 0) {
@@ -528,7 +535,7 @@ std::optional<::c10::SymbolicShape> ComputeShapeFromReshape(
   // sym_map is used to match shape symbols between the input and shape.
   // If there is a mismatch, the output shape cannot be estimated.
   if (!sym_map.empty()) {
-    return std::nullopt;
+    return c10::nullopt;
   }
 
   TORCH_INTERNAL_ASSERT(
@@ -558,7 +565,7 @@ std::optional<::c10::SymbolicShape> ComputeShapeFromExpand(
     const std::vector<int64_t>& reshape) {
   for (const auto& it : reshape) {
     if (it < 0) {
-      return std::nullopt;
+      return c10::nullopt;
     }
   }
   std::vector<::c10::ShapeSymbol> final_shape;
@@ -600,7 +607,7 @@ std::optional<::c10::SymbolicShape> ComputeShapeFromTile(
       "ONNX Tile input shapes do not match.");
   for (const auto& it : reshape) {
     if (it < 0) {
-      return std::nullopt;
+      return c10::nullopt;
     }
   }
   std::vector<::c10::ShapeSymbol> final_shape;
@@ -681,7 +688,7 @@ std::optional<std::vector<int64_t>> GetValueFromListConstructNode(
   }
   return lc_node->inputs().size() == shape_size.size()
       ? std::optional<std::vector<int64_t>>(shape_size)
-      : std::nullopt;
+      : c10::nullopt;
 }
 
 void SetShapeValueFromListConstructNode(Node* lc_node) {
@@ -1648,8 +1655,7 @@ void SpecialPostProcess(Node* n) {
       auto seq_node = n->input(0)->node();
       auto t_type = n->input(1)->type()->cast<TensorType>();
 
-      auto update_sequence_empty_dtype = [](Node* n,
-                                            const TensorTypePtr& t_type) {
+      auto update_sequence_empty_dtype = [](Node* n, TensorTypePtr t_type) {
         TORCH_INTERNAL_ASSERT(n && n->kind() == ::c10::onnx::SequenceEmpty);
         TORCH_INTERNAL_ASSERT(t_type && t_type->scalarType().has_value());
         auto scalar_type = t_type->scalarType().value();
@@ -1708,7 +1714,7 @@ void SpecialPostProcess(Node* n) {
           return nullptr;
         };
         return find_sequence_empty_impl(
-            input, std::move(t_type), find_sequence_empty_impl);
+            input, t_type, find_sequence_empty_impl);
       };
 
       if (seq_node && t_type && t_type->scalarType()) {
@@ -1994,6 +2000,11 @@ void UpdateReliable(
         output->node()->kind().toDisplayString(),
         " type is missing, so it may result in wrong shape inference for the exported graph. ",
         "Please consider adding it in symbolic function.");
+    // Experimental, nothing sent to stdout nor stderr.
+    diagnostics::Diagnose(
+        diagnostics::Rule::kNodeMissingOnnxShapeInference,
+        diagnostics::Level::kWarning,
+        {{"op_name", output->node()->kind().toDisplayString()}});
   }
   auto reliable = false;
   if (inferred) {
@@ -2027,7 +2038,7 @@ void UpdateReliable(Node* n) {
 // Traverse the graph inputs and compute reliability (e.g., are shapes static).
 // Since the inputs do not change during export, we save computation time by
 // marking it as computed and subsequently skipping.
-static void SetGraphInputTypeReliable(const Graph* g) {
+void SetGraphInputTypeReliable(const Graph* g) {
   if (!ConstantValueMap::GetAllGraphInputsReliableComputed()) {
     for (auto graph_input : g->inputs()) {
       if (!ConstantValueMap::HasTypeReliable(graph_input->debugName())) {
@@ -2114,9 +2125,9 @@ void ONNXShapeTypeInference(
           case ::c10::onnx::Gather: {
             auto* schema_registry = onnx::OpSchemaRegistry::Instance();
             onnx::ShapeInferenceOptions options{
-                /*check_type_val=*/false,
-                /*strict_mode_val=*/0,
-                /*data_prop_val=*/true};
+                /*check_type=*/false,
+                /*error_mode=*/false,
+                /*enable_data_propagation=*/true};
             onnx::shape_inference::InferShapes(
                 *model_proto, schema_registry, options, &inferred_shape_data);
             break;
@@ -2136,8 +2147,10 @@ void ONNXShapeTypeInference(
             ex.what(),
             " on graph: ",
             n_graph->toString());
-        constexpr const char* shape_err = "ShapeInferenceError";
-        constexpr const char* type_err = "TypeInferenceError";
+        // NOLINTNEXTLINE(modernize-avoid-c-arrays,cppcoreguidelines-avoid-c-arrays)
+        const char shape_err[] = "ShapeInferenceError";
+        // NOLINTNEXTLINE(modernize-avoid-c-arrays,cppcoreguidelines-avoid-c-arrays)
+        const char type_err[] = "TypeInferenceError";
         if ((strstr(ex.what(), shape_err) == nullptr) &&
             (strstr(ex.what(), type_err) == nullptr)) {
           throw;
@@ -2255,7 +2268,7 @@ void ONNXSetDynamicInputShape(
   }
 }
 
-static bool HasSequenceTypeOutput(Node* node) {
+bool HasSequenceTypeOutput(Node* node) {
   if (node->kind() == ::c10::onnx::SplitToSequence ||
       node->kind() == ::c10::onnx::SequenceInsert ||
       node->kind() == ::c10::onnx::SequenceEmpty ||
@@ -2266,7 +2279,7 @@ static bool HasSequenceTypeOutput(Node* node) {
   return false;
 }
 
-static void ONNXUpdateTypeFromTensor(
+void ONNXUpdateTypeFromTensor(
     Value* graph_output,
     const at::Tensor& output,
     bool onnx_shape_inference) {
@@ -2282,7 +2295,7 @@ static void ONNXUpdateTypeFromTensor(
 // into flattened graph outputs. `outputs_index` is passed in to point to the
 // current index in flattened graph outputs. The updated `outputs_index` is
 // returned at the end of the function.
-static size_t ONNXAssignOutputShape(
+size_t ONNXAssignOutputShape(
     std::shared_ptr<Graph>& graph,
     size_t outputs_index,
     PyObject* output_obj,
@@ -2499,4 +2512,5 @@ void UpdateShapeConstantIfReliable(torch::jit::Value* node_output) {
   }
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

@@ -8,7 +8,8 @@
 #include <c10/macros/Macros.h>
 #include <variant>
 
-namespace torch::monitor {
+namespace torch {
+namespace monitor {
 
 // data_value_t is the type for Event data values.
 using data_value_t = std::variant<std::string, double, int64_t, bool>;
@@ -68,4 +69,5 @@ TORCH_API void registerEventHandler(std::shared_ptr<EventHandler> p);
 // shared_ptr.
 TORCH_API void unregisterEventHandler(const std::shared_ptr<EventHandler>& p);
 
-} // namespace torch::monitor
+} // namespace monitor
+} // namespace torch

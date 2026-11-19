@@ -11,7 +11,8 @@
 #include <cstddef>
 #include <ostream>
 
-namespace torch::nn {
+namespace torch {
+namespace nn {
 
 // ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Upsample ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -30,7 +31,7 @@ namespace torch::nn {
 /// ```
 class TORCH_API UpsampleImpl : public Cloneable<UpsampleImpl> {
  public:
-  explicit UpsampleImpl(UpsampleOptions options_ = {});
+  explicit UpsampleImpl(const UpsampleOptions& options_ = {});
 
   void reset() override;
 
@@ -50,4 +51,5 @@ class TORCH_API UpsampleImpl : public Cloneable<UpsampleImpl> {
 /// learn about PyTorch's module storage semantics.
 TORCH_MODULE(Upsample);
 
-} // namespace torch::nn
+} // namespace nn
+} // namespace torch

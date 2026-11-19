@@ -1,7 +1,9 @@
 #include <torch/csrc/jit/tensorexpr/operators/misc.h>
 #include <torch/csrc/jit/tensorexpr/operators/norm.h>
 
-namespace torch::jit::tensorexpr {
+namespace torch {
+namespace jit {
+namespace tensorexpr {
 
 Tensor computeBatchNorm(
     const std::vector<ArgValue>& inputs,
@@ -65,4 +67,6 @@ Tensor computeBatchNorm(
       });
 }
 
-} // namespace torch::jit::tensorexpr
+} // namespace tensorexpr
+} // namespace jit
+} // namespace torch

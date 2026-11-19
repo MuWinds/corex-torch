@@ -61,7 +61,6 @@ struct LineNumberProgram {
         uint64_t form;
       };
       std::vector<Member> directory_members;
-      directory_members.reserve(directory_entry_format_count);
       for (size_t i = 0; i < directory_entry_format_count; i++) {
         directory_members.push_back({L.readULEB128(), L.readULEB128()});
       }
@@ -71,7 +70,7 @@ struct LineNumberProgram {
           switch (member.content_type) {
             case DW_LNCT_path: {
               include_directories_.emplace_back(
-                  s_.readString(L, member.form, is_64bit_));
+                  s_.readString(L, member.form, is_64bit_, 0));
             } break;
             default: {
               skipForm(L, member.form);
@@ -86,7 +85,6 @@ struct LineNumberProgram {
       }
       auto file_name_entry_format_count = L.read<uint8_t>();
       std::vector<Member> file_members;
-      file_members.reserve(file_name_entry_format_count);
       for (size_t i = 0; i < file_name_entry_format_count; i++) {
         file_members.push_back({L.readULEB128(), L.readULEB128()});
       }
@@ -96,7 +94,7 @@ struct LineNumberProgram {
           switch (member.content_type) {
             case DW_LNCT_path: {
               file_names_.emplace_back(
-                  s_.readString(L, member.form, is_64bit_));
+                  s_.readString(L, member.form, is_64bit_, 0));
             } break;
             case DW_LNCT_directory_index: {
               file_directory_index_.emplace_back(readData(L, member.form));
@@ -149,7 +147,7 @@ struct LineNumberProgram {
     uint32_t file = 1;
     int64_t line = 1;
   };
-  std::optional<Entry> find(uint64_t address) {
+  unwind::optional<Entry> find(uint64_t address) {
     auto e = program_index_.find(address);
     if (!e) {
       return std::nullopt;
@@ -316,7 +314,6 @@ struct LineNumberProgram {
   uint64_t length_ = 0;
   bool is_64bit_ = false;
   std::vector<uint8_t> standard_opcode_lengths_;
-  // NOLINTNEXTLINE(cppcoreguidelines-avoid-const-or-ref-data-members)
   Sections& s_;
   uint64_t offset_;
   uint64_t start_address_ = 0;

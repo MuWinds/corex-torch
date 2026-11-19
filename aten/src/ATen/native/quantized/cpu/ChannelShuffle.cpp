@@ -12,7 +12,8 @@
 #include <ATen/ops/channel_shuffle_native.h>
 #endif
 
-namespace at::native {
+namespace at {
+namespace native {
 
 #ifdef USE_PYTORCH_QNNPACK
 namespace {
@@ -37,9 +38,9 @@ Tensor quantized_channel_shuffle_impl(
   Tensor qy = at::native::empty_affine_quantized(
       self_nhwc.sizes(),
       kQUInt8,
-      std::nullopt /* layout */,
+      c10::nullopt /* layout */,
       kCPU,
-      std::nullopt /* pin_memory */,
+      c10::nullopt /* pin_memory */,
       self_nhwc.q_scale(),
       self_nhwc.q_zero_point(),
       MemoryFormat::ChannelsLast);
@@ -119,4 +120,5 @@ class QChannelShuffle final : public c10::OperatorKernel {
 
 } // namespace
 
-} // namespace at::native
+} // namespace native
+} // namespace at

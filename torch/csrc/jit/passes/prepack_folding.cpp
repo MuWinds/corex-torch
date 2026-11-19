@@ -5,7 +5,8 @@
 #include <torch/csrc/jit/passes/constant_propagation.h>
 #include <torch/csrc/jit/passes/prepack_folding.h>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 // Must run this pass after constant folding.
 void PrePackingOpsFolder(
@@ -29,7 +30,7 @@ void PrePackingOpsFolder(
           if (optional_outputs) {
             auto outputs = optional_outputs.value();
             TORCH_CHECK(outputs.size() == 1, "Prepack ops have single output");
-            auto attr_name = attr_name_base + std::to_string(uid++);
+            auto attr_name = attr_name_base + c10::to_string(uid++);
             TORCH_CHECK(
                 !(m.type()->findAttributeSlot(attr_name)),
                 "Attribute name ",
@@ -63,4 +64,5 @@ void PrePackingOpsFolder(
   }
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

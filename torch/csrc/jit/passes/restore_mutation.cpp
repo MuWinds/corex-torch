@@ -3,7 +3,8 @@
 #include <torch/csrc/jit/passes/remove_mutation.h>
 #include <torch/csrc/jit/passes/restore_mutation.h>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 FunctionalToInplaceRewriter::FunctionalToInplaceRewriter(
     std::shared_ptr<Graph> graph)
@@ -80,4 +81,5 @@ bool FunctionalToInplaceActivation(const std::shared_ptr<Graph>& graph) {
   return rewriter.FunctionalToInplace(graph->block());
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

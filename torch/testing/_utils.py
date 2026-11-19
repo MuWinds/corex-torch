@@ -3,7 +3,6 @@ import contextlib
 
 import torch
 
-
 # Common testing utilities for use in public testing APIs.
 # NB: these should all be importable without optional dependencies
 # (like numpy and expecttest).
@@ -45,7 +44,7 @@ def freeze_rng_state():
         # In the long run torch.cuda.set_rng_state should probably be
         # an operator.
         #
-        # NB: Mode disable is to avoid running cross-ref tests on this seeding
+        # NB: Mode disable is to avoid running cross-ref tests on thes seeding
         with torch.utils._mode_utils.no_dispatch(), torch._C._DisableFuncTorch():
             if torch.cuda.is_available():
                 torch.cuda.set_rng_state(cuda_rng_state)  # type: ignore[possibly-undefined]

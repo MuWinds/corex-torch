@@ -7,17 +7,22 @@
 
 #include <torch/csrc/Export.h>
 
-namespace torch::nn {
+#include <cstddef>
+#include <vector>
+
+namespace torch {
+namespace nn {
 
 namespace detail {
 
 template <typename Derived>
 class _DropoutNd : public torch::nn::Cloneable<Derived> {
  public:
-  _DropoutNd(double p) : _DropoutNd(DropoutOptions().p(p)) {}
+  _DropoutNd(double p) : _DropoutNd(DropoutOptions().p(p)){};
 
   explicit _DropoutNd(const DropoutOptions& options_ = {}) : options(options_) {
-    _DropoutNd::reset();
+    // NOLINTNEXTLINE(clang-analyzer-optin.cplusplus.VirtualCall)
+    reset();
   }
 
   void reset() override {
@@ -181,4 +186,5 @@ class TORCH_API FeatureAlphaDropoutImpl
 /// `ModuleHolder` to learn about PyTorch's module storage semantics.
 TORCH_MODULE(FeatureAlphaDropout);
 
-} // namespace torch::nn
+} // namespace nn
+} // namespace torch

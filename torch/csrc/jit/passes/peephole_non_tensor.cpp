@@ -6,7 +6,8 @@
 #include <torch/csrc/jit/ir/ir_views.h>
 #include <torch/csrc/jit/jit_log.h>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 namespace {
 
@@ -91,8 +92,9 @@ bool trySimplifyAddOrSub(Node& node) {
 } // namespace
 
 struct PeepholeOptimizeNonTensorImpl {
-  PeepholeOptimizeNonTensorImpl(std::shared_ptr<Graph> graph)
-      : graph_(std::move(graph)) {}
+  // NOLINTNEXTLINE(modernize-pass-by-value)
+  PeepholeOptimizeNonTensorImpl(const std::shared_ptr<Graph>& graph)
+      : graph_(graph) {}
 
   bool run() {
     return optimizeBlock(graph_->block());
@@ -282,4 +284,5 @@ bool PeepholeOptimizeNonTensor(const std::shared_ptr<Graph>& graph) {
   return changed;
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

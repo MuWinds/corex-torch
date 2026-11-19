@@ -14,8 +14,7 @@
 PyObject *THPException_FatalError, *THPException_LinAlgError,
     *THPException_OutOfMemoryError, *THPException_DistError,
     *THPException_DistBackendError, *THPException_DistNetworkError,
-    *THPException_DistStoreError, *THPException_DistQueueEmptyError,
-    *THPException_AcceleratorError;
+    *THPException_DistStoreError;
 
 #define ASSERT_TRUE(cond) \
   if (!(cond))            \
@@ -114,38 +113,14 @@ could not be completed because the input matrix is singular.",
       PyModule_AddObject(
           module, "_DistStoreError", THPException_DistStoreError) == 0);
 
-  // NOLINTNEXTLINE(bugprone-assignment-in-if-condition)
-  ASSERT_TRUE(
-      THPException_DistQueueEmptyError = PyErr_NewExceptionWithDoc(
-          "torch.distributed.QueueEmptyError",
-          "Exception raised when an error occurs in the distributed store",
-          THPException_DistStoreError,
-          nullptr));
-  ASSERT_TRUE(
-      PyModule_AddObject(
-          module, "_DistQueueEmptyError", THPException_DistQueueEmptyError) ==
-      0);
-
-  // NOLINTNEXTLINE(bugprone-assignment-in-if-condition)
-  ASSERT_TRUE(
-      THPException_AcceleratorError = PyErr_NewExceptionWithDoc(
-          "torch.AcceleratorError",
-          "Exception raised while executing on device",
-          PyExc_RuntimeError,
-          nullptr));
-  type = (PyTypeObject*)THPException_AcceleratorError;
-  ASSERT_TRUE(
-      PyModule_AddObject(
-          module, "AcceleratorError", THPException_AcceleratorError) == 0);
-
   return true;
 }
 
 namespace torch {
 
-static void processErrorMsgInplace(std::string& str) {
+void processErrorMsgInplace(std::string& str) {
   // Translate Aten types to their respective pytorch ones
-  constexpr std::array<std::pair<std::string_view, std::string_view>, 64>
+  constexpr std::array<std::pair<c10::string_view, c10::string_view>, 64>
       changes{{
           // TODO: remove torch.(cuda.|)sparse.*Tensor items?
           {"Variable[SparseCUDAByteType]", "torch.cuda.sparse.ByteTensor"},
@@ -229,14 +204,15 @@ std::string processErrorMsg(std::string str) {
 }
 
 static std::string formatMessage(const char* format, va_list fmt_args) {
-  constexpr size_t ERROR_BUF_SIZE = 1024;
-  std::string error_buf(ERROR_BUF_SIZE, '\0');
-  auto res = vsnprintf(error_buf.data(), ERROR_BUF_SIZE, format, fmt_args);
-  if (res < 0) {
-    res = 0;
-  }
-  error_buf.resize(res);
-  return error_buf;
+  static const size_t ERROR_BUF_SIZE = 1024;
+  // NOLINTNEXTLINE(modernize-avoid-c-arrays,cppcoreguidelines-avoid-c-arrays)
+  char error_buf[ERROR_BUF_SIZE];
+  vsnprintf(error_buf, ERROR_BUF_SIZE, format, fmt_args);
+
+  // Ensure that the string is null terminated
+  error_buf[sizeof(error_buf) / sizeof(*error_buf) - 1] = 0;
+
+  return std::string(error_buf);
 }
 
 void translate_exception_to_python(const std::exception_ptr& e_ptr) {
@@ -257,6 +233,13 @@ TypeError::TypeError(const char* format, ...) {
   va_end(fmt_args);
 }
 
+AttributeError::AttributeError(const char* format, ...) {
+  va_list fmt_args{};
+  va_start(fmt_args, format);
+  msg = formatMessage(format, fmt_args);
+  va_end(fmt_args);
+}
+
 void PyWarningHandler::InternalHandler::process(const c10::Warning& warning) {
   warning_buffer_.push_back(warning);
 }
@@ -268,7 +251,7 @@ PyWarningHandler::PyWarningHandler() noexcept(true)
 }
 
 // Get the Python warning type for a warning
-static PyObject* map_warning_to_python_type(const c10::Warning& warning) {
+PyObject* map_warning_to_python_type(const c10::Warning& warning) {
   struct Visitor {
     PyObject* operator()(const c10::UserWarning&) const {
       return PyExc_UserWarning;
@@ -347,18 +330,4 @@ PyWarningHandler::~PyWarningHandler() noexcept(false) {
   }
 }
 
-namespace detail {
-PyObject* _new_accelerator_error_object(const c10::AcceleratorError& e) {
-  auto msg = torch::get_cpp_stacktraces_enabled() ? e.what()
-                                                  : e.what_without_backtrace();
-
-  auto py_msg = PyUnicode_FromString(msg);
-  auto rc = PyObject_CallOneArg(THPException_AcceleratorError, py_msg);
-  auto error_code = PyInt_FromLong(e.get_error_code());
-  PyObject_SetAttrString(rc, "error_code", error_code);
-  Py_XDECREF(py_msg);
-  Py_XDECREF(error_code);
-  return rc;
-}
-} // namespace detail
 } // namespace torch

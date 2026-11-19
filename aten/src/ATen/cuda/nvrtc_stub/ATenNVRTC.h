@@ -4,7 +4,7 @@
 #include <cuda.h>
 #include <nvrtc.h>
 
-namespace at::cuda {
+namespace at { namespace cuda {
 
 
 // NOTE [ USE OF NVRTC AND DRIVER API ]
@@ -43,7 +43,6 @@ namespace at::cuda {
   _(nvrtcGetProgramLogSize)                      \
   _(nvrtcGetProgramLog)                          \
   _(nvrtcGetLoweredName)                         \
-  _(cuModuleLoad)                                \
   _(cuModuleLoadData)                            \
   _(cuModuleLoadDataEx)                          \
   _(cuModuleGetFunction)                         \
@@ -60,30 +59,16 @@ namespace at::cuda {
   _(cuLinkAddData)                               \
   _(cuLinkComplete)                              \
   _(cuFuncSetAttribute)                          \
-  _(cuFuncGetAttribute)                          \
-  _(cuPointerGetAttribute)                       \
-  _(cuFuncSetCacheConfig)                        \
-  _(cuDeviceGetAttribute)                        \
-  _(cuDeviceGet)                        \
+  _(cuFuncGetAttribute)
 
-
-#if defined(CUDA_VERSION) && CUDA_VERSION >= 12000
-#define AT_FORALL_NVRTC_EXTENDED(_)              \
-  AT_FORALL_NVRTC_BASE(_)                        \
-  _(cuTensorMapEncodeTiled)
-#else
-#define AT_FORALL_NVRTC_EXTENDED(_)              \
-  AT_FORALL_NVRTC_BASE(_)
-#endif
-
-#if defined(CUDA_VERSION)
+#if defined(CUDA_VERSION) && CUDA_VERSION >= 11010
 #define AT_FORALL_NVRTC(_) \
-  AT_FORALL_NVRTC_EXTENDED(_)  \
+  AT_FORALL_NVRTC_BASE(_)  \
   _(nvrtcGetCUBINSize)     \
   _(nvrtcGetCUBIN)
 #else
 #define AT_FORALL_NVRTC(_) \
-  AT_FORALL_NVRTC_EXTENDED(_)
+  AT_FORALL_NVRTC_BASE(_)
 #endif
 
 #else
@@ -138,4 +123,4 @@ extern "C" typedef struct NVRTC {
 } NVRTC;
 
 extern "C" TORCH_CUDA_CPP_API NVRTC* load_nvrtc();
-} // at::cuda
+}} // at::cuda

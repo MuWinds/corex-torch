@@ -1,0 +1,29 @@
+--- /data/home/2024240384035/build/pytorch-2.1.0/c10/util/BFloat16.h	2023-09-22 06:25:09.000000000 +0800
++++ /data/software/Anaconda3/2024.10-1/envs/py310/lib/python3.10/site-packages/torch/include/c10/util/BFloat16.h	2025-03-13 11:53:06.613025351 +0800
+@@ -7,7 +7,7 @@
+ #include <cmath>
+ #include <cstring>
+ 
+-#if defined(__CUDACC__) && !defined(USE_ROCM)
++#if defined(__CUDACC__) && (!defined(USE_ROCM) || defined(__ILUVATAR__))
+ #include <cuda_bf16.h>
+ #endif
+ 
+@@ -83,7 +83,7 @@
+   uint16_t x;
+ 
+   // HIP wants __host__ __device__ tag, CUDA does not
+-#if defined(USE_ROCM)
++#if defined(USE_ROCM) || defined(__ILUVATAR__)
+   C10_HOST_DEVICE BFloat16() = default;
+ #else
+   BFloat16() = default;
+@@ -99,7 +99,7 @@
+   inline C10_HOST_DEVICE BFloat16(float value);
+   inline C10_HOST_DEVICE operator float() const;
+ 
+-#if defined(__CUDACC__) && !defined(USE_ROCM)
++#if defined(__CUDACC__) && (!defined(USE_ROCM) || defined(__ILUVATAR__))
+   inline C10_HOST_DEVICE BFloat16(const __nv_bfloat16& value);
+   explicit inline C10_HOST_DEVICE operator __nv_bfloat16() const;
+ #endif

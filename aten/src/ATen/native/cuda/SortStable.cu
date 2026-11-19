@@ -3,6 +3,7 @@
 #include <ATen/native/cuda/SortStable.h>
 
 #include <ATen/Dispatch.h>
+#include <ATen/core/Array.h>
 #include <ATen/core/TensorBase.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/cuda/detail/KernelUtils.h>

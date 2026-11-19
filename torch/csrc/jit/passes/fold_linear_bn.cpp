@@ -8,7 +8,8 @@
 #include <ATen/ops/rsqrt.h>
 #endif
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 std::tuple<at::Tensor, at::Tensor> computeUpdatedLinearWeightAndBias(
     const LinearBNParameters& p) {
@@ -23,4 +24,5 @@ std::tuple<at::Tensor, at::Tensor> computeUpdatedLinearWeightAndBias(
       fused_w.to(linear_w_dtype), fused_b.to(linear_b_dtype));
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

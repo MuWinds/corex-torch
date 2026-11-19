@@ -17,9 +17,10 @@
 #include <torch/csrc/lazy/core/ops/arithmetic_ir_ops.h>
 #include <torch/csrc/lazy/core/thread_pool.h>
 
-#include <utility>
+#include <ATen/ScalarOps.h>
 
-namespace torch::lazy {
+namespace torch {
+namespace lazy {
 namespace {
 
 struct TlsData {
@@ -195,7 +196,7 @@ Value LazyGraphExecutor::DeviceContextArena::IrValueFromScalar(
     const BackendDevice& device) {
   at::Tensor tensor = at::scalar_tensor(value, at::TensorOptions(scalar_type));
   BackendDataPtr device_data = TensorToDataHandle(tensor, device);
-  return MakeDeviceData(device_data);
+  return MakeDeviceData(std::move(device_data));
 }
 
 void LazyGraphExecutor::DeviceLocker::Lock() {
@@ -355,7 +356,7 @@ LazyGraphExecutor* LazyGraphExecutor::Get() {
 }
 
 void LazyGraphExecutor::RegisterTensor(std::shared_ptr<LazyTensor::Data> data) {
-  DeviceContextArena::Get()->RegisterTensor(std::move(data));
+  DeviceContextArena::Get()->RegisterTensor(data);
   TORCH_LAZY_COUNTER("CreateLtcTensor", 1);
 }
 
@@ -447,6 +448,7 @@ void LazyGraphExecutor::WaitDeviceOps(c10::ArrayRef<BackendDevice> devices) {
   // The LockDevices() API returns a vector of
   // ExceptionCleanup object, which is going to be freed
   // immediately, turning this operation into a lock barrier.
+  // NOLINTNEXTLINE
   DeviceLockerArena::Get()->LockDevices(wait_devices);
 }
 
@@ -484,7 +486,7 @@ Value LazyGraphExecutor::GetDeviceDataIrValue(
   BackendDataPtr data = GetDeviceData(value, type, device);
   data->SetInfo(std::make_shared<DeviceDataInfo>(
       /*tensor_id=*/-1, /*read_only=*/true));
-  return MakeDeviceData(data);
+  return MakeDeviceData(std::move(data));
 }
 
 Value LazyGraphExecutor::GetIrValueForScalarFromCodegen(
@@ -496,7 +498,7 @@ Value LazyGraphExecutor::GetIrValueForScalarFromCodegen(
   auto data = GetDeviceData(value, value.type(), device);
   data->SetInfo(
       std::make_shared<DeviceDataInfo>(/*tensor_id=*/-1, /*read_only=*/true));
-  return MakeDeviceData(data);
+  return MakeDeviceData(std::move(data));
 }
 
 Value LazyGraphExecutor::GetIrValueForScalar(
@@ -693,7 +695,7 @@ std::vector<torch::lazy::BackendDataPtr> LazyGraphExecutor::SetTensorData(
       // resets the ir_value. We have already done the resetting as part
       // of ExtractIRAndPrepareTensorData to overlap with previous execution.
       tensor->data()->handle = handle;
-      tensor->data()->tensor_data = std::nullopt;
+      tensor->data()->tensor_data = c10::nullopt;
     }
     tensors_data.emplace_back(std::move(handle));
   }
@@ -745,7 +747,7 @@ std::shared_ptr<LazyGraphExecutor::Async> LazyGraphExecutor::TryRunCachedSync(
   }
   if (GRAPH_DUMP_ENABLED) {
     auto* comp = cached_computation->computation.get();
-    LOG(ERROR) << "Run a cached graph: " << comp->to_string() << '\n';
+    LOG(ERROR) << "Run a cached graph: " << comp->to_string() << std::endl;
   }
   TORCH_LAZY_VALUE_METRIC("TensorsGraphSize", po_data->post_order.size());
   VLOG(5) << "TensorsGraphSize=" << po_data->post_order.size();
@@ -854,8 +856,9 @@ std::shared_ptr<LazyGraphExecutor::Async> LazyGraphExecutor::
       Compile(*tensors, devices, coll, &po_data, ir_values);
   if (GRAPH_DUMP_ENABLED) {
     auto* comp = compile_result.computation.get();
-    LOG(ERROR) << "Add a cached computation with hash " << coll.hash << '\n';
-    LOG(ERROR) << "Add a graph to cache: " << comp->to_string() << '\n';
+    LOG(ERROR) << "Add a cached computation with hash " << coll.hash
+               << std::endl;
+    LOG(ERROR) << "Add a graph to cache: " << comp->to_string() << std::endl;
   }
 
   TORCH_LAZY_VALUE_METRIC("TensorsGraphSize", compile_result.emitted_nodes);
@@ -1042,7 +1045,7 @@ std::vector<BackendDataPtr> LazyGraphExecutor::GatherTensorsData(
 void LazyGraphExecutor::TensorCollectionBarrier(SyncTensorCollection* coll) {
   if (coll) {
     static const std::string invalid_device(
-        "Unknown0"); /* Temp solution to identify unassigned devices */
+        "Unknown0"); /* Temp solution to idetify unassigned devices */
     if (coll->device.toString() == invalid_device || !coll->unlocker.empty()) {
       return;
     }
@@ -1073,16 +1076,5 @@ hash_t LazyGraphExecutor::GetGraphHash(
   return coll.hash;
 }
 
-void LazyGraphExecutor::ClearComputationCache() {
-  VLOG(4) << "Clearing the computation cache";
-  GetComputationCache()->Clear();
-}
-
-void LazyGraphExecutor::RemoveFromComputationCache(const hash_t& hash) {
-  VLOG(4) << "Removing computation cache for hash " << hash;
-  if (!GetComputationCache()->Erase(hash)) {
-    LOG(ERROR) << "There is no cached computation for hash " << hash << '\n';
-  }
-}
-
-} // namespace torch::lazy
+} // namespace lazy
+} // namespace torch

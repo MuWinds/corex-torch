@@ -2,7 +2,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 
 #include <memory>
 
@@ -32,7 +31,6 @@ class ProcessedNodeInputs {
   }
 
   uint16_t operator[](uint16_t idx) const {
-    // NOLINTNEXTLINE(*const-cast*)
     return (*const_cast<ProcessedNodeInputs*>(this))[idx];
   }
 
@@ -45,7 +43,7 @@ class ProcessedNodeInputs {
     }
   }
 
-  [[nodiscard]] uint16_t size() const {
+  C10_NODISCARD uint16_t size() const {
     if (C10_LIKELY(repr_.is_inline())) {
       return repr_.inline_repr_.size;
     } else {
@@ -53,7 +51,7 @@ class ProcessedNodeInputs {
     }
   }
 
-  [[nodiscard]] bool empty() const {
+  C10_NODISCARD bool empty() const {
     return size() == 0;
   }
 
@@ -95,11 +93,11 @@ class ProcessedNodeInputs {
     HeapArrayPtr(HeapArrayPtr&&) noexcept = default;
     HeapArrayPtr& operator=(HeapArrayPtr&&) noexcept = default;
 
-    [[nodiscard]] bool empty() const {
+    C10_NODISCARD bool empty() const {
       return size() != 0;
     }
 
-    [[nodiscard]] uint16_t size() const {
+    C10_NODISCARD uint16_t size() const {
       return array_ ? array_[0] : 0;
     }
 
@@ -139,8 +137,8 @@ class ProcessedNodeInputs {
   // awkward.
 #pragma pack(push, 2)
   union Repr {
-    [[nodiscard]] bool is_inline() const {
-      uint8_t tag = 0;
+    C10_NODISCARD bool is_inline() const {
+      uint8_t tag;
       // Use of reinterpret_cast to pointer to char or unsigned char
       // is defined behavior; see
       // https://en.cppreference.com/w/cpp/language/reinterpret_cast .
@@ -217,8 +215,8 @@ class ProcessedNodeInputs {
 
     struct InlineRepr {
       uint8_t tag = 0x1;
-      uint8_t size{};
-      uint16_t inputs[kMaxInlineInputs]{};
+      uint8_t size;
+      uint16_t inputs[kMaxInlineInputs];
     };
 
     using OutlineRepr = HeapArrayPtr;

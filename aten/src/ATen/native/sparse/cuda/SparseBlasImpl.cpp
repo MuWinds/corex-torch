@@ -582,6 +582,7 @@ void spmm(
     const Scalar& beta,
     const Scalar& alpha,
     const Tensor& result) {
+#if !defined(__ILUVATAR__)
 #if !(AT_USE_CUSPARSE_GENERIC_API() || AT_USE_HIPSPARSE_GENERIC_API())
   addmm_out_legacy(mat1, mat2, beta, alpha, result);
 #else
@@ -615,7 +616,7 @@ void spmm(
 
   // CUDA < 11.0 doesn't support 64-bit indices and doesn't raise an error about this
   // silently returning incorrect results
-#if defined(USE_ROCM) && (ROCM_VERSION < 60300)
+#if defined(USE_ROCM)
   auto mat1_32 = at::native::_sparse_csr_tensor_unsafe(
       mat1.crow_indices().to(kInt),
       mat1.col_indices().to(kInt),
@@ -626,11 +627,11 @@ void spmm(
       mat1.device());
   auto descA = at::cuda::sparse::CuSparseSpMatCsrDescriptor(mat1_32);
   auto algorithm = CUSPARSE_MM_ALG_DEFAULT;
-#else // defined(USE_ROCM) && (ROCM_VERSION < 60300)
+#else
   // TODO: update this to support COO sparse layout
   auto descA = at::cuda::sparse::CuSparseSpMatCsrDescriptor(mat1);
   auto algorithm = CUSPARSE_SPMM_CSR_ALG2;
-#endif // defined(USE_ROCM) && (ROCM_VERSION < 60300)
+#endif
 
   auto descB = at::cuda::sparse::CuSparseConstDnMatDescriptor(
       transpose_B ? mat2_->mT() : *mat2_);
@@ -684,6 +685,9 @@ void spmm(
     result.copy_(*result_);
   }
 #endif // !(AT_USE_CUSPARSE_GENERIC_API() || AT_USE_HIPSPARSE_GENERIC_API())
+#else
+  TORCH_CHECK(false, "CoreX: sparse op not supported: void spmm(");
+#endif
 }
 
 void spgemm(
@@ -692,6 +696,7 @@ void spgemm(
     const Scalar& beta,
     const Scalar& alpha,
     const at::sparse_csr::SparseCsrTensor& C) {
+#if !defined(__ILUVATAR__)
   // older versions of cusparse on Windows segfault for complex128 dtype
 #if defined(_WIN32) && defined(CUSPARSE_VERSION) && CUSPARSE_VERSION < 11400
   TORCH_CHECK(
@@ -827,6 +832,9 @@ void spgemm(
             CUSPARSE_SPGEMM_DEFAULT,
             spgemm_desc.descriptor()));
       });
+#else
+  TORCH_CHECK(false, "CoreX: sparse op not supported: void spgemm(");
+#endif
 }
 
 } // anonymous namespace
@@ -977,6 +985,7 @@ void addmv_out_sparse_csr(
     const Scalar& beta,
     const Scalar& alpha,
     const Tensor& result) {
+#if !defined(__ILUVATAR__)
   if (mat.layout() == kSparseBsr) {
     return block_sparse_mv(mat, vec, beta, alpha, result);
   }
@@ -1055,6 +1064,9 @@ void addmv_out_sparse_csr(
     result.copy_(*result_);
   }
 #endif // !(AT_USE_CUSPARSE_GENERIC_API() || AT_USE_HIPSPARSE_GENERIC_API())
+#else
+  TORCH_CHECK(false, "CoreX: sparse op not supported: void addmv_out_sparse_csr(");
+#endif
 }
 
 /*
@@ -1260,6 +1272,7 @@ void triangular_solve_out_sparse_csr(
     bool upper,
     bool transpose,
     bool unitriangular) {
+#if !defined(__ILUVATAR__)
   if (B.numel() == 0 || X.numel() == 0 || A._nnz() == 0) {
     // If A has no nnz, then A is singular and we can't solve.
     X.fill_(NAN);
@@ -1410,6 +1423,9 @@ void triangular_solve_out_sparse_csr(
     X.copy_(*X_);
   }
 #endif // !AT_USE_CUSPARSE_GENERIC_SPSV()
+#else
+  TORCH_CHECK(false, "CoreX: sparse op not supported: void triangular_solve_out_sparse_csr(");
+#endif
 }
 
 void sampled_addmm_out_sparse_csr(

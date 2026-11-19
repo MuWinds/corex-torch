@@ -5,7 +5,8 @@
 #include <ATen/native/cuda/Pow.cuh>
 #include <utility>
 
-namespace at::native {
+namespace at {
+namespace native {
 
 enum class ADAM_MODE : uint8_t { ORIGINAL = 0, ADAMW = 1 };
 
@@ -25,11 +26,19 @@ template <
     bool amsgrad>
 C10_DEVICE inline void adam_math(
     scalar_type r_args[depth][kILP],
+#ifdef __ILUVATAR__
+    const float& lr,
+    const float& beta1,
+    const float& beta2,
+    const float& weight_decay,
+    const float& eps,
+#else
     const double& lr,
     const double& beta1,
     const double& beta2,
     const double& weight_decay,
     const double& eps,
+#endif
     const bool& maximize,
     const float* grad_scale_ptr,
     const float* found_inf_ptr,
@@ -42,7 +51,11 @@ C10_DEVICE inline void adam_math(
     opmath_t param = static_cast<opmath_t>(r_args[kParamIdx][ii]);
     opmath_t grad = static_cast<opmath_t>(r_args[kGradIdx][ii]);
     if (grad_scale_ptr) {
+#ifndef __ILUVATAR__
       grad /= (static_cast<double>(*grad_scale_ptr));
+#else
+            grad /= (static_cast<float>(*grad_scale_ptr));
+#endif
     }
     const opmath_t grad_to_store = grad;
     if (maximize) {
@@ -111,11 +124,19 @@ struct FusedAdamMathFunctor {
       int chunk_size,
       FusedOptimizerTensorListMetadata<depth>& tl,
       const float* lr_ptr,
+#ifdef __ILUVATAR__
+      const float& lr,
+      const float& beta1,
+      const float& beta2,
+      const float& weight_decay,
+      const float& eps,
+#else
       const double& lr,
       const double& beta1,
       const double& beta2,
       const double& weight_decay,
       const double& eps,
+#endif
       const bool& maximize,
       const float* grad_scale_ptr,
       const float* found_inf_ptr) {
@@ -197,4 +218,5 @@ struct FusedAdamMathFunctor {
 };
 } // namespace
 
-} // namespace at::native
+} // namespace native
+} // namespace at

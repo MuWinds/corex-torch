@@ -19,16 +19,14 @@ unpack(at::PhiloxCudaState arg) {
     // static_cast avoids "warning: invalid narrowing conversion from "long" to "unsigned long".
     // *(arg.offset_.ptr) is a broadcast load of a single int64_t to the entire kernel.
     // For most threads' reads it will hit in cache, so it shouldn't hurt performance.
+#ifdef __ILUVATAR_WORKAROUND__
+    return std::make_tuple(arg.seed_.val, static_cast<uint64_t>(*(arg.offset_.ptr) + arg.offset_intragraph_));
+#else
     return std::make_tuple(static_cast<uint64_t>(*arg.seed_.ptr), static_cast<uint64_t>(*(arg.offset_.ptr) + arg.offset_intragraph_));
+#endif
   } else {
     return std::make_tuple(arg.seed_.val, arg.offset_.val);
   }
 }
-
-// Adapted from TE
-// extract seed and offset from PhiloxCudaState
-__global__ void unpack_cudnn(at::PhiloxCudaState arg, int64_t* seed_ptr, int64_t* offset_ptr);
-
-void unpack_cudnn_wrapper(at::PhiloxCudaState arg, int64_t* seed_ptr, int64_t* offset_ptr, cudaStream_t stream);
 
 } // namespace at::cuda::philox

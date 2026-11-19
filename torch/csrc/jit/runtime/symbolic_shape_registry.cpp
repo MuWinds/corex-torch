@@ -77,7 +77,7 @@ std::unordered_map<const FunctionSchema*, BoundedShapeGraphs>
 // CompilationUnit that holds all these Functions and keeps them alive.
 auto compilation_unit = std::make_shared<CompilationUnit>();
 
-const std::optional<const FunctionSchema*> getInplaceVariant(
+const at::optional<const FunctionSchema*> getInplaceVariant(
     const FunctionSchema& base_schema) {
   auto& inplace_variants =
       getAllOperatorsFor(c10::Symbol::fromQualString(base_schema.name() + "_"));
@@ -102,7 +102,7 @@ const std::optional<const FunctionSchema*> getInplaceVariant(
 
     return schema;
   }
-  return std::nullopt;
+  return at::nullopt;
 }
 
 TypePtr mapTensorToListOfInts(TypePtr type) {
@@ -219,7 +219,7 @@ void checkInputAndOutputTypes(
 
 void transformShapeFunction(
     const FunctionSchema* schema_string,
-    const std::shared_ptr<Graph>& graph) {
+    std::shared_ptr<Graph> graph) {
   Inline(*graph);
 
   // ATEN operators can return multiple unboxed values, this in contrast to
@@ -365,7 +365,7 @@ void loadFunctions() {
         [&](const std::string& name) -> std::shared_ptr<Source> { return src; },
         1);
     compilation_unit->define(
-        std::nullopt, shape_compute_functions, resolver, nullptr);
+        c10::nullopt, shape_compute_functions, resolver, nullptr);
     loadModule(*compilation_unit);
   } catch (...) {
     // Reset the cache and compilation unit so that we don't get weird errors
@@ -391,7 +391,7 @@ std::optional<std::shared_ptr<Graph>> shapeComputeGraphForSchema(
   }
   GRAPH_DEBUG("Could not find schema: ", schema);
 
-  return std::nullopt;
+  return c10::nullopt;
 }
 
 TORCH_API std::optional<BoundedShapeGraphs> boundedGraphsForSchema(
@@ -406,12 +406,12 @@ TORCH_API std::optional<BoundedShapeGraphs> boundedGraphsForSchema(
     return cache_it->second;
   }
 
-  return std::nullopt;
+  return c10::nullopt;
 }
 
 void RegisterShapeComputeGraphForSchema(
     const FunctionSchema& schema,
-    const std::shared_ptr<Graph>& g) {
+    std::shared_ptr<Graph> g) {
   std::lock_guard<std::mutex> guard(lock);
   if (cached_schema_to_graph.empty()) {
     loadFunctions();

@@ -4,7 +4,6 @@ import os
 import subprocess
 import sys
 
-
 COMMON_TESTS = [
     (
         "Checking that torch is available",
@@ -52,7 +51,7 @@ if __name__ == "__main__":
             if os.path.exists(debugger):
                 command_args = [debugger, "-o", "-c", "~*g; q"] + command_args
                 command_string = " ".join(command_args)
-                print("Rerunning with traceback enabled")
+                print("Reruning with traceback enabled")
                 print("Command:", command_string)
                 subprocess.run(command_args, check=False)
             sys.exit(e.returncode)

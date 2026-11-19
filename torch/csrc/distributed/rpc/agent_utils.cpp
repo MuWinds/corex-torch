@@ -1,7 +1,9 @@
 #include <fmt/format.h>
 #include <torch/csrc/distributed/rpc/agent_utils.h>
 
-namespace torch::distributed::rpc {
+namespace torch {
+namespace distributed {
+namespace rpc {
 
 std::unordered_map<std::string, worker_id_t> collectNames(
     ::c10d::PrefixStore store,
@@ -11,17 +13,16 @@ std::unordered_map<std::string, worker_id_t> collectNames(
   std::vector<uint8_t> selfNameVector(
       (uint8_t*)selfName.c_str(),
       (uint8_t*)selfName.c_str() + selfName.length());
-  store.set(std::to_string(selfId), selfNameVector);
+  store.set(c10::to_string(selfId), selfNameVector);
 
   std::unordered_map<std::string, worker_id_t> nameToId;
   nameToId.reserve(worldSize);
   nameToId.emplace(selfName, selfId);
-  // NOLINTNEXTLINE(*loop*)
   for (worker_id_t workerId = 0; workerId < worldSize; ++workerId) {
     if (workerId == selfId) {
       continue;
     }
-    std::vector<uint8_t> workerNameVector = store.get(std::to_string(workerId));
+    std::vector<uint8_t> workerNameVector = store.get(c10::to_string(workerId));
     std::string workerName(
         (char*)workerNameVector.data(), workerNameVector.size());
 
@@ -45,7 +46,8 @@ static std::vector<std::string> splitString(
     const std::string& delim) {
   std::vector<std::string> tokens;
   size_t start = 0;
-  size_t end = 0;
+  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+  size_t end;
   // Iterate through each delimiter
   while ((end = s.find(delim, start)) != std::string::npos) {
     tokens.emplace_back(s.substr(start, end - start));
@@ -67,7 +69,7 @@ std::unordered_map<std::string, worker_id_t> collectCurrentNames(
 
   // Check that ID does not already exist and set {ID : NAME}
   std::vector<uint8_t> resultVector = store.compareSet(
-      std::to_string(selfId), std::vector<uint8_t>(), selfNameVector);
+      c10::to_string(selfId), std::vector<uint8_t>(), selfNameVector);
   TORCH_CHECK(
       resultVector == selfNameVector,
       "RPC worker id ",
@@ -78,7 +80,7 @@ std::unordered_map<std::string, worker_id_t> collectCurrentNames(
       selfNameVector,
       " cannot be added.");
 
-  store.set(std::to_string(selfId), selfNameVector);
+  store.set(c10::to_string(selfId), selfNameVector);
 
   std::unordered_map<std::string, worker_id_t> nameToId;
   nameToId.emplace(selfName, selfId);
@@ -136,7 +138,7 @@ void removeCurrentName(
 
   // Remove the current name and rank
   std::string str_to_erase = fmt::format("{}-{},", selfName, selfId);
-  auto start_position_to_erase = allWorkerInfos.find(str_to_erase);
+  int start_position_to_erase = allWorkerInfos.find(str_to_erase);
   allWorkerInfos.erase(start_position_to_erase, str_to_erase.length());
 
   // Set the new data
@@ -146,10 +148,10 @@ void removeCurrentName(
   store.set(allWorkerInfosKey, newAllWorkerInfosVector);
 }
 
-constexpr const auto storeKeyBarrierId = "_ID_";
-constexpr const auto storeKeyProcessCount = "PROCESS_COUNT";
-constexpr const auto storeKeyActiveCallCount = "ACTIVE_CALLS";
-constexpr const auto storeKeyReady = "READY";
+const string storeKeyBarrierId = "_ID_";
+const string storeKeyProcessCount = "PROCESS_COUNT";
+const string storeKeyActiveCallCount = "ACTIVE_CALLS";
+const string storeKeyReady = "READY";
 static std::atomic<int> barrierId(0);
 
 static std::tuple<std::string, std::string, std::string> getNextKeyIds() {
@@ -178,7 +180,7 @@ int syncCallCount(
 
   // Add to keys which will record the number of processes and active calls
   store.add(activeCallCountKey, activeCalls);
-  auto totalProcessCount = store.add(processCountKey, 1);
+  int totalProcessCount = store.add(processCountKey, 1);
 
   // The last worker will need to set the ready key
   if (totalProcessCount == worldSize) {
@@ -195,4 +197,6 @@ int syncCallCount(
   return totalCallCount;
 }
 
-} // namespace torch::distributed::rpc
+} // namespace rpc
+} // namespace distributed
+} // namespace torch

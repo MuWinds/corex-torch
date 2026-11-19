@@ -21,7 +21,8 @@
 #include <ATen/ops/zeros_like.h>
 #endif
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 namespace {
 
@@ -327,8 +328,8 @@ bool FoldFrozenConvMulOrDiv(Block* b) {
       // channels-out resize it to the shape that will broadcast to
       // weight_tensor when the op is run so we dont change weight size
       std::vector<int64_t> weight_compatible_size = {out_channels};
-      for ([[maybe_unused]] const auto i :
-           c10::irange(1, weight_tensor.ndimension())) {
+      for (const auto i : c10::irange(1, weight_tensor.ndimension())) {
+        (void)i; // Suppress unused variable warning
         weight_compatible_size.push_back(1);
       }
 
@@ -407,4 +408,5 @@ bool FoldFrozenConvMulOrDiv(std::shared_ptr<Graph>& graph) {
   return graph_modified;
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

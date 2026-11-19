@@ -19,12 +19,14 @@
 #include <ATen/ops/resize_native.h>
 #endif
 
-namespace at::native {
+namespace at {
+namespace native {
 
 // BEGIN QUANTIZE HELPER FUNCTIONS
 __device__ __forceinline__ float bfe(uint32_t val, uint32_t pos, uint32_t len) {
-#ifdef USE_ROCM
-  return *reinterpret_cast<float*>((val >> pos) && ((1u << len) - 1u ));
+#if defined(USE_ROCM) || defined(__ILUVATAR__)
+  uint32_t v = (val >> pos) & (len >= 32u ? 0xFFFFFFFFu : ((1u << len) - 1u));
+  return __uint2float_rn(v);
 #else
   uint32_t ret;
   // Get the bit field of [pos, pos+len) bits from val:
@@ -239,7 +241,7 @@ at::Tensor& embedding_bag_byte_impl(
   }
 
   const std::vector<int64_t> shape = {output_size, D};
-  at::native::resize_(output, shape, std::nullopt);
+  at::native::resize_(output, shape, c10::nullopt);
   AT_DISPATCH_INDEX_TYPES(
       indices.scalar_type(), "embedding_bag_byte_rowwise_offsets_kernel", ([&] {
         embedding_bag_nbits_rowwise_offsets_kernel<index_t, 8><<<
@@ -421,7 +423,7 @@ at::Tensor& embedding_bag_4bit_impl(
   }
 
   const std::vector<int64_t> shape = {output_size, D};
-  at::native::resize_(output, shape, std::nullopt);
+  at::native::resize_(output, shape, c10::nullopt);
   AT_DISPATCH_INDEX_TYPES(
       indices.scalar_type(), "embedding_bag_4bit_rowwise_offsets_kernel", ([&] {
         embedding_bag_nbits_rowwise_offsets_kernel<index_t, 4><<<
@@ -576,4 +578,5 @@ TORCH_LIBRARY_IMPL(quantized, CUDA, m) {
       TORCH_FN(embedding_bag_4bit_rowwise_offsets));
 }
 
-} // namespace at::native
+} // namespace native
+} // namespace at

@@ -105,7 +105,7 @@ class MutableTypePtrHelper {
           }
         }
         if (mutable_types.empty()) {
-          return std::nullopt;
+          return c10::nullopt;
         }
         return mutable_types;
       }
@@ -121,7 +121,7 @@ class MutableTypePtrHelper {
           return {AliasTypeSet{
               FutureType::create(*toSingleType(*maybe_mut_types))}};
         }
-        return std::nullopt;
+        return c10::nullopt;
       }
       case TypeKind::AwaitType: {
         if (auto maybe_mut_types = mapTypeToAliasTypeSet(
@@ -129,7 +129,7 @@ class MutableTypePtrHelper {
           return {
               AliasTypeSet{AwaitType::create(*toSingleType(*maybe_mut_types))}};
         }
-        return std::nullopt;
+        return c10::nullopt;
       }
       case TypeKind::TupleType: {
         std::vector<TypePtr> mutable_types;
@@ -142,12 +142,12 @@ class MutableTypePtrHelper {
           }
         }
         if (mutable_types.empty()) {
-          return std::nullopt;
+          return c10::nullopt;
         }
         return {AliasTypeSet{TupleType::create(mutable_types)}};
       }
       default:
-        return std::nullopt;
+        return c10::nullopt;
     }
   }
   ska::flat_hash_map<TypePtr, AliasTypeSet>* mutable_type_cache_;
@@ -197,6 +197,8 @@ const AliasTypeSet* AliasDb::mapTypeToAliasTypeSetPtr(
   return helper.mapTypeToBorrowedAliasTypeSet(type);
 }
 
+AliasDb::~AliasDb() = default;
+
 // Structure used during analysis to keep track of all writes at a high
 // level. When the analysis is completed, this will be used to construct
 // a more efficient WriteIndex
@@ -227,7 +229,6 @@ AliasDb::AliasDb(
   analyze(graph_);
 
   memoryDAG_ = std::move(*memoryDAGBuilder_).createMemoryDAG();
-  // NOLINTNEXTLINE(cppcoreguidelines-prefer-member-initializer)
   memoryDAGBuilder_ = nullptr; // to make further access a hard error
 
   memoryDAG_->setWildcards(
@@ -283,8 +284,6 @@ AliasDb::AliasDb(
   buildWrittenToLocationsIndex();
   GRAPH_DEBUG(toString());
 }
-
-AliasDb::~AliasDb() = default;
 
 bool AliasDb::isMutable(Node* n) const {
   ValueSet vs;
@@ -394,14 +393,6 @@ MemoryLocations AliasDb::getReads(Node* n) const {
   MemoryLocations reads;
   getReadsImpl(n, reads);
   return reads;
-}
-
-MemoryLocations AliasDb::getMemoryLocations(Value* v) const {
-  auto it = elementMap_.find(v);
-  if (it != elementMap_.end()) {
-    return memoryDAG_->getMemoryLocations(it->second);
-  }
-  return MemoryLocations();
 }
 
 std::string AliasDb::getElementName(const Element* e) const {
@@ -1004,9 +995,7 @@ void AliasDb::analyzeGradOf(Node* node) {
   mapAliases(node->outputs(), grad_of_block->outputs());
 }
 
-void AliasDb::analyzeSubgraph(
-    Node* node,
-    const std::shared_ptr<Graph>& subgraph) {
+void AliasDb::analyzeSubgraph(Node* node, std::shared_ptr<Graph> subgraph) {
   const auto subgraphBlock = subgraph->block();
   // CallFunction nodes have an extra first parameter
   if (node->kind() == prim::CallFunction) {
@@ -1580,8 +1569,8 @@ bool AliasDb::safeToChangeAliasingRelationship(
 // Helper for topologically-safe node moves. See `tryMove()` for details.
 class AliasDb::WorkingSet {
  public:
-  explicit WorkingSet(Node* mover, const AliasDb& aliasDb)
-      : aliasDb_(aliasDb), mover_(mover) {
+  explicit WorkingSet(Node* mover, const AliasDb& aliasDb) : aliasDb_(aliasDb) {
+    mover_ = mover;
     for (const auto user : getUsersSameBlock(mover_)) {
       moverUsers_.insert(user);
     }
@@ -1592,7 +1581,7 @@ class AliasDb::WorkingSet {
   // Add `n` to the working set
   void add(Node* n) {
     nodes_.push_back(n);
-    node_to_index_[n] = static_cast<int64_t>(nodes_.size()) - 1;
+    node_to_index_[n] = nodes_.size() - 1;
     for (const auto user : getUsersSameBlock(n)) {
       users_.insert(user);
     }
@@ -1716,7 +1705,6 @@ class AliasDb::WorkingSet {
     }
   }
 
-  // NOLINTNEXTLINE(cppcoreguidelines-avoid-const-or-ref-data-members)
   const AliasDb& aliasDb_;
   std::vector<Node*> nodes_;
   // Extra data structure for nodes for faster look up
@@ -1764,9 +1752,12 @@ bool AliasDb::tryMove(
   // dependencies
   WorkingSet workingSet(toMove, *this);
 
-  auto direction = kNextDirection;
+  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+  int direction;
   if (toMove->isAfter(movePoint)) {
     direction = kPrevDirection;
+  } else {
+    direction = kNextDirection;
   }
 
   auto curNode = toMove->next_in_graph[direction];
@@ -1905,7 +1896,7 @@ bool AliasDb::mayAliasWildcard(const at::ArrayRef<Value*> vs) const {
 std::optional<Element*> AliasDb::tryGetOrCreateWildcard(const TypePtr& type) {
   auto maybe_mut_types = mapTypeToAliasTypeSetPtr(type);
   if (!maybe_mut_types) {
-    return std::nullopt;
+    return c10::nullopt;
   }
   auto mut_type = toSingleType(*maybe_mut_types);
   auto existing_wildcard = wildcardIndex_.find(*mut_type);
@@ -1979,13 +1970,13 @@ std::optional<Element*> AliasDb::setWildcard(const Value* v) {
   std::optional<Element*> maybe_wildcardElement =
       tryGetOrCreateWildcard(v->type());
   if (!maybe_wildcardElement) {
-    return std::nullopt;
+    return c10::nullopt;
   }
   // Ensure that we create a corresponding Element for `v` still, as it is an
   // invariant that all mutable values have an Element
   getOrCreateElement(v);
   wildcards_.insert(v);
-  return maybe_wildcardElement;
+  return *maybe_wildcardElement;
 }
 
 void AliasDb::buildWrittenToLocationsIndex() {
@@ -2020,29 +2011,6 @@ void Lint(const AliasDb* db) {
   // fully developed.
   // - Every mutable value in the aliasdb belongs to the graph
   // - All container values have contained elements
-}
-
-ValueAndMemoryLocationSet AliasDb::getValueAndMemoryLocationSet() const {
-  return ValueAndMemoryLocationSet(this);
-}
-
-bool AliasDb::writesToAlias(Node* n, const ValueAndMemoryLocationSet& vls)
-    const {
-  const auto writtenTo = getWrites(n);
-  if (writtenTo.empty()) {
-    return false;
-  }
-
-  return writtenTo.intersects(vls.memoryLocations_);
-}
-
-void ValueAndMemoryLocationSet::insert(Value* v) {
-  valueSet_.insert(v);
-  memoryLocations_ |= aliasDb_->getMemoryLocations(v);
-}
-
-ValueSet& ValueAndMemoryLocationSet::getValueSet() {
-  return valueSet_;
 }
 
 } // namespace torch::jit

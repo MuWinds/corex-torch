@@ -4,7 +4,7 @@
 #include <torch/csrc/python_headers.h>
 
 template <>
-TORCH_PYTHON_API void THPPointer<PyObject>::free() {
+void THPPointer<PyObject>::free() {
   if (ptr && C10_LIKELY(Py_IsInitialized()))
     Py_DECREF(ptr);
 }
@@ -12,7 +12,7 @@ TORCH_PYTHON_API void THPPointer<PyObject>::free() {
 template class THPPointer<PyObject>;
 
 template <>
-TORCH_PYTHON_API void THPPointer<PyCodeObject>::free() {
+void THPPointer<PyCodeObject>::free() {
   if (ptr && C10_LIKELY(Py_IsInitialized()))
     Py_DECREF(ptr);
 }
@@ -20,7 +20,7 @@ TORCH_PYTHON_API void THPPointer<PyCodeObject>::free() {
 template class THPPointer<PyCodeObject>;
 
 template <>
-TORCH_PYTHON_API void THPPointer<PyFrameObject>::free() {
+void THPPointer<PyFrameObject>::free() {
   if (ptr && C10_LIKELY(Py_IsInitialized()))
     Py_DECREF(ptr);
 }

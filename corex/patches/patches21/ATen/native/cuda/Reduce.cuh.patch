@@ -1,0 +1,157 @@
+--- /data/home/2024240384035/build/pytorch-2.1.0/aten/src/ATen/native/cuda/Reduce.cuh	2023-09-22 06:25:09.000000000 +0800
++++ /data/software/Anaconda3/2024.10-1/envs/py310/lib/python3.10/site-packages/torch/include/ATen/native/cuda/Reduce.cuh	2025-03-13 11:53:02.381028403 +0800
+@@ -60,7 +60,11 @@
+ //template for changing MAX_NUM_THREADS based on op dtype
+ template <typename T>
+ struct mnt_wrapper {
++#ifdef __ILUVATAR_WORKAROUND__
++  static constexpr int MAX_NUM_THREADS = 1024;
++#else  
+   static constexpr int MAX_NUM_THREADS = 512;
++#endif
+ };
+ 
+ template <>
+@@ -573,7 +577,11 @@
+     // Multiple accumulators to remove dependency between unrolled loops.
+     arg_vec_t value_list[vt0];
+ 
++#ifdef __ILUVATAR_WORKAROUND__
++    #pragma unroll 4
++#else
+     #pragma unroll
++#endif
+     for (int i = 0; i < vt0; i++) {
+       #pragma unroll
+       for (int j = 0; j < output_vec_size; j++) {
+@@ -584,12 +592,20 @@
+     load_t values[vt0];
+ 
+     while (idx + (vt0 - 1) * stride < end) {
++#ifdef __ILUVATAR_WORKAROUND__
++      #pragma unroll 4
++#else
+       #pragma unroll
++#endif
+       for (index_t i = 0; i < vt0; i++) {
+         const auto offset = calc(idx + i * stride) / output_vec_size;
+         values[i] = memory::load_vector<output_vec_size>(data_, offset);
+       }
++#ifdef __ILUVATAR_WORKAROUND__
++      #pragma unroll 4
++#else
+       #pragma unroll
++#endif
+       for (index_t i = 0; i < vt0; i++) {
+         #pragma unroll
+         for (index_t j = 0; j < output_vec_size; j++) {
+@@ -601,7 +617,11 @@
+ 
+     // tail
+     int idx_ = idx;
++#ifdef __ILUVATAR_WORKAROUND__
++    #pragma unroll 4
++#else
+     #pragma unroll
++#endif
+     for (index_t i = 0; i < vt0; i++) {
+       if (idx >= end) {
+         break;
+@@ -611,7 +631,11 @@
+       idx += stride;
+     }
+     idx = idx_;
++#ifdef __ILUVATAR_WORKAROUND__
++    #pragma unroll 4
++#else
+     #pragma unroll
++#endif
+     for (index_t i = 0; i < vt0; i++) {
+       if (idx >= end) {
+         break;
+@@ -624,7 +648,11 @@
+     }
+ 
+     // combine accumulators
++#ifdef __ILUVATAR_WORKAROUND__
++    #pragma unroll 4
++#else
+     #pragma unroll
++#endif
+     for (int i = 1; i < vt0; i++) {
+       #pragma unroll
+       for (index_t j = 0; j < output_vec_size; j++) {
+@@ -1070,7 +1098,16 @@
+       dim0 /= config.input_vec_size;
+     } else if (!reduction_on_fastest_striding_dimension) {
+       // Case 2: "vectorize along output"
++#ifdef __ILUVATAR_DIAG__
++      static int use_scalar_flag = [] {
++        const char* env = getenv("PYTORCH_DISABLE_VEC_KERNEL");
++        int disable_vec_flag = env ? atoi(env) : 1;
++        return disable_vec_flag;
++      }();
++      config.output_vec_size = use_scalar_flag ? 1 : get_output_vec_size<scalar_t>(iter);;
++#else
+       config.output_vec_size = get_output_vec_size<scalar_t>(iter);
++#endif
+       dim0 /= config.output_vec_size;
+     }
+   }
+@@ -1091,10 +1128,19 @@
+     config.output_mult[0] = config.split_output(block_width);
+   }
+ 
++#ifdef __ILUVATAR_WORKAROUND__
++  constexpr int min_values_per_thread = 256;
++  constexpr int max_values_per_thread = 4096;
++#else
+   constexpr int min_values_per_thread = 16;
+   constexpr int max_values_per_thread = 256;
++#endif
+ 
++#ifdef __ILUVATAR_WORKAROUND__
++  if (config.values_per_thread() >= block_height * 256 || config.values_per_thread() >= max_values_per_thread) {
++#else
+   if (config.values_per_thread() >= block_height * 16 || config.values_per_thread() >= max_values_per_thread) {
++#endif
+     // Divide the input across warps in a thread-block, if that leaves at least
+     // 16 elements to be summed by each thread. This will require inter-warp
+     // reduction using shared memory.
+@@ -1122,6 +1168,12 @@
+     // a large number of values to deal with. But we don't want values_per_thread to be larger than
+     // max_values_per_thread
+     config.ctas_per_output = std::max(std::min<int>(ctas_per_output1, ctas_per_output2), ctas_per_output3);
++
++#ifdef __ILUVATAR__
++    int ctas_per_output4 = std::floor(65535/block_height);
++    config.ctas_per_output = std::min(config.ctas_per_output, ctas_per_output4);
++#endif
++
+     if (config.ctas_per_output > 1) {
+       config.input_mult[2] = config.split_input(config.ctas_per_output);
+     }
+@@ -1129,7 +1181,11 @@
+   return config;
+ };
+ 
++#ifdef __ILUVATAR__
++template <typename scalar_t, typename out_scalar_t, int vt0=4, typename ops_t, typename ident_t=float>
++#else
+ template <typename scalar_t, typename out_scalar_t, int vt0=4, typename ops_t, typename ident_t=double>
++#endif
+ inline void gpu_reduce_kernel(TensorIterator& iter, const ops_t& ops, ident_t ident=0,
+                               AccumulationBuffer* acc_buf_ptr=nullptr, int64_t base_idx=0) {
+   AT_ASSERT(iter.numel() > 0 && iter.ntensors() - iter.noutputs() == 1 && iter.noutputs() >= 1);
+@@ -1235,7 +1291,11 @@
+ 
+ //TODO this is 100 lines of almost-copy-paste, because we have to have different template args for this function
+ //try unifying with gpu_reduce_kernel
++#ifdef __ILUVATAR__
++template <char const* name, typename scalar_t, typename out_scalar_t, int vt0=4, typename ident_t=float>
++#else
+ template <char const* name, typename scalar_t, typename out_scalar_t, int vt0=4, typename ident_t=double>
++#endif
+ inline void jitted_gpu_reduce_kernel(TensorIterator& iter, const std::string& func, ident_t ident=0,
+                               AccumulationBuffer* acc_buf_ptr=nullptr, int64_t base_idx=0) {
+   AT_ASSERT(iter.numel() > 0 && iter.ntensors() - iter.noutputs() == 1 && iter.noutputs() >= 1);

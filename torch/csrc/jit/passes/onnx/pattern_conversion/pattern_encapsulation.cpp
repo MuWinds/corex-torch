@@ -7,7 +7,8 @@
 // EDITING THIS FILE? READ THIS FIRST!
 // see Note [Edit Pattern Encapsulation] in pattern_encapsulation.h
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 namespace {
 
@@ -83,7 +84,8 @@ std::optional<Node*> EncapsulatePatternIntoSubblock(Node* n) {
       return EncapsulateInplaceIndexPutForONNX(n);
     }
   }
-  return std::nullopt;
+  return c10::nullopt;
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

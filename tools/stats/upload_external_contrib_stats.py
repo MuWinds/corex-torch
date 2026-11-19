@@ -1,17 +1,15 @@
-from __future__ import annotations
-
 import argparse
 import datetime
 import json
 import os
+
 import time
 import urllib.parse
-from typing import Any, Callable, cast
+from typing import Any, Callable, cast, Dict, List, Optional, Set
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from tools.stats.upload_stats_lib import upload_to_s3
-
 
 FILTER_OUT_USERS = {
     "pytorchmergebot",
@@ -25,9 +23,9 @@ FILTER_OUT_USERS = {
 
 def _fetch_url(
     url: str,
-    headers: dict[str, str],
-    data: dict[str, Any] | None = None,
-    method: str | None = None,
+    headers: Dict[str, str],
+    data: Optional[Dict[str, Any]] = None,
+    method: Optional[str] = None,
     reader: Callable[[Any], Any] = lambda x: x.read(),
 ) -> Any:
     token = os.environ.get("GITHUB_TOKEN")
@@ -51,37 +49,37 @@ def _fetch_url(
 
 def fetch_json(
     url: str,
-    params: dict[str, Any] | None = None,
-    data: dict[str, Any] | None = None,
-) -> list[dict[str, Any]]:
+    params: Optional[Dict[str, Any]] = None,
+    data: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
     headers = {"Accept": "application/vnd.github.v3+json"}
     if params is not None and len(params) > 0:
         url += "?" + "&".join(
             f"{name}={urllib.parse.quote(str(val))}" for name, val in params.items()
         )
     return cast(
-        list[dict[str, Any]],
+        List[Dict[str, Any]],
         _fetch_url(url, headers=headers, data=data, reader=json.load),
     )
 
 
 def get_external_pr_data(
     start_date: datetime.date, end_date: datetime.date, period_length: int = 1
-) -> list[dict[str, Any]]:
+) -> List[Dict[str, Any]]:
     pr_info = []
     period_begin_date = start_date
 
     pr_count = 0
-    users: set[str] = set()
+    users: Set[str] = set()
     while period_begin_date < end_date:
         period_end_date = period_begin_date + datetime.timedelta(days=period_length - 1)
         page = 1
-        responses: list[dict[str, Any]] = []
+        responses: List[Dict[str, Any]] = []
         while len(responses) > 0 or page == 1:
             response = cast(
-                dict[str, Any],
+                Dict[str, Any],
                 fetch_json(
-                    "https://api.github.com/search/issues",  # @lint-ignore
+                    "https://api.github.com/search/issues",
                     params={
                         "q": f'repo:pytorch/pytorch is:pr is:closed \
                             label:"open source" label:Merged -label:Reverted closed:{period_begin_date}..{period_end_date}',
@@ -112,7 +110,7 @@ def get_external_pr_data(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Upload external contribution stats to s3"
+        description="Upload external contribution stats to Rockset"
     )
     parser.add_argument(
         "--startDate",

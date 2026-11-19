@@ -17,8 +17,7 @@ class BytecodeTests(torch._dynamo.test_case.TestCase):
         def fn():
             a = 10
             b = 20
-            # prevent LOAD_FAST_LOAD_FAST in 3.13 by wrapping b with g()
-            c = a + g(b)
+            c = a + b
             f = "linetable_writer"
             return f"Test if {f} generates correct co_linetable: {c}"
 
@@ -53,8 +52,8 @@ class BytecodeTests(torch._dynamo.test_case.TestCase):
         fn_str = f"""\
 def fn():
     foo.bar(1, 2, 3)
-{str(chr(10)).join(" " * 4 + "x" + str(i) + " = 1" for i in range(1 << 9))}
-    l = [{" ".join("x" + str(i) + "," for i in range(1 << 9))}]
+{str(chr(10)).join(' ' * 4 + 'x' + str(i) + ' = 1' for i in range(1 << 9))}
+    l = [{' '.join('x' + str(i) + ',' for i in range(1 << 9))}]
         """
         locals = {}
         exec(fn_str, {}, locals)
@@ -122,7 +121,7 @@ def fn():
                 z *= 3
             return z
 
-        opt_f = torch.compile(f, backend="eager", fullgraph=True)
+        opt_f = torch._dynamo.optimize("eager", nopython=True)(f)
         self.assertEqual(opt_f(None, torch.ones(2)), 6)
 
         if sys.version_info >= (3, 11):
@@ -133,6 +132,7 @@ def fn():
     @skipIfNotPy311
     def test_py311_jump_offset(self):
         new_inst = bytecode_transformation.create_instruction
+        load_global = bytecode_transformation.create_load_global
         consts = (None, 1, 2, 3, 4)
 
         def create_test_code(jump_opname, target_idx):
@@ -159,12 +159,12 @@ def fn():
                 new_inst("RESUME", arg=0),
                 new_inst("JUMP_FORWARD", target=jump_to_target_inst),
                 targets[0],
-                new_inst("LOAD_GLOBAL", arg=0, argval="print"),
+                load_global("print", False),
                 new_inst("POP_TOP"),
                 new_inst("RETURN_VALUE"),
                 jump_to_target_inst,
                 new_inst("LOAD_CONST", argval=2),
-                new_inst("LOAD_GLOBAL", arg=0, argval="print"),
+                load_global("print", False),
                 new_inst("POP_TOP"),
                 new_inst("RETURN_VALUE"),
                 targets[1],
@@ -226,7 +226,7 @@ def fn():
             dummy_fn.__code__ = code
             self.assertEqual(dummy_fn(), test[3])
 
-            dummy_opt = torch.compile(dummy_fn, backend="eager")
+            dummy_opt = torch._dynamo.optimize("eager")(dummy_fn)
             self.assertEqual(dummy_opt(), test[3])
 
     def test_exception_table_encode_varint(self):
@@ -518,7 +518,7 @@ def fn():
         insts = bytecode_transformation.bytecode_from_template(fn, noprefix=False)
         self.assertEqual(insts[-1].opname, "NOP")
         insts_i = 0
-        for inst in dis_insts:
+        for i, inst in enumerate(dis_insts):
             if inst.opname == "RETURN_CONST":
                 self.assertEqual(insts[insts_i].opname, "LOAD_CONST")
                 insts_i += 1
@@ -526,23 +526,6 @@ def fn():
                     self.assertIn("JUMP", insts[insts_i].opname)
                     self.assertIs(insts[insts_i].target, insts[-1])
             insts_i += 1
-
-    def test_bytecode_analysis_jump_backward_no_interrupt(self):
-        # bytecode_analysis fails if JUMP_BACKWARD_NO_INTERRUPT is not terminal in 3.13+
-        @torch.compile(backend="eager")
-        def fn(x):
-            # graph break causes bytecode_analysis to analyze the rest of this function
-            torch._dynamo.graph_break()
-            with torch.no_grad():
-                try:
-                    x = x + 1
-                except NotImplementedError:
-                    x = x + 1
-                except Exception:
-                    x = x + 1
-            return x
-
-        self.assertEqual(fn(torch.ones(3)), torch.ones(3) + 1)
 
 
 class BytecodeHookTests(torch._dynamo.test_case.TestCase):

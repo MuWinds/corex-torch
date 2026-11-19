@@ -3,7 +3,8 @@
 #include <c10/util/irange.h>
 #include <torch/csrc/jit/ir/ir_views.h>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 // Canonicalize a graph, renumbering it so that all structurally equivalent
 // graphs have same numbers.
@@ -143,7 +144,7 @@ bool isBeforeOrAfter(const Use& a, const Use& b, bool checking_before) {
 
 std::optional<const Use> firstOrLastUse(Value* v, bool find_first) {
   if (v->uses().empty()) {
-    return std::nullopt;
+    return c10::nullopt;
   }
   Use extreme_use = v->uses()[0];
   for (size_t i = 1; i < v->uses().size(); ++i) {
@@ -175,12 +176,12 @@ static std::vector<size_t> sort_indexes(at::ArrayRef<Value*> values) {
     // if neither has any uses, use original ordering. Since the
     // only values that jitter are ones added by the compiler and are guaranteed
     // to have uses, original ordering is fine.
-    if (first_uses[i1] == std::nullopt && first_uses[i2] == std::nullopt) {
+    if (first_uses[i1] == c10::nullopt && first_uses[i2] == c10::nullopt) {
       return i1 < i2;
     }
-    if (first_uses[i1] == std::nullopt) {
+    if (first_uses[i1] == c10::nullopt) {
       return false;
-    } else if (first_uses[i2] == std::nullopt) {
+    } else if (first_uses[i2] == c10::nullopt) {
       return true;
     }
 
@@ -230,4 +231,5 @@ static void CanonicalizeOutputs(Block* block) {
 void CanonicalizeOutputs(std::shared_ptr<Graph>& graph) {
   CanonicalizeOutputs(graph->block());
 }
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

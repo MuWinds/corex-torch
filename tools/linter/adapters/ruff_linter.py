@@ -14,10 +14,13 @@ import sys
 import time
 from typing import Any, BinaryIO
 
-
 LINTER_CODE = "RUFF"
-SYNTAX_ERROR = "E999"
 IS_WINDOWS: bool = os.name == "nt"
+
+
+def eprint(*args: Any, **kwargs: Any) -> None:
+    """Print to stderr."""
+    print(*args, file=sys.stderr, flush=True, **kwargs)
 
 
 class LintSeverity(str, enum.Enum):
@@ -184,7 +187,7 @@ def get_issue_severity(code: str) -> LintSeverity:
 
     # "F821": Undefined name
     # "E999": syntax error
-    if any(code.startswith(x) for x in ("F821", SYNTAX_ERROR, "PLE")):
+    if any(code.startswith(x) for x in ("F821", "E999", "PLE")):
         return LintSeverity.ERROR
 
     # "F": PyFlakes Error
@@ -222,7 +225,6 @@ def check_files(
                 sys.executable,
                 "-m",
                 "ruff",
-                "check",
                 "--exit-zero",
                 "--quiet",
                 "--output-format=json",
@@ -266,28 +268,27 @@ def check_files(
     else:
         rules = {}
 
-    def lint_message(vuln: dict[str, Any]) -> LintMessage:
-        code = vuln["code"] or SYNTAX_ERROR
-        return LintMessage(
+    return [
+        LintMessage(
             path=vuln["filename"],
-            name=code,
+            name=vuln["code"],
             description=(
                 format_lint_message(
                     vuln["message"],
-                    code,
+                    vuln["code"],
                     rules,
-                    show_disable and bool(vuln["code"]),
+                    show_disable,
                 )
             ),
             line=int(vuln["location"]["row"]),
             char=int(vuln["location"]["column"]),
             code=LINTER_CODE,
-            severity=severities.get(code, get_issue_severity(code)),
+            severity=severities.get(vuln["code"], get_issue_severity(vuln["code"])),
             original=None,
             replacement=None,
         )
-
-    return [lint_message(v) for v in vulnerabilities]
+        for vuln in vulnerabilities
+    ]
 
 
 def check_file_for_fixes(
@@ -306,7 +307,6 @@ def check_file_for_fixes(
                     sys.executable,
                     "-m",
                     "ruff",
-                    "check",
                     "--fix-only",
                     "--exit-zero",
                     *([f"--config={config}"] if config else []),

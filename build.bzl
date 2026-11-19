@@ -19,6 +19,8 @@ def define_targets(rules):
             "CAFFE2_BUILD_SHARED_LIBS",
             "CAFFE2_PERF_WITH_AVX",
             "CAFFE2_PERF_WITH_AVX2",
+            "CAFFE2_PERF_WITH_AVX512",
+            "CAFFE2_USE_EXCEPTION_PTR",
             "CAFFE2_USE_CUDNN",
             "USE_MKLDNN",
             "CAFFE2_USE_ITT",
@@ -35,7 +37,7 @@ def define_targets(rules):
             "caffe2/serialize/istream_adapter.cc",
             "caffe2/serialize/read_adapter_interface.cc",
         ],
-        copts = ["-fexceptions", "-DFBCODE_CAFFE2"],
+        copts = ["-fexceptions"],
         tags = [
             "-fbcode",
             "supermodule:android/default/pytorch",
@@ -46,7 +48,7 @@ def define_targets(rules):
         deps = [
             ":caffe2_headers",
             "//c10",
-            "//third_party/miniz-3.0.2:miniz",
+            "//third_party/miniz-2.1.0:miniz",
             "@com_github_glog//:glog",
         ],
     )
@@ -72,14 +74,12 @@ def define_targets(rules):
         "--install_dir=$(RULEDIR)",
         "--source-path aten/src/ATen",
         "--aoti_install_dir=$(RULEDIR)/torch/csrc/inductor/aoti_torch/generated"
-    ] + (["--static_dispatch_backend CPU"] if rules.is_cpu_static_dispatch_build() else []) + ["--mtia"])
+    ] + (["--static_dispatch_backend CPU"] if rules.is_cpu_static_dispatch_build() else []))
 
     gen_aten_outs_cuda = (
-        GENERATED_H_CUDA + GENERATED_CPP_CUDA + GENERATED_AOTI_CUDA_CPP +
+        GENERATED_H_CUDA + GENERATED_CPP_CUDA +
         aten_ufunc_generated_cuda_sources()
     )
-
-    gen_aten_outs_mtia = GENERATED_H_MTIA + GENERATED_CPP_MTIA
 
     gen_aten_outs = (
         GENERATED_H + GENERATED_H_CORE +
@@ -88,7 +88,7 @@ def define_targets(rules):
         aten_ufunc_generated_cpu_sources() +
         aten_ufunc_generated_cpu_kernel_sources() + [
             "Declarations.yaml",
-        ] + gen_aten_outs_cuda + gen_aten_outs_mtia
+        ] + gen_aten_outs_cuda
     )
 
     rules.genrule(
@@ -203,43 +203,31 @@ GENERATED_H_CUDA = [
 ]
 
 GENERATED_CPP_CUDA = [
-    "RegisterCUDA_0.cpp",
-    "RegisterNestedTensorCUDA_0.cpp",
-    "RegisterSparseCUDA_0.cpp",
-    "RegisterSparseCsrCUDA_0.cpp",
-    "RegisterQuantizedCUDA_0.cpp",
-]
-
-GENERATED_H_MTIA = [
-    "MTIAFunctions.h",
-    "MTIAFunctions_inl.h",
-]
-
-GENERATED_CPP_MTIA = [
-    "RegisterMTIA_0.cpp",
+    "RegisterCUDA.cpp",
+    "RegisterNestedTensorCUDA.cpp",
+    "RegisterSparseCUDA.cpp",
+    "RegisterSparseCsrCUDA.cpp",
+    "RegisterQuantizedCUDA.cpp",
 ]
 
 GENERATED_CPP = [
     "Functions.cpp",
     "RegisterBackendSelect.cpp",
-    "RegisterCPU_0.cpp",
-    "RegisterCPU_1.cpp",
-    "RegisterCPU_2.cpp",
-    "RegisterCPU_3.cpp",
-    "RegisterQuantizedCPU_0.cpp",
-    "RegisterNestedTensorCPU_0.cpp",
-    "RegisterSparseCPU_0.cpp",
-    "RegisterSparseCsrCPU_0.cpp",
-    "RegisterMkldnnCPU_0.cpp",
-    "RegisterCompositeImplicitAutograd_0.cpp",
-    "RegisterCompositeImplicitAutogradNestedTensor_0.cpp",
-    "RegisterZeroTensor_0.cpp",
-    "RegisterMeta_0.cpp",
-    "RegisterQuantizedMeta_0.cpp",
-    "RegisterNestedTensorMeta_0.cpp",
-    "RegisterSparseMeta_0.cpp",
-    "RegisterCompositeExplicitAutograd_0.cpp",
-    "RegisterCompositeExplicitAutogradNonFunctional_0.cpp",
+    "RegisterCPU.cpp",
+    "RegisterQuantizedCPU.cpp",
+    "RegisterNestedTensorCPU.cpp",
+    "RegisterSparseCPU.cpp",
+    "RegisterSparseCsrCPU.cpp",
+    "RegisterMkldnnCPU.cpp",
+    "RegisterCompositeImplicitAutograd.cpp",
+    "RegisterCompositeImplicitAutogradNestedTensor.cpp",
+    "RegisterZeroTensor.cpp",
+    "RegisterMeta.cpp",
+    "RegisterQuantizedMeta.cpp",
+    "RegisterNestedTensorMeta.cpp",
+    "RegisterSparseMeta.cpp",
+    "RegisterCompositeExplicitAutograd.cpp",
+    "RegisterCompositeExplicitAutogradNonFunctional.cpp",
     "CompositeViewCopyKernels.cpp",
     "RegisterSchema.cpp",
     "RegisterFunctionalization_0.cpp",
@@ -333,8 +321,5 @@ GENERATED_AUTOGRAD_CPP = [
 
 GENERATED_AOTI_CPP = [
     "torch/csrc/inductor/aoti_torch/generated/c_shim_cpu.cpp",
-]
-
-GENERATED_AOTI_CUDA_CPP = [
     "torch/csrc/inductor/aoti_torch/generated/c_shim_cuda.cpp",
 ]

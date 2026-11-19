@@ -2,7 +2,7 @@
 
 namespace caffe2 {
 
-static thread_local bool _NoPThreadPoolGuard_enabled = false;
+thread_local bool _NoPThreadPoolGuard_enabled = false;
 
 bool _NoPThreadPoolGuard::is_enabled() {
   return _NoPThreadPoolGuard_enabled;

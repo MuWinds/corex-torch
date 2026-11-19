@@ -11,19 +11,23 @@ namespace {
 
 TEST(VmapTest, TestBatchedTensor) {
   {
-    Tensor x = addBatchDim(ones({2, 3, 4}), /*level=*/1, /*dim=*/1);
+    // NOLINTNEXTLINE(bugprone-argument-comment)
+    Tensor x = addBatchDim(ones({2, 3, 4}), /*lvl=*/1, /*dim=*/1);
     std::vector<int64_t> expected_size = {2, 4};
     ASSERT_EQ(x.sizes(), expected_size);
     ASSERT_EQ(x.dim(), 2);
     ASSERT_EQ(x.numel(), 8);
     ASSERT_EQ(x.is_contiguous(), false);
+    // NOLINTNEXTLINE(hicpp-avoid-goto,cppcoreguidelines-avoid-goto)
     ASSERT_THROW(x.storage(), c10::Error);
     ASSERT_EQ(x.storage_offset(), 0);
   }
   {
     // Test multiple batch dims
-    Tensor x = addBatchDim(ones({2, 3, 4}), /*level=*/1, /*dim=*/1);
-    x = addBatchDim(x, /*level=*/2, /*dim=*/1);
+    // NOLINTNEXTLINE(bugprone-argument-comment)
+    Tensor x = addBatchDim(ones({2, 3, 4}), /*lvl=*/1, /*dim=*/1);
+    // NOLINTNEXTLINE(bugprone-argument-comment)
+    x = addBatchDim(x, /*lvl=*/2, /*dim=*/1);
     std::vector<int64_t> expected_size = {2};
     ASSERT_EQ(x.sizes(), expected_size);
     ASSERT_EQ(x.dim(), 1);
@@ -34,12 +38,14 @@ TEST(VmapTest, TestBatchedTensor) {
 
     // Should not throw
     std::vector<int64_t> sizes(kVmapMaxTensorDims, 1);
-    Tensor x = addBatchDim(ones(sizes), /*level=*/1, /*dim=*/1);
+    // NOLINTNEXTLINE(bugprone-argument-comment)
+    Tensor x = addBatchDim(ones(sizes), /*lvl=*/1, /*dim=*/1);
 
     // Should throw
     std::vector<int64_t> too_many_sizes(kVmapMaxTensorDims + 1, 1);
     auto big_dim_tensor = ones(too_many_sizes);
-    ASSERT_THROW(addBatchDim(big_dim_tensor, /*level=*/1, /*dim=*/1), c10::Error);
+    // NOLINTNEXTLINE(hicpp-avoid-goto,cppcoreguidelines-avoid-goto,bugprone-argument-comment)
+    ASSERT_THROW(addBatchDim(big_dim_tensor, /*lvl=*/1, /*dim=*/1), c10::Error);
   }
   {
     // Create a "scalar" BatchedTensor. Should not crash.
@@ -164,7 +170,7 @@ TEST(VmapTest, TestBatchedTensorActualDim) {
   {
     // ActualDim on kVmapMaxTensorDims sized underlying tensor
     auto tensor = ones({});
-    for ([[maybe_unused]] const auto i : c10::irange(kVmapMaxTensorDims)) {
+    for (C10_UNUSED const auto i : c10::irange(kVmapMaxTensorDims)) {
       tensor = tensor.unsqueeze(0);
     }
     ASSERT_EQ(tensor.dim(), kVmapMaxTensorDims);
@@ -740,7 +746,7 @@ TEST(VmapTest, TestBatchedTensorExpand) {
 TEST(VmapTest, TestBatchedTensorUnsqueeze) {
   {
     // Basic test
-    auto tensor = at::randn({2, 3, 5});
+    auto tensor = at::randn({2, 3, 5});  // NOLINT
     auto batched = makeBatched(tensor, {{/*lvl*/0, /*dim*/0}});
 
     auto batched_out = batched.unsqueeze(0);
@@ -750,7 +756,7 @@ TEST(VmapTest, TestBatchedTensorUnsqueeze) {
   }
   {
     // Test with multiple levels
-    auto tensor = at::randn({2, 3, 5});
+    auto tensor = at::randn({2, 3, 5});  // NOLINT
     auto batched = makeBatched(tensor, {{0, 0}, {1, 1}});
 
     auto batched_out = batched.unsqueeze(0);
@@ -760,7 +766,7 @@ TEST(VmapTest, TestBatchedTensorUnsqueeze) {
   }
   {
     // Negative dim
-    auto tensor = at::randn({2, 3, 5});
+    auto tensor = at::randn({2, 3, 5});  // NOLINT
     auto batched = makeBatched(tensor, {{/*lvl*/0, /*dim*/0}});
 
     auto batched_out = batched.unsqueeze(-1);
@@ -773,7 +779,7 @@ TEST(VmapTest, TestBatchedTensorUnsqueeze) {
 TEST(VmapTest, TestBatchedTensorSqueeze) {
   {
     // Basic test
-    auto tensor = at::randn({2, 1, 5});
+    auto tensor = at::randn({2, 1, 5});  // NOLINT
     auto batched = makeBatched(tensor, {{/*lvl*/0, /*dim*/0}});
 
     auto batched_out = batched.squeeze(0);
@@ -783,7 +789,7 @@ TEST(VmapTest, TestBatchedTensorSqueeze) {
   }
   {
     // Test with multiple levels
-    auto tensor = at::randn({2, 3, 1});
+    auto tensor = at::randn({2, 3, 1});  // NOLINT
     auto batched = makeBatched(tensor, {{0, 0}, {1, 1}});
 
     auto batched_out = batched.squeeze(0);
@@ -793,7 +799,7 @@ TEST(VmapTest, TestBatchedTensorSqueeze) {
   }
   {
     // Negative dim
-    auto tensor = at::randn({2, 3, 1});
+    auto tensor = at::randn({2, 3, 1});  // NOLINT
     auto batched = makeBatched(tensor, {{/*lvl*/0, /*dim*/0}});
 
     auto batched_out = batched.squeeze(-1);
@@ -806,7 +812,7 @@ TEST(VmapTest, TestBatchedTensorSqueeze) {
 TEST(VmapTest, TestBatchedTensorTranspose) {
   {
     // Basic test
-    auto tensor = at::randn({2, 3, 5});
+    auto tensor = at::randn({2, 3, 5});  // NOLINT
     auto batched = makeBatched(tensor, {{/*lvl*/0, /*dim*/0}});
 
     auto batched_out = batched.transpose(0, 1);
@@ -816,7 +822,7 @@ TEST(VmapTest, TestBatchedTensorTranspose) {
   }
   {
     // Test with multiple levels
-    auto tensor = at::randn({2, 3, 5, 7, 11});
+    auto tensor = at::randn({2, 3, 5, 7, 11});  // NOLINT
     auto batched = makeBatched(tensor, {{0, 0}, {1, 1}});
 
     auto batched_out = batched.transpose(0, 2);
@@ -826,7 +832,7 @@ TEST(VmapTest, TestBatchedTensorTranspose) {
   }
   {
     // Negative dims
-    auto tensor = at::randn({2, 3, 5, 7});
+    auto tensor = at::randn({2, 3, 5, 7});  // NOLINT
     auto batched = makeBatched(tensor, {{/*lvl*/0, /*dim*/0}});
 
     auto batched_out = batched.mT();
@@ -840,7 +846,7 @@ TEST(VmapTest, TestBatchedTensorTranspose) {
 TEST(VmapTest, TestBatchedTensorPermute) {
   {
     // Basic test
-    auto tensor = at::randn({2, 3, 5});
+    auto tensor = at::randn({2, 3, 5});  // NOLINT
     auto batched = makeBatched(tensor, {{/*lvl*/0, /*dim*/0}});
 
     auto batched_out = batched.permute({1, 0});
@@ -850,7 +856,7 @@ TEST(VmapTest, TestBatchedTensorPermute) {
   }
   {
     // Test with multiple levels
-    auto tensor = at::randn({2, 3, 5, 7, 11});
+    auto tensor = at::randn({2, 3, 5, 7, 11});  // NOLINT
     auto batched = makeBatched(tensor, {{0, 0}, {1, 1}});
 
     auto batched_out = batched.permute({2, 1, 0});
@@ -860,7 +866,7 @@ TEST(VmapTest, TestBatchedTensorPermute) {
   }
   {
     // Negative dims
-    auto tensor = at::randn({2, 3, 5, 7});
+    auto tensor = at::randn({2, 3, 5, 7});  // NOLINT
     auto batched = makeBatched(tensor, {{/*lvl*/0, /*dim*/0}});
 
     auto batched_out = batched.permute({-1, -2, -3});

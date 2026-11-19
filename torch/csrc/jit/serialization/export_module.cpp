@@ -36,7 +36,6 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
-#include <utility>
 #include <vector>
 
 namespace torch::jit {
@@ -260,7 +259,7 @@ std::pair<IValue, IValue> getFunctionTuple(
     if (namedType && namedType->name()) {
       return type_name_uniquer_.getUniqueName(namedType).qualifiedName();
     }
-    return std::nullopt;
+    return c10::nullopt;
   };
 
   auto makeArgTuple = [&](const std::vector<Argument>& args) {
@@ -345,10 +344,9 @@ void pushMobileFunctionsToIValues(
 }
 
 struct ModuleMethod {
-  ModuleMethod(Module m, const GraphFunction& f, c10::QualifiedName n)
-      : module(std::move(m)), function(f), exportName(std::move(n)) {}
+  ModuleMethod(const Module& m, const GraphFunction& f, c10::QualifiedName n)
+      : module(m), function(f), exportName(std::move(n)) {}
   Module module;
-  // NOLINTNEXTLINE(cppcoreguidelines-avoid-const-or-ref-data-members)
   const GraphFunction& function;
   c10::QualifiedName exportName;
 };
@@ -403,10 +401,12 @@ SourceRangeRecords getBackendSourceRanges(const Module& m) {
             std::get<kDebugInfoTupleSourceRangeIndex>(it.second);
         sr_records.emplace_back(
             std::numeric_limits<size_t>::max(), source_range);
-        const auto& cs_ptr = std::get<kDebugInfoTupleInlinedCSIndex>(it.second);
+        // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
+        auto cs_ptr = std::get<kDebugInfoTupleInlinedCSIndex>(it.second);
         if (cs_ptr) {
           for (const auto& e : cs_ptr->vec()) {
-            const auto& sr = std::get<kSourceRange>(e);
+            // NOLINTNEXTLINE(performance-unnecessary-copy-initialization)
+            const auto sr = std::get<kSourceRange>(e);
             sr_records.emplace_back(std::numeric_limits<size_t>::max(), sr);
           }
         }
@@ -481,7 +481,7 @@ void ScriptModuleSerializer::serialize(
         /*archive_dir=*/"",
         /*tensor_dir=*/"constants/");
   }
-  if (!module.retrieve_traced_inputs().empty()) {
+  if (module.retrieve_traced_inputs().size() > 0) {
     writeArchive(
         module.retrieve_traced_inputs(),
         /*archive_name=*/"traced_inputs",
@@ -543,11 +543,12 @@ void ScriptModuleSerializer::writeArchive(
   data_pickle.stop();
   // write out tensor data
   size_t i = 0;
+  std::string prefix = archive_name + "/";
 
   TORCH_INTERNAL_ASSERT(tensor_names.size() == data_pickle.tensorData().size());
 
   for (const auto& td : data_pickle.tensorData()) {
-    const std::string& tensor_name = tensor_names[i++];
+    std::string tensor_name = tensor_names[i++];
     if (td.is_meta() || skip_tensor_data) {
       writer_.writeRecord(tensor_dir + tensor_name, nullptr, 0);
       continue;
@@ -764,7 +765,7 @@ std::optional<std::string> type_printer(
   if (namedType && namedType->name()) {
     return type_name_uniquer.getUniqueName(namedType).qualifiedName();
   }
-  return std::nullopt;
+  return c10::nullopt;
 }
 
 } // namespace
@@ -835,8 +836,7 @@ void ExportModule(
     bool save_mobile_debug_info,
     bool use_flatbuffer) {
   auto writer_func = [&](const void* buf, size_t nbytes) -> size_t {
-    out.write(
-        static_cast<const char*>(buf), static_cast<std::streamsize>(nbytes));
+    out.write(static_cast<const char*>(buf), nbytes);
     return !out ? 0 : nbytes;
   };
   ExportModule(
@@ -870,7 +870,8 @@ void ExportModule(
     if (errno == ENOENT) {
       message << "Parent directory of " << filename << " does not exist.\n";
     } else {
-      message << "Error while opening file: " << errno << '\n';
+      message << "Error while opening file: " << errno << std::endl;
+      ;
     }
     TORCH_CHECK(false, message.str());
   }
@@ -890,8 +891,7 @@ void save_jit_module(
   auto buffer = save_jit_module_to_bytes(module, extra_files);
   std::fstream ofile(filename, std::ios::binary | std::ios::out);
   ofile.write(
-      reinterpret_cast<char*>(buffer->data()),
-      static_cast<std::streamsize>(buffer->size()));
+      reinterpret_cast<char*>(buffer->data()), buffer->size()); // NOLINT
   ofile.close();
 }
 
@@ -939,6 +939,7 @@ void export_opnames(const script::Module& m, std::set<std::string>& opnames) {
   mobile::Module mobile_m = jitModuleToMobile(m, getOptionsFromGlobal());
   for (const auto& method : mobile_m.get_methods()) {
     for (const auto& op : method.function().get_code().op_names_) {
+      // NOLINTNEXTLINE(performance-inefficient-string-concatenation)
       opnames.emplace(
           op.overload_name.empty() ? op.name
                                    : op.name + "." + op.overload_name);
@@ -956,7 +957,7 @@ std::vector<std::string> export_opnames(const script::Module& m) {
 // Thread local flag (only happens in export, i.e. on server side)
 // to control if instructions for bytecode default inputs are emitted
 // or not. It's the major difference between bytecode v5 and v6.
-static thread_local bool emitBytecodeDefaultInputs =
+thread_local bool emitBytecodeDefaultInputs =
     caffe2::serialize::kProducedBytecodeVersion <= 5 ? true : false;
 bool BytecodeEmitMode::is_default_value_for_unspecified_arg_enabled() {
   return emitBytecodeDefaultInputs;
@@ -966,7 +967,7 @@ void BytecodeEmitMode::set_default_value_for_unspecified_arg_enabled(
   emitBytecodeDefaultInputs = enabled;
 }
 
-static thread_local bool emitDefautlArgsWithOutArgs =
+thread_local bool emitDefautlArgsWithOutArgs =
     caffe2::serialize::kProducedBytecodeVersion <= 6 ? false : true;
 bool BytecodeEmitMode::is_default_args_before_out_args_enabled() {
   return emitDefautlArgsWithOutArgs;
@@ -975,7 +976,7 @@ void BytecodeEmitMode::set_default_args_before_out_args_enabled(bool enabled) {
   emitDefautlArgsWithOutArgs = enabled;
 }
 
-static thread_local bool emitDefaultEmitPromotedOps =
+thread_local bool emitDefaultEmitPromotedOps =
     caffe2::serialize::kProducedBytecodeVersion <= 7 ? false : true;
 bool BytecodeEmitMode::is_emit_promoted_ops_enabled() {
   return emitDefaultEmitPromotedOps;

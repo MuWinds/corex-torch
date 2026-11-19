@@ -18,17 +18,16 @@
 #include <torch/csrc/lazy/ts_backend/ts_lowering_context.h>
 #endif // FBCODE_CAFFE2 || OVRSOURCE
 #include <string>
-#include <utility>
 #include <vector>
 
-namespace torch::lazy {
+namespace torch {
+namespace lazy {
 
 // TODO(whc) backend 'device' related APIs are not very clear, this code could
 // be simplified but it should probably be done together with
 // designing/refactoring the overall approach to get/set of default eager/lazy
 // device types
-static torch::lazy::BackendDevice GetDeviceOrCurrent(
-    const std::string& device_str) {
+torch::lazy::BackendDevice GetDeviceOrCurrent(const std::string& device_str) {
   if (device_str.empty()) {
     getBackend()->GetDefaultDeviceType();
     return torch::lazy::BackendDevice();
@@ -36,15 +35,15 @@ static torch::lazy::BackendDevice GetDeviceOrCurrent(
   return torch::lazy::atenDeviceToBackendDevice(c10::Device(device_str));
 }
 
-static std::ptrdiff_t GetTensorId(const at::Tensor& tensor) {
+std::ptrdiff_t GetTensorId(const at::Tensor& tensor) {
   torch::lazy::LazyTensorPtr lazy_tensor = torch::lazy::TryGetLtcTensor(tensor);
   return lazy_tensor->GetUniqueId();
 }
 
-static std::string GetTensorsDump(
+std::string GetTensorsDump(
     const std::vector<at::Tensor>& tensors,
     const std::function<std::string(c10::ArrayRef<const torch::lazy::Node*>)>&
-        converter) {
+        coverter) {
   std::vector<const torch::lazy::Node*> nodes;
   std::vector<torch::lazy::Value> values;
   for (auto& tensor : tensors) {
@@ -54,10 +53,10 @@ static std::string GetTensorsDump(
     values.push_back(lazy_tensor->GetIrValue());
     nodes.push_back(values.back().node.get());
   }
-  return converter(nodes);
+  return coverter(nodes);
 }
 
-static std::vector<torch::lazy::LazyTensorPtr> GetLtcTensors(
+std::vector<torch::lazy::LazyTensorPtr> GetLtcTensors(
     const std::vector<at::Tensor>& tensors,
     bool want_all) {
   std::vector<torch::lazy::LazyTensorPtr> lazy_tensors;
@@ -77,15 +76,14 @@ static std::vector<torch::lazy::LazyTensorPtr> GetLtcTensors(
   return lazy_tensors;
 }
 
-static std::string GetTensorsBackendGraph(
-    const std::vector<at::Tensor>& tensors) {
+std::string GetTensorsBackendGraph(const std::vector<at::Tensor>& tensors) {
   std::vector<torch::lazy::LazyTensorPtr> lazy_tensors =
       GetLtcTensors(tensors, /*want_all=*/false);
   return torch::lazy::LazyGraphExecutor::Get()->DumpBackendComputation(
       lazy_tensors);
 }
 
-static void SyncTensors(
+void SyncTensors(
     const std::vector<at::Tensor>& tensors,
     const std::vector<std::string>& devices,
     bool wait,
@@ -103,7 +101,7 @@ void initLazyBindings(PyObject* module) {
 
   lazy.def(
       "_mark_step",
-      // TODO(whc) this API should probably change from vector<std::string> to
+      // TODO(whc) this API should probably change from vector<string> to
       // vector<c10::device> but in a separate PR
       [](const std::string& device_str,
          const std::vector<std::string>& devices,
@@ -146,18 +144,18 @@ void initLazyBindings(PyObject* module) {
   lazy.def(
       "_get_tensors_text",
       [](const std::vector<at::Tensor>& tensors) -> std::string {
-        auto converter = [](c10::ArrayRef<const torch::lazy::Node*> nodes) {
+        auto coverter = [](c10::ArrayRef<const torch::lazy::Node*> nodes) {
           return torch::lazy::DumpUtil::ToText(nodes);
         };
-        return GetTensorsDump(tensors, converter);
+        return GetTensorsDump(tensors, coverter);
       });
   lazy.def(
       "_get_tensors_dot",
       [](const std::vector<at::Tensor>& tensors) -> std::string {
-        auto converter = [](c10::ArrayRef<const torch::lazy::Node*> nodes) {
+        auto coverter = [](c10::ArrayRef<const torch::lazy::Node*> nodes) {
           return torch::lazy::DumpUtil::ToDot(nodes);
         };
-        return GetTensorsDump(tensors, converter);
+        return GetTensorsDump(tensors, coverter);
       });
   lazy.def(
       "_get_tensors_backend",
@@ -192,10 +190,10 @@ void initLazyBindings(PyObject* module) {
     return torch::lazy::getLTCForceFallback();
   });
   lazy.def("_set_force_fallback", [](std::string newval) {
-    torch::lazy::getLTCForceFallback() = std::move(newval);
+    torch::lazy::getLTCForceFallback() = newval;
   });
   lazy.def("_clear_ir_cache", []() { TrieCache::Get()->Clear(); });
-  lazy.def("_dump_ir_cache", [](const std::string& filename) {
+  lazy.def("_dump_ir_cache", [](std::string filename) {
     TrieCache::Get()->DumpToDotFile(filename);
   });
   lazy.def("_set_reuse_ir", [](bool val) { FLAGS_torch_lazy_reuse_ir = val; });
@@ -325,11 +323,10 @@ void initLazyBindings(PyObject* module) {
 #endif // !(defined(FBCODE_CAFFE2) || defined(OVRSOURCE))
   });
 
-  // GetPythonFramesFunction() has not ever worked with
-  // torchdeploy/multipy possibly because  // codespell:ignore multipy
-  // GetPythonFrames resolves to external cpython rather than embedded cpython.
-  // So far this problem has only been observed internally, so we will just
-  // block it off there.
+  // GetPythonFramesFunction() has not ever worked with torchdeploy/multipy
+  // possibly becuase GetPythonFrames resolves to external cpython rather
+  // than embedded cpython. So far this problem has only been observed
+  // internally, so we will just block it off there.
 
 #if !(defined(USE_DEPLOY))
 
@@ -340,4 +337,5 @@ void initLazyBindings(PyObject* module) {
 #endif // USE_DEPLOY
 }
 
-} // namespace torch::lazy
+} // namespace lazy
+} // namespace torch

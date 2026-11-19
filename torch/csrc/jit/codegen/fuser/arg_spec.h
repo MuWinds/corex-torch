@@ -8,7 +8,9 @@
 #include <cstdint>
 #include <vector>
 
-namespace torch::jit::fuser {
+namespace torch {
+namespace jit {
+namespace fuser {
 
 // Describes the (runtime) arguments to a kernel.
 // ArgSpecs are also used as keys to lookup instantiated kernels, so
@@ -16,6 +18,7 @@ namespace torch::jit::fuser {
 // Note: the device to run on is included in the arg spec because kernels
 //  are compiled per-device.
 struct TORCH_API ArgSpec {
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
   ArgSpec(at::TensorList inputs, const int _device)
       : descs_{c10::fmap<TensorDesc>(inputs)},
         hash_code_{c10::get_hash(_device, inputs.size(), descs_)},
@@ -52,4 +55,6 @@ struct TORCH_API ArgSpec {
   int device_;
 };
 
-} // namespace torch::jit::fuser
+} // namespace fuser
+} // namespace jit
+} // namespace torch

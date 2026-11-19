@@ -1,5 +1,4 @@
 # Owner(s): ["NNC"]
-# ruff: noqa: F841
 
 import numpy as np
 import torch
@@ -1546,7 +1545,7 @@ class TestTensorExprFuser(BaseTestClass):
 
     def test_alias_analysis_module(self):
         class AliasModule(nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 torch.manual_seed(1337)
                 self.a = torch.randn(128, 128)
@@ -1584,7 +1583,7 @@ class TestTensorExprFuser(BaseTestClass):
 
     def test_alias_analysis_inputs(self):
         class AliasModule(nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 torch.manual_seed(1337)
                 self.a = torch.randn(128, 128)
@@ -1617,7 +1616,7 @@ class TestTensorExprFuser(BaseTestClass):
 
     def test_alias_analysis_input_and_module(self):
         class AliasModule(nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 torch.manual_seed(1337)
                 self.a = torch.randn(128, 128)

@@ -177,12 +177,13 @@ inline bool THPUtils_unpackNumberAsBool(PyObject* obj) {
     return !(real_val == 0 && imag_val == 0);
   }
 
-  int overflow = 0;
+  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+  int overflow;
   long long value = PyLong_AsLongLongAndOverflow(obj, &overflow);
   if (value == -1 && PyErr_Occurred()) {
     throw python_error();
   }
-  // No need to check overflow, because when overflow occurred, it should
+  // No need to check overflow, because when overflow occured, it should
   // return true in order to keep the same behavior of numpy.
   return (bool)value;
 }

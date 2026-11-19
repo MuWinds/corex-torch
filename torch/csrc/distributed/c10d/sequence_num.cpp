@@ -10,7 +10,7 @@ SequenceNum::SequenceNum(const uint64_t num) : num_(num) {}
 
 SequenceNum::SequenceNum(const SequenceNum& other) {
   if (!other.isSet()) {
-    num_ = std::nullopt;
+    num_ = c10::nullopt;
   } else {
     num_ = other.get();
   }
@@ -18,13 +18,12 @@ SequenceNum::SequenceNum(const SequenceNum& other) {
 
 uint64_t SequenceNum::get() const {
   std::lock_guard<std::mutex> lock(lock_);
-  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
-  return num_.value();
+  return *num_;
 }
 
 void SequenceNum::increment() {
   std::lock_guard<std::mutex> lock(lock_);
-  TORCH_CHECK(num_.has_value());
+  TORCH_CHECK(num_ != c10::nullopt);
   num_ = ++(*num_);
 }
 
@@ -33,7 +32,7 @@ void SequenceNum::increment() {
 uint64_t SequenceNum::getAndIncrement() {
   uint64_t curVal = 0;
   std::lock_guard<std::mutex> lock(lock_);
-  TORCH_CHECK(num_.has_value());
+  TORCH_CHECK(num_ != c10::nullopt);
   curVal = *num_;
   num_ = ++(*num_);
   return curVal;
@@ -46,13 +45,13 @@ void SequenceNum::set(const uint64_t num) {
 
 bool SequenceNum::isSet() const {
   std::lock_guard<std::mutex> lock(lock_);
-  return num_.has_value();
+  return num_ != c10::nullopt;
 }
 
 SequenceNum& SequenceNum::operator=(const SequenceNum& other) {
   std::lock_guard<std::mutex> lock(lock_);
   if (!other.isSet()) {
-    num_ = std::nullopt;
+    num_ = c10::nullopt;
   } else {
     num_ = other.get();
   }

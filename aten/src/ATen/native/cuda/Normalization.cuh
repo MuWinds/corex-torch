@@ -19,10 +19,10 @@
 #include <ATen/ops/zeros.h>
 #endif
 
-namespace at::native {
+namespace at { namespace native {
 
 // The maximum number of threads in a block
-#if defined(USE_ROCM)
+#if defined(USE_ROCM) || defined(__ILUVATAR__)
 constexpr int MAX_BLOCK_SIZE = 256;
 #else
 constexpr int MAX_BLOCK_SIZE = 512;
@@ -32,7 +32,7 @@ constexpr unsigned MAX_GRID_SIZE = 65535u;
 
 // Number of threads in a block given an input size up to MAX_BLOCK_SIZE
 static int getNumThreads(int nElem) {
-#if defined(USE_ROCM)
+#if defined(USE_ROCM) || defined(__ILUVATAR__)
   int threadSizes[5] = { 16, 32, 64, 128, MAX_BLOCK_SIZE };
 #else
   int threadSizes[5] = { 32, 64, 128, 256, MAX_BLOCK_SIZE };
@@ -212,8 +212,8 @@ template <typename input_scalar_t, typename stat_scalar_t, typename stat_accscal
 __global__ void batch_norm_transform_input_kernel(
     const GenericPackedTensorAccessor<const input_scalar_t, 3, RestrictPtrTraits, index_t> input,
     GenericPackedTensorAccessor<input_scalar_t, 3, RestrictPtrTraits, index_t> output,
-    const GenericPackedTensorAccessor<typename std::conditional_t<train, stat_accscalar_t, stat_scalar_t>, 1, RestrictPtrTraits, index_t> mean_,
-    const GenericPackedTensorAccessor<typename std::conditional_t<train, stat_accscalar_t, stat_scalar_t>, 1, RestrictPtrTraits, index_t> var_or_invstd,
+    const GenericPackedTensorAccessor<typename std::conditional<train, stat_accscalar_t, stat_scalar_t>::type, 1, RestrictPtrTraits, index_t> mean_,
+    const GenericPackedTensorAccessor<typename std::conditional<train, stat_accscalar_t, stat_scalar_t>::type, 1, RestrictPtrTraits, index_t> var_or_invstd,
     const GenericPackedTensorAccessor<const stat_scalar_t, 1, RestrictPtrTraits, index_t> weight,
     const GenericPackedTensorAccessor<const stat_scalar_t, 1, RestrictPtrTraits, index_t> bias,
     stat_accscalar_t epsilon) {
@@ -249,7 +249,11 @@ __global__ void batch_norm_transform_input_kernel(
 
 struct InvStd {
   template <typename T>
+#ifndef __ILUVATAR__
   __device__ __forceinline__ T operator()(T var, double epsilon) const {
+#else
+  __device__ __forceinline__ T operator()(T var, float epsilon) const {
+#endif
     T invstd = 0;
     if (var != static_cast<T>(0) || epsilon != static_cast<T>(0)) {
       invstd = static_cast<T>(1) / device_sqrt(var + epsilon);
@@ -260,7 +264,11 @@ struct InvStd {
 
 struct Var {
   template <typename T>
+#ifndef __ILUVATAR__
   __device__ __forceinline__ T operator()(T var, double epsilon) const {
+#else
+  __device__ __forceinline__ T operator()(T var, float epsilon) const {
+#endif
     return var;
   }
 };
@@ -581,8 +589,8 @@ __global__ void batch_norm_backward_elemt_kernel(
 
 template <typename scalar_t, int64_t dim, template <typename U> class PtrTraits = DefaultPtrTraits, typename index_t = int64_t>
 static GenericPackedTensorAccessor<scalar_t, dim, PtrTraits, index_t> get_packed_accessor(
-    const Tensor& t, std::string_view var_name) {
-  constexpr auto expect_type = c10::CppTypeToScalarType<typename std::remove_const_t<scalar_t>>::value;
+    const Tensor& t, c10::string_view var_name) {
+  constexpr auto expect_type = c10::CppTypeToScalarType<typename std::remove_const<scalar_t>::type>::value;
   const auto actual_type = t.scalar_type();
   TORCH_CHECK(actual_type == expect_type, "Expected ", var_name,
               " to have type ", expect_type, " but got ", actual_type);
@@ -591,7 +599,7 @@ static GenericPackedTensorAccessor<scalar_t, dim, PtrTraits, index_t> get_packed
 
 template <typename scalar_t, int64_t dim, template <typename U> class PtrTraits = DefaultPtrTraits, typename index_t = int64_t>
 static GenericPackedTensorAccessor<scalar_t, dim, PtrTraits, index_t> packed_accessor_or_dummy(
-    const Tensor& t, std::string_view var_name) {
+    const Tensor& t, c10::string_view var_name) {
   if (!t.defined()) {
     const std::array<index_t, dim> zeros{{0}};
     return GenericPackedTensorAccessor<scalar_t, dim, PtrTraits, index_t>(nullptr, zeros.data(), zeros.data());
@@ -725,7 +733,11 @@ void batch_norm_elemt_cuda_template(const Tensor& output_, const Tensor& input_,
   int tb = std::max<int>(64/tf, 1);
   dim3 blocks_trans(input.size(1), std::max<int>(1, std::min<int>((256*1024)/input.size(1),
                                                                   (input.size(0)+tb-1)/tb)));
-  blocks_trans.y = std::min(blocks_trans.y, MAX_GRID_SIZE);
+#ifdef __ILUVATAR__
+  blocks_trans.y = std::min<int>(blocks_trans.y, MAX_GRID_SIZE / tb);
+#else
+  blocks_trans.y = std::min<int>(blocks_trans.y, MAX_GRID_SIZE);
+#endif
   dim3 threads_trans(tf, tb);
   batch_norm_transform_input_kernel<input_scalar_t, stat_scalar_t, stat_accscalar_t, true, index_t> <<<blocks_trans, threads_trans, 0, stream>>>
     (input, output, mean, invstd, weight, bias, dummy_epsilon);
@@ -873,7 +885,11 @@ Tensor batch_norm_backward_elemt_cuda_template(const Tensor& grad_out_, const Te
   int tb = std::max<int>(64/tf, 1);
   dim3 blocks_trans(input.size(1), std::max<int>(1, std::min<int>((256*1024)/input.size(1),
                                                                   (input.size(0)+tb-1)/tb)));
-  blocks_trans.y = std::min(blocks_trans.y, MAX_GRID_SIZE);
+#ifdef __ILUVATAR__
+  blocks_trans.y = std::min<int>(blocks_trans.y, MAX_GRID_SIZE / tb);
+#else
+  blocks_trans.y = std::min<int>(blocks_trans.y, MAX_GRID_SIZE);
+#endif
   dim3 threads_trans(tf, tb);
   auto reduction_size = input_.numel() / n_input;
   auto norm_fct = static_cast<stat_accscalar_t>(1.0 / reduction_size);
@@ -924,7 +940,11 @@ Tensor batch_norm_backward_elemt_cuda_template(const Tensor& grad_out_, const Te
   int tb = std::max<int>(64/tf, 1);
   dim3 blocks_trans(input.size(1), std::max<int>(1, std::min<int>((256*1024)/input.size(1),
                                                                   (input.size(0)+tb-1)/tb)));
-  blocks_trans.y = std::min(blocks_trans.y, MAX_GRID_SIZE);
+#ifdef __ILUVATAR__
+  blocks_trans.y = std::min<int>(blocks_trans.y, MAX_GRID_SIZE / tb);
+#else
+  blocks_trans.y = std::min<int>(blocks_trans.y, MAX_GRID_SIZE);
+#endif
   dim3 threads_trans(tf, tb);
   batch_norm_backward_elemt_kernel<input_scalar_t, stat_scalar_t, stat_accscalar_t, index_t> <<<blocks_trans, threads_trans, 0, stream>>>
     (input, grad_output, mean, invstd, weight, sum_dy, sum_dy_xmu, grad_input, count.const_data_ptr<int>(), count.numel());
@@ -1470,7 +1490,7 @@ void batch_norm_elemt_channels_last_cuda_template(
     const at::Tensor& shift,  // bias of BN
     const at::Tensor& mean,
     const at::Tensor& inv_std,
-    const std::optional<at::Tensor>& z = std::nullopt,  // bias after BN
+    const at::optional<at::Tensor>& z = c10::nullopt,  // bias after BN
     const bool fuse_relu = false) {
   const auto stride = input.sizes()[1];
   const auto reduction_size = input.numel() / stride;
@@ -1739,4 +1759,4 @@ at::Tensor batch_norm_backward_elemt_channels_last_cuda_template(
   return grad_input;
 }
 
-} // namespace at::native
+} } // namespace at::native

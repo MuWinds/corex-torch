@@ -26,13 +26,13 @@
 namespace torch::jit {
 
 // Controls whether graph source ranges are printed by default
-static bool global_print_source_ranges = true;
+bool global_print_source_ranges = true;
 
 Symbol ConcretePythonOp::Kind = prim::PythonOp;
 
 using c10::Type;
 
-static std::string getPythonName(const PyObject* obj_) {
+std::string getPythonName(const PyObject* obj_) {
   pybind11::gil_scoped_acquire gil;
   // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
   PyObject* obj = const_cast<PyObject*>(obj_);
@@ -41,7 +41,7 @@ static std::string getPythonName(const PyObject* obj_) {
   return py::str(v);
 }
 
-static std::ostream& printPyObject(std::ostream& out, const THPObjectPtr& obj) {
+std::ostream& printPyObject(std::ostream& out, const THPObjectPtr& obj) {
   pybind11::gil_scoped_acquire gil;
   // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
   auto pyobj = py::handle(const_cast<PyObject*>(obj.get()));
@@ -81,7 +81,7 @@ static std::ostream& printPyObject(std::ostream& out, const THPObjectPtr& obj) {
   }
 }
 
-static Node* findNode(
+Node* findNode(
     c10::ArrayRef<torch::jit::Block*> blocks,
     Symbol kind,
     bool recurse = true) {
@@ -101,7 +101,7 @@ static Node* findNode(
   return nullptr;
 }
 
-static Node* findNode(Block* block, Symbol kind, bool recurse = true) {
+Node* findNode(Block* block, Symbol kind, bool recurse = true) {
   std::vector<Block*> blocks = {block};
   return findNode(blocks, kind, recurse);
 }
@@ -138,17 +138,17 @@ std::optional<THPObjectPtr> ConcretePythonOp::autogradFunction() const {
 
   auto r = py::getattr(obj, "__self__", py::none());
   if (r.is_none())
-    return std::nullopt;
+    return c10::nullopt;
 
   auto apply = py::getattr(r, "apply", py::none());
   if (apply.is_none())
-    return std::nullopt;
+    return c10::nullopt;
 
   auto c = PyObject_RichCompareBool(apply.ptr(), obj.ptr(), Py_NE);
   if (PyErr_Occurred())
     throw py::error_already_set();
   if (c)
-    return std::nullopt;
+    return c10::nullopt;
 
   return THPObjectPtr(r.release().ptr());
 }
@@ -459,20 +459,20 @@ void initPythonIRBindings(PyObject* module_) {
       .def("setInsertPoint", [](Graph& g, Block* n) { g.setInsertPoint(n); })
       .def(
           "insertGraph",
-          [](Graph& g, Graph& callee, const std::vector<Value*>& inputs) {
+          [](Graph& g, Graph& callee, std::vector<Value*> inputs) {
             return insertGraph(g, callee, inputs);
           })
       .def(
           "insertGraph",
           [](Graph& g,
              Graph& callee,
-             const std::vector<Value*>& inputs,
+             std::vector<Value*> inputs,
              std::unordered_map<Value*, Value*> value_map) {
             return insertGraph(g, callee, inputs, value_map);
           })
       .def(
           "insert",
-          [](Graph& g, Symbol opname, const std::vector<Value*>& args) {
+          [](Graph& g, Symbol opname, std::vector<Value*> args) {
             std::vector<NamedValue> args_named;
             args_named.reserve(args.size());
             for (Value* v : args) {
@@ -485,9 +485,7 @@ void initPythonIRBindings(PyObject* module_) {
           [](Graph& g) {
             auto tup = g.createTuple(g.outputs());
             tup->insertBefore(g.return_node());
-            for (int64_t i = static_cast<int64_t>(g.outputs().size()) - 1;
-                 i >= 0;
-                 i--) {
+            for (int64_t i = g.outputs().size() - 1; i >= 0; i--) {
               g.eraseOutput(0);
             }
             g.registerOutput(tup->output());
@@ -756,7 +754,8 @@ void initPythonIRBindings(PyObject* module_) {
           [](Node& n, const char* name, const at::Tensor& v) {
             return n.t_(
                 Symbol::attr(name),
-                v.view(std::vector<int64_t>{}).set_requires_grad(false));
+                autograd::Variable(v.view(std::vector<int64_t>{}))
+                    .set_requires_grad(false));
           })
       .def(
           "z",
@@ -781,7 +780,8 @@ void initPythonIRBindings(PyObject* module_) {
           "zs_",
           [](Node& n, const char* name, TensorsAttr::ValueType v) {
             for (auto& i : v) {
-              i = i.view(std::vector<int64_t>{}).set_requires_grad(false);
+              i = autograd::Variable(i.view(std::vector<int64_t>{}))
+                      .set_requires_grad(false);
             }
             return n.ts_(Symbol::attr(name), std::move(v));
           })
@@ -922,8 +922,7 @@ void initPythonIRBindings(PyObject* module_) {
       .def(
           "with_device",
           [](Type& t, py::object device) -> py::object {
-            at::Device c_device =
-                python::detail::py_object_to_device(std::move(device));
+            at::Device c_device = python::detail::py_object_to_device(device);
             if (auto ptt = t.expect<TensorType>()) {
               return py::cast(ptt->withDevice(c_device));
             }
@@ -945,7 +944,7 @@ void initPythonIRBindings(PyObject* module_) {
           "with_dtype",
           [](Type& t, py::object dtype) -> py::object {
             at::ScalarType scalar_type =
-                python::detail::py_object_to_dtype(std::move(dtype));
+                python::detail::py_object_to_dtype(dtype);
 
             if (auto ptt = t.expect<TensorType>()) {
               // auto scalar_type = dtype->scalar_type;
@@ -1034,7 +1033,7 @@ void initPythonIRBindings(PyObject* module_) {
       .def(py::init(
           [](const std::vector<TypePtr>& a) { return UnionType::create(a); }));
   py::class_<ListType, Type, ListTypePtr>(m, "ListType")
-      .def(py::init([](const TypePtr& a) { return ListType::create(a); }))
+      .def(py::init([](TypePtr a) { return ListType::create(a); }))
       .def_static("ofInts", &ListType::ofInts)
       .def_static("ofTensors", &ListType::ofTensors)
       .def_static("ofFloats", &ListType::ofFloats)
@@ -1049,7 +1048,8 @@ void initPythonIRBindings(PyObject* module_) {
       .def("getKeyType", &DictType::getKeyType)
       .def("getValueType", &DictType::getValueType);
   py::class_<OptionalType, Type, OptionalTypePtr>(m, "OptionalType")
-      .def(py::init([](const TypePtr& a) { return OptionalType::create(a); }))
+      .def(py::init(
+          [](TypePtr a) { return OptionalType::create(std::move(a)); }))
       .def_static("ofTensor", &OptionalType::ofTensor)
       .def("getElementType", &OptionalType::getElementType);
   py::class_<RRefType, Type, RRefTypePtr>(m, "RRefType")
@@ -1069,15 +1069,8 @@ void initPythonIRBindings(PyObject* module_) {
         return get_python_cu()->get_class(c10::QualifiedName(qualified_name));
       }))
       .def("name", [](ClassType& self) { return self.name()->name(); })
-      .def(
-          "qualified_name",
-          [](ClassType& self) { return self.name()->qualifiedName(); })
-      .def("method_names", [](ClassType& self) {
-        std::vector<std::string> method_names;
-        for (const auto* method : self.methods()) {
-          method_names.push_back(method->name());
-        }
-        return method_names;
+      .def("qualified_name", [](ClassType& self) {
+        return self.name()->qualifiedName();
       });
   py::class_<EnumType, Type, EnumTypePtr>(m, "EnumType")
       .def(py::init([](const std::string& qualified_name,

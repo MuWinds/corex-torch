@@ -15,7 +15,8 @@
 #include <stack>
 #include <utility>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 namespace {
 
@@ -31,7 +32,7 @@ std::vector<std::string> splitName(const std::string& name) {
 
 template <typename Iter>
 std::string concatName(const Iter& begin, const Iter& end) {
-  std::string combined_name;
+  std::string combined_name = "";
   for (Iter it = begin; it != end; ++it) {
     const std::string& sub_name = *it;
     if (!combined_name.empty()) {
@@ -169,7 +170,7 @@ class AttributePropagator {
   std::optional<ResolvedName> resolveName(const std::string& name) {
     auto sub_names = splitName(name);
     if (sub_names.empty()) {
-      return std::nullopt;
+      return c10::nullopt;
     }
     auto& attr_name = sub_names.back();
     auto cur_module = module_;
@@ -188,7 +189,7 @@ class AttributePropagator {
         }
       }
       if (!found) {
-        return std::nullopt;
+        return c10::nullopt;
       }
     }
 
@@ -206,7 +207,7 @@ class AttributePropagator {
       return std::make_pair(std::move(cur_module), std::move(attr_name));
     }
 
-    return std::nullopt;
+    return c10::nullopt;
   }
 
   bool _loadModulePath(Value* input, std::shared_ptr<Graph>& graph) {
@@ -229,7 +230,7 @@ class AttributePropagator {
       std::shared_ptr<Graph>& graph) {
     bool success = _loadModulePath(input, graph);
     if (!success) {
-      return std::nullopt;
+      return c10::nullopt;
     }
     return names_;
   }
@@ -893,7 +894,8 @@ class AttributePropagator {
       auto attr = module.attr(name);
       auto attrTy = attr.type();
 
-      bool isMutable = false;
+      // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+      bool isMutable;
       if (AliasDb::isMutableType(attrTy)) {
         isMutable = preservedAttrs_.count(attr);
       } else {
@@ -980,7 +982,6 @@ class AttributePropagator {
   std::unordered_map<ClassTypePtr, IValue::HashAliasedIValues>
       SharedTypeSubModules_;
 
-  // NOLINTNEXTLINE(cppcoreguidelines-avoid-const-or-ref-data-members)
   Module& module_;
 
   // Allow to freeze modules containing interfaces.
@@ -1044,4 +1045,5 @@ void freeze_module_inplace(
   attrPropagator.run();
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

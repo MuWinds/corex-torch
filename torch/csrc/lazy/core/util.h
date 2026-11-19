@@ -1,6 +1,6 @@
 /**
  * Most of the utils in this file is adapted from PyTorch/XLA
- * https://github.com/pytorch/xla/blob/e0e5f937a0ba8d904f9608137dc8c51ba439df2d/third_party/xla_client/util.h
+ * https://github.com/pytorch/xla/blob/master/third_party/xla_client/util.h
  */
 
 #pragma once
@@ -9,10 +9,11 @@
 #include <functional>
 #include <vector>
 
+#include <c10/util/Optional.h>
 #include <c10/util/OptionalArrayRef.h>
-#include <optional>
 
-namespace torch::lazy {
+namespace torch {
+namespace lazy {
 
 // Similar to c10::scope_exit but with a status.
 // TODO(alanwaketan): Consolidate it with c10::scope_exit.
@@ -89,7 +90,6 @@ class MaybeRef {
 
  private:
   std::optional<T> storage_;
-  // NOLINTNEXTLINE(cppcoreguidelines-avoid-const-or-ref-data-members)
   const T& ref_;
 };
 
@@ -114,12 +114,13 @@ std::optional<std::vector<T>> ToOptionalVector(
   if (arrayRef) {
     return arrayRef->vec();
   }
-  return std::nullopt;
+  return c10::nullopt;
 }
 
 template <typename T>
-std::underlying_type_t<T> GetEnumValue(T value) {
-  return static_cast<std::underlying_type_t<T>>(value);
+typename std::underlying_type<T>::type GetEnumValue(T value) {
+  return static_cast<typename std::underlying_type<T>::type>(value);
 }
 
-} // namespace torch::lazy
+} // namespace lazy
+} // namespace torch

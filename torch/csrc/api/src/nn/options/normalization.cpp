@@ -1,6 +1,7 @@
 #include <torch/nn/options/normalization.h>
 
-namespace torch::nn {
+namespace torch {
+namespace nn {
 
 LayerNormOptions::LayerNormOptions(std::vector<int64_t> normalized_shape)
     : normalized_shape_(std::move(normalized_shape)) {}
@@ -21,4 +22,5 @@ GroupNormFuncOptions::GroupNormFuncOptions(int64_t num_groups)
 
 } // namespace functional
 
-} // namespace torch::nn
+} // namespace nn
+} // namespace torch

@@ -15,10 +15,11 @@
 #include <torch/csrc/jit/python/python_ir.h>
 #include <torch/csrc/utils/pybind.h>
 #include <sstream>
+#include <unordered_set>
+namespace torch {
+namespace jit {
 
-namespace torch::jit {
-
-static void removePrintOps(Block* block) {
+void removePrintOps(Block* block) {
   for (auto it = block->nodes().begin(), end = block->nodes().end(); it != end;
        ++it) {
     for (auto b : it->blocks()) {
@@ -46,7 +47,7 @@ void RemovePrintOps(std::shared_ptr<Graph>& graph) {
   GRAPH_DUMP("After RemovePrintOps: ", graph);
 }
 
-static void checkONNXCompatibility(const c10::FunctionSchema& schema) {
+void checkONNXCompatibility(const c10::FunctionSchema& schema) {
   // in ONNX, all inputs are tensors, no support for tensor list
   // so at most one input tensor list is supported
   bool has_tensor_list = false;
@@ -74,7 +75,7 @@ static void checkONNXCompatibility(const c10::FunctionSchema& schema) {
   }
 }
 
-static void preprocessCaffe2Ops(Block* block) {
+void preprocessCaffe2Ops(Block* block) {
   for (auto it = block->nodes().begin(), end = block->nodes().end(); it != end;
        ++it) {
     for (auto b : it->blocks()) {
@@ -164,6 +165,7 @@ void PreprocessCaffe2Ops(std::shared_ptr<Graph>& graph) {
 std::shared_ptr<Graph> ToONNX(
     std::shared_ptr<Graph>& graph,
     ::torch::onnx::OperatorExportTypes operator_export_type) {
+  auto constant_value_map = ConstantValueMap::getInstance();
   ConstantValueMap::ClearMaps();
   auto new_graph = std::make_shared<Graph>(graph->current_scope());
   py::dict env;
@@ -246,7 +248,7 @@ py::dict BlockToONNX(
   return py::dict();
 }
 
-static bool ConstantFoldCondition(torch::jit::Value* output) {
+bool ConstantFoldCondition(torch::jit::Value* output) {
   auto fold_condition = output->node()->kind() != c10::onnx::Constant &&
       ConstantValueMap::HasValue(output->debugName());
   auto reliable_value =
@@ -308,8 +310,8 @@ void NodeToONNX(
         if (old->hasDebugName() && !exist_in_env) {
           auto old_name = outputs[i]->debugName();
           auto new_name = old->debugNameBase();
-          Value* found_value = nullptr;
-          bool exists = false;
+          Value* found_value;
+          bool exists;
           // In this scope, we fetch debug_names as a const reference and then
           // construct an iterator exist_name based on it. This iterator will
           // be corrupted if the underlying map of debug_names changes. This
@@ -448,8 +450,7 @@ void NodeToONNX(
       std::ostringstream ss;
       ss << "Error casting results of symbolic for " << op_name
          << ": expected to return list of op nodes, instead received type ''"
-         << py::str(py::type::handle_of(raw_output))
-         << "': " << py::str(raw_output);
+         << py::str(raw_output.get_type()) << "': " << py::str(raw_output);
       throw std::runtime_error(ss.str());
     }
 
@@ -630,4 +631,5 @@ void NodeToONNX(
   }
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

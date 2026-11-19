@@ -5,20 +5,22 @@
 #include <cstddef>
 #include <vector>
 
-namespace torch::jit::mobile {
+namespace torch {
+namespace jit {
+namespace mobile {
 SequentialSampler::SequentialSampler(size_t size) : size_(size) {}
 
-void SequentialSampler::reset(std::optional<size_t> new_size) {
+void SequentialSampler::reset(optional<size_t> new_size) {
   if (new_size.has_value()) {
     size_ = *new_size;
   }
   index_ = 0;
 }
 
-std::optional<std::vector<size_t>> SequentialSampler::next(size_t batch_size) {
+optional<std::vector<size_t>> SequentialSampler::next(size_t batch_size) {
   const auto remaining_indices = size_ - index_;
   if (remaining_indices == 0) {
-    return std::nullopt;
+    return nullopt;
   }
   std::vector<size_t> index_batch(std::min(batch_size, remaining_indices));
   for (auto& i : index_batch) {
@@ -41,4 +43,6 @@ size_t SequentialSampler::index() const noexcept {
   return index_;
 }
 
-} // namespace torch::jit::mobile
+} // namespace mobile
+} // namespace jit
+} // namespace torch

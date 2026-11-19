@@ -8,14 +8,19 @@
 #include <torch/csrc/jit/passes/onnx/peephole.h>
 #include <torch/csrc/jit/passes/onnx/shape_type_inference.h>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
+
+namespace onnx {
+using namespace ::c10::onnx;
+}
 
 namespace {
 const int ONNX_OPSET_13 = 13;
 const int ONNX_TYPE_BOOL = 9;
 
 Node* CreateCastToBoolNode(Value* val, Graph* graph) {
-  Node* cast_node = graph->create(c10::onnx::Cast);
+  Node* cast_node = graph->create(onnx::Cast);
   cast_node->addInput(val);
   cast_node->i_(attr::to, ONNX_TYPE_BOOL);
   cast_node->output()->setType(BoolType::get());
@@ -144,7 +149,7 @@ std::vector<Value*> ConvertSequenceDependencies(Node* node, int opset_version) {
       // Split the added scan_output back to expected tensor sequence.
       auto loop_output = loop_node->output(i - 2);
       Node* split_node =
-          loop_node->owningGraph()->create(c10::onnx::SplitToSequence);
+          loop_node->owningGraph()->create(onnx::SplitToSequence);
       loop_output->replaceAllUsesWith(split_node->output());
       split_node->i_(attr::keepdims, 0);
       split_node->addInput(loop_output);
@@ -186,7 +191,7 @@ std::vector<Value*> ConvertSequenceDependencies(Node* node, int opset_version) {
   return new_outputs;
 }
 
-Node* ONNXOptionalNode(const OptionalTypePtr& opt_type, Graph* g) {
+Node* ONNXOptionalNode(OptionalTypePtr opt_type, Graph* g) {
   TORCH_INTERNAL_ASSERT(opt_type);
   TypePtr elem_type = opt_type->getElementType();
   Node* opt_node = g->create(::c10::onnx::Optional, 1);
@@ -203,7 +208,7 @@ Node* ONNXOptionalNode(const OptionalTypePtr& opt_type, Graph* g) {
 // 2. Loop Op: insert Optional node before output, if input is Optional type
 // or output type is None.
 void ReplaceBlockOutputWithOptional(
-    const OptionalTypePtr& opt_type,
+    OptionalTypePtr opt_type,
     Block* block,
     size_t i) {
   Node* opt_node = ONNXOptionalNode(opt_type, block->owningGraph());
@@ -230,9 +235,9 @@ void FixupONNXSubblockOutputs(Node* n) {
         // Identity(None). Also enables shape inference later on, since
         // ONNX shape inference doesn't handle None.
         if (output->type()->cast<NoneType>()) {
-          id_node = block->owningGraph()->create(c10::onnx::Optional);
+          id_node = block->owningGraph()->create(onnx::Optional);
         } else {
-          id_node = block->owningGraph()->create(c10::onnx::Identity);
+          id_node = block->owningGraph()->create(onnx::Identity);
           id_node->addInput(output);
         }
         id_node->insertBefore(block->return_node());
@@ -347,7 +352,7 @@ void FixupONNXLoopNodeInputs(Node* node, int opset_version) {
 }
 } // anonymous namespace
 
-static std::vector<Value*> FixupONNXLoopNode(Node* node, int opset_version) {
+std::vector<Value*> FixupONNXLoopNode(Node* node, int opset_version) {
   auto output_size = node->outputs().size();
   GRAPH_DEBUG("before FixupONNXLoopBlockInputs: ", *node->owningGraph());
   FixupONNXLoopBlockInputs(node);
@@ -368,7 +373,7 @@ static std::vector<Value*> FixupONNXLoopNode(Node* node, int opset_version) {
 
 // Check if node is prim::Uninitialized,
 // or output of prim::Uninitialized->onnx::Identity
-static bool IsUninitializedNode(Node* n) {
+bool IsUninitializedNode(Node* n) {
   if (n->kind() == ::c10::onnx::Identity &&
       n->inputs()[0]->node()->kind() == prim::Uninitialized)
     return true;
@@ -380,7 +385,7 @@ static bool IsUninitializedNode(Node* n) {
 // Infer shape and type of the uninitialized_output from the corresponding
 // output of the other subblock. prim::Uninitialized node is proven to be
 // unused. So replace this node with one of the inferred shape and type.
-static void InferShapeTypeForUninitializedOutput(
+void InferShapeTypeForUninitializedOutput(
     Graph* graph,
     Block* block,
     Value* uninitialized_output,
@@ -399,7 +404,7 @@ static void InferShapeTypeForUninitializedOutput(
     } else {
       const_node->t_(attr::value, at::zeros({}, elem_type));
       const_node->output()->setType(
-          TensorType::create(output_type->scalarType(), at::kCPU, {}, {}));
+          TensorType::create(*(output_type->scalarType()), at::kCPU, {}, {}));
     }
   } else if (auto output_type = other_output->type()->cast<ListType>()) {
     TypePtr elem = output_type->getElementType();
@@ -456,7 +461,7 @@ static void InferShapeTypeForUninitializedOutput(
 //       -> (%1, %y.1, %7)
 //   ...
 
-static void ONNXFixupUninitializedOutput(Node* node, int opset_version) {
+void ONNXFixupUninitializedOutput(Node* node, int opset_version) {
   if (node->kind() != ::c10::onnx::If) {
     return;
   }
@@ -510,7 +515,7 @@ static void ONNXFixupUninitializedOutput(Node* node, int opset_version) {
   }
 }
 
-static void ONNXMergeIfBlockOutputShapes(Node* node) {
+void ONNXMergeIfBlockOutputShapes(Node* node) {
   TORCH_INTERNAL_ASSERT(node->kind() == ::c10::onnx::If);
   Block* then_block = node->blocks().at(0);
   Block* else_block = node->blocks().at(1);
@@ -663,7 +668,7 @@ static void ONNXMergeIfBlockOutputShapes(Node* node) {
   }
 }
 
-static std::vector<Value*> FixupONNXIfNode(Node* node, int opset_version) {
+std::vector<Value*> FixupONNXIfNode(Node* node, int opset_version) {
   if (node->kind() != ::c10::onnx::If) {
     return node->outputs().vec();
   }
@@ -736,4 +741,5 @@ void FixupONNXControlflowNodeOutputs(Node* n) {
   }
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

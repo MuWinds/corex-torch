@@ -1,6 +1,6 @@
 ARG UBUNTU_VERSION
 
-FROM ubuntu:${UBUNTU_VERSION} as base
+FROM ubuntu:${UBUNTU_VERSION}
 
 ARG UBUNTU_VERSION
 
@@ -28,6 +28,7 @@ RUN bash ./install_docs_reqs.sh && rm install_docs_reqs.sh
 
 # Install conda and other packages (e.g., numpy, pytest)
 ARG ANACONDA_PYTHON_VERSION
+ARG CONDA_CMAKE
 ARG DOCS
 ENV ANACONDA_PYTHON_VERSION=$ANACONDA_PYTHON_VERSION
 ENV PATH /opt/conda/envs/py_$ANACONDA_PYTHON_VERSION/bin:/opt/conda/bin:$PATH
@@ -35,8 +36,7 @@ ENV DOCS=$DOCS
 COPY requirements-ci.txt requirements-docs.txt /opt/conda/
 COPY ./common/install_conda.sh install_conda.sh
 COPY ./common/common_utils.sh common_utils.sh
-COPY ./common/install_magma_conda.sh install_magma_conda.sh
-RUN bash ./install_conda.sh && rm install_conda.sh install_magma_conda.sh common_utils.sh /opt/conda/requirements-ci.txt /opt/conda/requirements-docs.txt
+RUN bash ./install_conda.sh && rm install_conda.sh common_utils.sh /opt/conda/requirements-ci.txt /opt/conda/requirements-docs.txt
 RUN if [ -n "${UNINSTALL_DILL}" ]; then pip uninstall -y dill; fi
 
 # Install gcc
@@ -50,18 +50,10 @@ RUN  bash ./install_lcov.sh && rm install_lcov.sh
 
 # Install cuda and cudnn
 ARG CUDA_VERSION
-COPY ./common/install_cuda.sh install_cuda.sh
-COPY ./common/install_nccl.sh install_nccl.sh
-COPY ./ci_commit_pins/nccl-cu* /ci_commit_pins/
-COPY ./common/install_cusparselt.sh install_cusparselt.sh
-RUN bash ./install_cuda.sh ${CUDA_VERSION} && rm install_cuda.sh install_nccl.sh /ci_commit_pins/nccl-cu* install_cusparselt.sh
+RUN wget -q https://raw.githubusercontent.com/pytorch/builder/main/common/install_cuda.sh -O install_cuda.sh
+RUN bash ./install_cuda.sh ${CUDA_VERSION} && rm install_cuda.sh
 ENV DESIRED_CUDA ${CUDA_VERSION}
 ENV PATH /usr/local/nvidia/bin:/usr/local/cuda/bin:$PATH
-# No effect if cuda not installed
-ENV USE_SYSTEM_NCCL=1
-ENV NCCL_INCLUDE_DIR="/usr/local/cuda/include/"
-ENV NCCL_LIB_DIR="/usr/local/cuda/lib64/"
-
 
 # (optional) Install UCC
 ARG UCX_COMMIT
@@ -74,12 +66,57 @@ ADD ./common/install_ucc.sh install_ucc.sh
 RUN if [ -n "${UCX_COMMIT}" ] && [ -n "${UCC_COMMIT}" ]; then bash ./install_ucc.sh; fi
 RUN rm install_ucc.sh
 
+# (optional) Install protobuf for ONNX
+ARG PROTOBUF
+COPY ./common/install_protobuf.sh install_protobuf.sh
+RUN if [ -n "${PROTOBUF}" ]; then bash ./install_protobuf.sh; fi
+RUN rm install_protobuf.sh
+ENV INSTALLED_PROTOBUF ${PROTOBUF}
+
+# (optional) Install database packages like LMDB and LevelDB
+ARG DB
+COPY ./common/install_db.sh install_db.sh
+RUN if [ -n "${DB}" ]; then bash ./install_db.sh; fi
+RUN rm install_db.sh
+ENV INSTALLED_DB ${DB}
+
 # (optional) Install vision packages like OpenCV
 ARG VISION
 COPY ./common/install_vision.sh ./common/cache_vision_models.sh ./common/common_utils.sh ./
 RUN if [ -n "${VISION}" ]; then bash ./install_vision.sh; fi
 RUN rm install_vision.sh cache_vision_models.sh common_utils.sh
 ENV INSTALLED_VISION ${VISION}
+
+# (optional) Install Android NDK
+ARG ANDROID
+ARG ANDROID_NDK
+ARG GRADLE_VERSION
+COPY ./common/install_android.sh ./common/cache_vision_models.sh ./common/common_utils.sh ./
+COPY ./android/AndroidManifest.xml AndroidManifest.xml
+COPY ./android/build.gradle build.gradle
+RUN if [ -n "${ANDROID}" ]; then bash ./install_android.sh; fi
+RUN rm install_android.sh cache_vision_models.sh common_utils.sh
+RUN rm AndroidManifest.xml
+RUN rm build.gradle
+ENV INSTALLED_ANDROID ${ANDROID}
+
+# (optional) Install Vulkan SDK
+ARG VULKAN_SDK_VERSION
+COPY ./common/install_vulkan_sdk.sh install_vulkan_sdk.sh
+RUN if [ -n "${VULKAN_SDK_VERSION}" ]; then bash ./install_vulkan_sdk.sh; fi
+RUN rm install_vulkan_sdk.sh
+
+# (optional) Install swiftshader
+ARG SWIFTSHADER
+COPY ./common/install_swiftshader.sh install_swiftshader.sh
+RUN if [ -n "${SWIFTSHADER}" ]; then bash ./install_swiftshader.sh; fi
+RUN rm install_swiftshader.sh
+
+# (optional) Install non-default CMake version
+ARG CMAKE_VERSION
+COPY ./common/install_cmake.sh install_cmake.sh
+RUN if [ -n "${CMAKE_VERSION}" ]; then bash ./install_cmake.sh; fi
+RUN rm install_cmake.sh
 
 # (optional) Install non-default Ninja version
 ARG NINJA_VERSION
@@ -102,21 +139,13 @@ RUN if [ -n "${INDUCTOR_BENCHMARKS}" ]; then bash ./install_inductor_benchmark_d
 RUN rm install_inductor_benchmark_deps.sh common_utils.sh timm.txt huggingface.txt
 
 ARG TRITON
-ARG TRITON_CPU
-
-# Create a separate stage for building Triton and Triton-CPU.  install_triton
-# will check for the presence of env vars
-FROM base as triton-builder
+# Install triton, this needs to be done before sccache because the latter will
+# try to reach out to S3, which docker build runners don't have access
 COPY ./common/install_triton.sh install_triton.sh
 COPY ./common/common_utils.sh common_utils.sh
 COPY ci_commit_pins/triton.txt triton.txt
-COPY ci_commit_pins/triton-cpu.txt triton-cpu.txt
-RUN bash ./install_triton.sh
-
-FROM base as final
-COPY --from=triton-builder /opt/triton /opt/triton
-RUN if [ -n "${TRITON}" ] || [ -n "${TRITON_CPU}" ]; then pip install /opt/triton/*.whl; chown -R jenkins:jenkins /opt/conda; fi
-RUN rm -rf /opt/triton
+RUN if [ -n "${TRITON}" ]; then bash ./install_triton.sh; fi
+RUN rm install_triton.sh common_utils.sh triton.txt
 
 ARG EXECUTORCH
 # Build and install executorch
@@ -125,14 +154,6 @@ COPY ./common/common_utils.sh common_utils.sh
 COPY ci_commit_pins/executorch.txt executorch.txt
 RUN if [ -n "${EXECUTORCH}" ]; then bash ./install_executorch.sh; fi
 RUN rm install_executorch.sh common_utils.sh executorch.txt
-
-ARG HALIDE
-# Build and install halide
-COPY ./common/install_halide.sh install_halide.sh
-COPY ./common/common_utils.sh common_utils.sh
-COPY ci_commit_pins/halide.txt halide.txt
-RUN if [ -n "${HALIDE}" ]; then bash ./install_halide.sh; fi
-RUN rm install_halide.sh common_utils.sh halide.txt
 
 ARG ONNX
 # Install ONNX dependencies
@@ -146,12 +167,6 @@ COPY ./common/install_acl.sh install_acl.sh
 RUN if [ -n "${ACL}" ]; then bash ./install_acl.sh; fi
 RUN rm install_acl.sh
 ENV INSTALLED_ACL ${ACL}
-
-ARG OPENBLAS
-COPY ./common/install_openblas.sh install_openblas.sh
-RUN if [ -n "${OPENBLAS}" ]; then bash ./install_openblas.sh; fi
-RUN rm install_openblas.sh
-ENV INSTALLED_OPENBLAS ${OPENBLAS}
 
 # Install ccache/sccache (do this last, so we get priority in PATH)
 ARG SKIP_SCCACHE_INSTALL

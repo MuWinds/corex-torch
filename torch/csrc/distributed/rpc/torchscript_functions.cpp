@@ -10,13 +10,15 @@
 #include <torch/csrc/distributed/rpc/torchscript_functions.h>
 #include <torch/csrc/distributed/rpc/utils.h>
 
-namespace torch::distributed::rpc {
+namespace torch {
+namespace distributed {
+namespace rpc {
 
 c10::intrusive_ptr<JitFuture> rpcTorchscript(
     const std::string& dstWorkerName,
     const c10::QualifiedName& qualifiedName,
     const c10::FunctionSchema& functionSchema,
-    std::vector<c10::IValue> stack,
+    std::vector<c10::IValue>& stack,
     const float rpcTimeoutSeconds,
     const bool isAsyncExecution) {
   c10::intrusive_ptr<torch::autograd::profiler::PythonRecordFunction> record;
@@ -47,7 +49,7 @@ c10::intrusive_ptr<JitFuture> rpcTorchscript(
       rpcTimeoutSeconds);
 
   // Get function return type to construct JitFuture.
-  auto const& returns = functionSchema.returns();
+  auto returns = functionSchema.returns();
   // Script call only allows single IValue returned.
   TORCH_INTERNAL_ASSERT(
       returns.size() == 1,
@@ -90,7 +92,7 @@ c10::intrusive_ptr<RRef> remoteTorchscript(
   auto& ctx = RRefContext::getInstance();
 
   // Get function return type to construct UserRRef.
-  auto const& returns = functionSchema.returns();
+  auto returns = functionSchema.returns();
   // Script call only allows single IValue returned.
   TORCH_INTERNAL_ASSERT(
       returns.size() == 1,
@@ -152,4 +154,6 @@ c10::intrusive_ptr<RRef> remoteTorchscript(
   }
 }
 
-} // namespace torch::distributed::rpc
+} // namespace rpc
+} // namespace distributed
+} // namespace torch

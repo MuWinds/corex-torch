@@ -8,14 +8,16 @@
 #include <torch/csrc/autograd/functions/basic_ops.h>
 #include <torch/csrc/distributed/autograd/context/context.h>
 
-namespace torch::distributed::autograd {
+namespace torch {
+namespace distributed {
+namespace autograd {
 
 // Forward declaration.
 class BackwardPassCleanupGuard;
 
 // This is a singleton class responsible for running distributed backward
 // passes. This engine relies heavily on the vanilla autograd engine and tries
-// to reuse it as much as possible. This class is mostly responsible for the
+// to re-use it as much as possible. This class is mostly responsible for the
 // distributed aspects of autograd and tries to hook into the autograd engine
 // where convenient.
 
@@ -52,7 +54,7 @@ class TORCH_API DistEngine {
 
   // Returns key-value pairs consisting of useful debugging information related
   // to distributed autograd.
-  std::unordered_map<std::string, int64_t> getDebugInfo() const;
+  std::unordered_map<std::string, int> getDebugInfo() const;
 
   DistEngine(const DistEngine&) = delete;
   DistEngine& operator=(const DistEngine&) = delete;
@@ -169,4 +171,6 @@ class BackwardPassCleanupGuard {
   ContextPtr autogradContext_;
 };
 
-} // namespace torch::distributed::autograd
+} // namespace autograd
+} // namespace distributed
+} // namespace torch

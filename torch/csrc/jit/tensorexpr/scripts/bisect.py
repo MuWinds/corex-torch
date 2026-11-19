@@ -2,6 +2,8 @@
 
 import subprocess
 
+import click
+
 
 def test(cmd, limit):
     print(f"Testing PYTORCH_JIT_OPT_LIMIT=tensorexpr_fuser={limit} {cmd}")
@@ -24,6 +26,8 @@ def test(cmd, limit):
     return 0
 
 
+@click.command()
+@click.option("--cmd")
 def bisect(cmd):
     last_good = 0
     first_bad = 10000
@@ -65,11 +69,4 @@ def bisect(cmd):
 
 
 if __name__ == "__main__":
-    import click
-
-    @click.command()
-    @click.option("--cmd", required=True)
-    def cli(cmd):
-        bisect(cmd)
-
-    cli()
+    bisect()

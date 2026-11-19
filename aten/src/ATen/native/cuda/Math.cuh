@@ -5,7 +5,8 @@
 #include <c10/macros/Macros.h>
 #include <ATen/native/cuda/jit_utils.h>
 
-namespace at::native {
+namespace at {
+namespace native {
 // See note [Jiterator]
 // TODO: elaborate in this comment on the structure of math.cuh
 #if AT_USE_JITERATOR()
@@ -231,7 +232,11 @@ const auto lcm_string = jiterator_stringify(
 const auto digamma_string = jiterator_stringify(
   template <typename T>
   T digamma(T x) {
+  #ifdef __ILUVATAR__
+    static const float PI_f32 = 3.14159265358979323846f;
+  #else
     static const double PI_f64 = 3.14159265358979323846;
+  #endif
 
     // Short-circuits if x is +/- 0 and returns -/+ ∞ per the C++ standard
     if (x == 0) {
@@ -251,9 +256,15 @@ const auto digamma_string = jiterator_stringify(
       // accurate than tan(pi * x). While these operations are mathematically equivalent
       // since both x and r are in radians and tan() has a periodicity of pi, in practice
       // the computation of pi * x is a source of error (when |x| > 1).
+  #ifdef __ILUVATAR__
+      float q, r;
+      r = modf(static_cast<float>(x), &q);
+      result = - PI_f32 / tan(PI_f32 * r);
+  #else
       double q, r;
       r = modf(static_cast<double>(x), &q);
       result = - PI_f64 / tan(PI_f64 * r);
+  #endif
       x = 1 - x;
     }
 
@@ -758,15 +769,16 @@ const auto sinc_string = jiterator_stringify(
   T sinc(T a) {
     if (a == T(0)) {
       return T(1);
+    } else {
+      constexpr T pi = T(3.14159265358979323846L);
+      T product = pi * a;
+      return std::sin(product) / product;
     }
-    constexpr T pi = T(3.14159265358979323846L);
-    T product = pi * a;
-    return std::sin(product) / product;
   }
 ); // sinc_string
 
 const auto erfcx_string = jiterator_stringify(
-  /* The next function is taken from http://ab-initio.mit.edu/faddeeva */
+  /* The next function is taken from http://ab-initio.mit.edu/Faddeev */
 
   /* Copyright (c) 2012 Massachusetts Institute of Technology
   *
@@ -1750,9 +1762,17 @@ const auto bessel_j1_string = jiterator_stringify(
                 +8.95222336184627338078e+16,
                 +5.32278620332680085395e+18,
         };
-
+#ifdef __ILUVATAR_WORKAROUND__
+        bool negtive_flag = false;
+        T tmp;
+#endif
         if (x < T(0.0)) {
+#ifndef __ILUVATAR_WORKAROUND__
             return -bessel_j1_forward(-x);
+#else
+            x = T(-1.0) * x;
+            negtive_flag = true;
+#endif
         }
 
         if (x <= T(5.0)) {
@@ -1768,7 +1788,15 @@ const auto bessel_j1_string = jiterator_stringify(
                 rq = rq * (x * x) + RQ[index];
             }
 
+#ifndef __ILUVATAR_WORKAROUND__
             return rp / rq * x * (x * x - T(1.46819706421238932572e+01)) * (x * x - T(4.92184563216946036703e+01));
+#else
+            tmp = rp / rq * x * (x * x - T(1.46819706421238932572e+01)) * (x * x - T(4.92184563216946036703e+01));
+            if (negtive_flag) {
+                tmp = T(-1.0) * tmp;
+            }
+            return tmp;
+#endif
         }
 
         T pp = 0.0;
@@ -1795,7 +1823,15 @@ const auto bessel_j1_string = jiterator_stringify(
             qq = qq * (T(5.0) / x * (T(5.0) / x)) + QQ[index];
         }
 
+#ifndef __ILUVATAR_WORKAROUND__
         return (pp / pq * cos(x - T(2.356194490192344928846982537459627163)) - T(5.0) / x * (qp / qq) * sin(x - T(2.356194490192344928846982537459627163))) * T(0.797884560802865355879892119868763737) / sqrt(x);
+#else
+        tmp = (pp / pq * cos(x - T(2.356194490192344928846982537459627163)) - T(5.0) / x * (qp / qq) * sin(x - T(2.356194490192344928846982537459627163))) * T(0.797884560802865355879892119868763737) / sqrt(x);
+        if (negtive_flag) {
+            tmp = T(-1.0) * tmp;
+        }
+        return tmp;
+#endif
     } // bessel_j1_forward(T x)
 ); // bessel_j1_string
 
@@ -2133,17 +2169,6 @@ const auto chebyshev_polynomial_w_string = jiterator_stringify(
 
 const auto hermite_polynomial_h_string = jiterator_stringify(
     template<typename T>
-    unsigned short getHermitianLimit() {
-        if (sizeof(T) <= sizeof(float)) {
-            return 128;
-        } else if (sizeof(T) <= sizeof(double)) {
-            return 512;
-        } else {
-            return 1024;
-        }
-    }
-
-    template<typename T>
     T hermite_polynomial_h_forward(T x, int64_t n) {
         if (n < 0) {
             return T(0.0);
@@ -2155,10 +2180,6 @@ const auto hermite_polynomial_h_string = jiterator_stringify(
 
         if (n == 1) {
             return x + x;
-        }
-
-        if (n > getHermitianLimit<T>()) {
-            return NAN;
         }
 
         T p = T(1.0);
@@ -2182,17 +2203,6 @@ const auto hermite_polynomial_h_string = jiterator_stringify(
 
 const auto hermite_polynomial_he_string = jiterator_stringify(
     template<typename T>
-    unsigned short getHermitianLimit() {
-        if (sizeof(T) <= sizeof(float)) {
-            return 128;
-        } else if (sizeof(T) <= sizeof(double)) {
-            return 512;
-        } else {
-            return 1024;
-        }
-    }
-
-    template<typename T>
     T hermite_polynomial_he_forward(T x, int64_t n) {
         if (n < 0) {
             return T(0.0);
@@ -2204,10 +2214,6 @@ const auto hermite_polynomial_he_string = jiterator_stringify(
 
         if (n == 1) {
             return x;
-        }
-
-        if (n > getHermitianLimit<T>()) {
-            return NAN;
         }
 
         T p = T(1.0);
@@ -3072,7 +3078,11 @@ template <typename scalar_t>
 static inline C10_HOST_DEVICE scalar_t calc_digamma(scalar_t in) {
   // [C++ Standard Reference: Gamma Function] https://en.cppreference.com/w/cpp/numeric/math/tgamma
   using accscalar_t = at::acc_type<scalar_t, /*is_cuda=*/true>;
+#ifdef __ILUVATAR__
+  static const float PI_f32 = 3.14159265358979323846f;
+#else
   static const double PI_f64 = 3.14159265358979323846;
+#endif
   const accscalar_t PSI_10 = 2.25175258906672110764;
   const accscalar_t A[] = {
       8.33333333333333333333E-2,
@@ -3103,9 +3113,15 @@ static inline C10_HOST_DEVICE scalar_t calc_digamma(scalar_t in) {
     // accurate than tan(pi * x). While these operations are mathematically equivalent
     // since both x and r are in radians and tan() has a periodicity of pi, in practice
     // the computation of pi * x is a source of error (when |x| > 1).
+#ifdef __ILUVATAR__
+    float q, r;
+    r = ::modf(static_cast<float>(x), &q);
+    result = static_cast<accscalar_t>(- PI_f32 / ::tan(PI_f32 * r));
+#else
     double q, r;
     r = ::modf(static_cast<double>(x), &q);
     result = static_cast<accscalar_t>(- PI_f64 / ::tan(PI_f64 * r));
+#endif
     x = 1 - x;
   }
 
@@ -3239,18 +3255,22 @@ static inline C10_HOST_DEVICE scalar_t calc_i0(scalar_t _x) {
   scalar_t x = ::abs(_x);
 
   if (x <= scalar_t{8.0}) {
-    auto [A, len] = chebyshev_coefficients_i0e_A<scalar_t>();
+    auto coeff_pair = chebyshev_coefficients_i0e_A<scalar_t>();
+    auto A = std::get<0>(coeff_pair);
+    auto len = std::get<1>(coeff_pair);
     scalar_t y = (x / scalar_t{2.0}) - scalar_t{2.0};
     return (::exp(x) * chbevl(y, A, len));
   }
 
-  auto [B, len] = chebyshev_coefficients_i0e_B<scalar_t>();
+  auto coeff_pair = chebyshev_coefficients_i0e_B<scalar_t>();
+  auto B = std::get<0>(coeff_pair);
+  auto len = std::get<1>(coeff_pair);
   return (::exp(x) * chbevl(scalar_t{32.0} / x - scalar_t{2.0}, B, len) / ::sqrt(x));
 }
 
 template <typename T>
 C10_HOST_DEVICE inline
-    typename std::enable_if_t<std::is_same_v<double, T>, std::tuple<const T*, size_t>>
+    typename std::enable_if<std::is_same<double, T>::value, std::tuple<const T*, size_t>>::type
     chebyshev_coefficients_i1e_A() {
   /* Chebyshev coefficients for exp(-x) I1(x)
    * in the interval [0,8].
@@ -3279,7 +3299,7 @@ C10_HOST_DEVICE inline
 
 template <typename T>
 C10_HOST_DEVICE inline
-    typename std::enable_if_t<std::is_same_v<float, T>, std::tuple<const T*, size_t>>
+    typename std::enable_if<std::is_same<float, T>::value, std::tuple<const T*, size_t>>::type
     chebyshev_coefficients_i1e_A() {
   /* Chebyshev coefficients for exp(-x) I1(x)
    * in the interval [0,8].
@@ -3309,7 +3329,7 @@ C10_HOST_DEVICE inline
 
 template <typename T>
 C10_HOST_DEVICE inline
-    typename std::enable_if_t<std::is_same_v<double, T>, std::tuple<const T*, size_t>>
+    typename std::enable_if<std::is_same<double, T>::value, std::tuple<const T*, size_t>>::type
     chebyshev_coefficients_i1e_B() {
   /* Chebyshev coefficients for exp(-x) sqrt(x) I1(x)
    * in the inverted interval [8,infinity].
@@ -3336,7 +3356,7 @@ C10_HOST_DEVICE inline
 
 template <typename T>
 C10_HOST_DEVICE inline
-    typename std::enable_if_t<std::is_same_v<float, T>, std::tuple<const T*, size_t>>
+    typename std::enable_if<std::is_same<float, T>::value, std::tuple<const T*, size_t>>::type
     chebyshev_coefficients_i1e_B() {
   /* Chebyshev coefficients for exp(-x) sqrt(x) I1(x)
    * in the inverted interval [8,infinity].
@@ -3359,13 +3379,17 @@ template <typename scalar_t>
 static inline C10_HOST_DEVICE scalar_t calc_i1(scalar_t _x) {
   const auto x = ::abs(_x);
   if (x <= scalar_t{8.0}) {
-    auto [A, len] = chebyshev_coefficients_i1e_A<scalar_t>();
+    auto coeff_pair = chebyshev_coefficients_i1e_A<scalar_t>();
+    auto A = std::get<0>(coeff_pair);
+    auto len = std::get<1>(coeff_pair);
     scalar_t y = x / scalar_t{2.0} - scalar_t{2.0};
     const scalar_t out = ::exp(x) * x * chbevl(y, A, len);
     return (_x < scalar_t{0.0}) ? -out : out;
   }
 
-  auto [B, len] = chebyshev_coefficients_i1e_B<scalar_t>();
+  auto coeff_pair = chebyshev_coefficients_i1e_B<scalar_t>();
+  auto B = std::get<0>(coeff_pair);
+  auto len = std::get<1>(coeff_pair);
   const scalar_t out = (::exp(x) * chbevl(scalar_t{32.0} / x - scalar_t{2.0}, B, len)) / ::sqrt(x);
   return (_x < scalar_t{0.0}) ? -out : out;
 }
@@ -3374,17 +3398,22 @@ template <typename scalar_t>
 static inline C10_HOST_DEVICE scalar_t calc_i1e(scalar_t _x) {
   const auto x = ::abs(_x);
   if (x <= scalar_t{8.0}) {
-    auto [A, len] = chebyshev_coefficients_i1e_A<scalar_t>();
+    auto coeff_pair = chebyshev_coefficients_i1e_A<scalar_t>();
+    auto A = std::get<0>(coeff_pair);
+    auto len = std::get<1>(coeff_pair);
     const scalar_t y = x / scalar_t{2.0} - scalar_t{2.0};
     const scalar_t out = chbevl(y, A, len) * x;
     return (_x < scalar_t{0.0}) ? -out : out;
   }
 
-  auto [B, len] = chebyshev_coefficients_i1e_B<scalar_t>();
+  auto coeff_pair = chebyshev_coefficients_i1e_B<scalar_t>();
+  auto B = std::get<0>(coeff_pair);
+  auto len = std::get<1>(coeff_pair);
   const scalar_t out = chbevl(scalar_t{32.0} / x - scalar_t{2.0}, B, len) / ::sqrt(x);
   return (_x < scalar_t{0.0}) ? -out : out;
 }
 
 #endif // AT_USE_JITERATOR() (this closes the "else" branch of a if/else preprocessor directive)
 
-} // namespace at::native
+} // namespace native
+} // namespace at

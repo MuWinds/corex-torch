@@ -4,15 +4,22 @@
 #include <c10/util/Exception.h>
 #include <pytorch_qnnpack.h>
 
-namespace at::native {
+#include <c10/util/CallOnce.h>
+
+namespace at {
+namespace native {
 
 void initQNNPACK() {
-  static enum pytorch_qnnp_status qnnpackStatus = pytorch_qnnp_initialize();
+  static c10::once_flag once;
+  static enum pytorch_qnnp_status qnnpackStatus =
+      pytorch_qnnp_status_uninitialized;
+  c10::call_once(once, []() { qnnpackStatus = pytorch_qnnp_initialize(); });
   TORCH_CHECK(
       qnnpackStatus == pytorch_qnnp_status_success,
       "failed to initialize QNNPACK");
 }
 
-} // namespace at::native
+} // namespace native
+} // namespace at
 
 #endif

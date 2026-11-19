@@ -11,7 +11,6 @@ from torch.utils.jit.log_extract import (
     run_nvfuser,
 )
 
-
 """
 Usage:
 1. Run your script and pipe into a log file
@@ -95,7 +94,7 @@ def run():
         "--no-nnc-dynamic",
         dest="nnc_dynamic",
         action="store_false",
-        help="don't benchmark nnc with dynamic shapes",
+        help="DONT't benchmark nnc with dynamic shapes",
     )
     parser.set_defaults(nnc_dynamic=False)
 

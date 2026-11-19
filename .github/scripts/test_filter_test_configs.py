@@ -3,7 +3,7 @@
 import json
 import os
 import tempfile
-from typing import Any
+from typing import Any, Dict, List
 from unittest import main, mock, TestCase
 
 import yaml
@@ -101,6 +101,30 @@ MOCKED_DISABLED_UNSTABLE_JOBS = {
         "linux-binary-manywheel",
         "manywheel-py3_8-cuda11_8-build",
         "",
+    ],
+    "inductor / cuda12.1-py3.10-gcc9-sm86 / test (inductor)": [
+        "pytorchbot",
+        "107079",
+        "https://github.com/pytorch/pytorch/issues/107079",
+        "inductor",
+        "cuda12.1-py3.10-gcc9-sm86",
+        "test (inductor)",
+    ],
+    "inductor / cuda12.1-py3.10-gcc9-sm86 / test (inductor_huggingface)": [
+        "pytorchbot",
+        "109153",
+        "https://github.com/pytorch/pytorch/issues/109153",
+        "inductor",
+        "cuda12.1-py3.10-gcc9-sm86",
+        "test (inductor_huggingface)",
+    ],
+    "inductor / cuda12.1-py3.10-gcc9-sm86 / test (inductor_huggingface_dynamic)": [
+        "pytorchbot",
+        "109154",
+        "https://github.com/pytorch/pytorch/issues/109154",
+        "inductor",
+        "cuda12.1-py3.10-gcc9-sm86",
+        "test (inductor_huggingface_dynamic)",
     ],
 }
 
@@ -338,7 +362,7 @@ class TestConfigFilter(TestCase):
             self.assertEqual(case["expected"], json.dumps(filtered_test_matrix))
 
     def test_set_periodic_modes(self) -> None:
-        testcases: list[dict[str, str]] = [
+        testcases: List[Dict[str, str]] = [
             {
                 "job_name": "a CI job",
                 "test_matrix": "{include: []}",
@@ -347,26 +371,26 @@ class TestConfigFilter(TestCase):
             {
                 "job_name": "a-ci-job",
                 "test_matrix": '{include: [{config: "default", runner: "linux"}, {config: "cfg", runner: "macos"}]}',
-                "description": "Replicate each periodic mode in a different config",
+                "descripion": "Replicate each periodic mode in a different config",
             },
             {
                 "job_name": "a-ci-cuda11.8-job",
                 "test_matrix": '{include: [{config: "default", runner: "linux"}, {config: "cfg", runner: "macos"}]}',
-                "description": "Replicate each periodic mode in a different config for a CUDA job",
+                "descripion": "Replicate each periodic mode in a different config for a CUDA job",
             },
             {
                 "job_name": "a-ci-rocm-job",
                 "test_matrix": '{include: [{config: "default", runner: "linux"}, {config: "cfg", runner: "macos"}]}',
-                "description": "Replicate each periodic mode in a different config for a ROCm job",
+                "descripion": "Replicate each periodic mode in a different config for a ROCm job",
             },
             {
                 "job_name": "",
                 "test_matrix": '{include: [{config: "default", runner: "linux"}, {config: "cfg", runner: "macos"}]}',
-                "description": "Empty job name",
+                "descripion": "Empty job name",
             },
             {
                 "test_matrix": '{include: [{config: "default", runner: "linux"}, {config: "cfg", runner: "macos"}]}',
-                "description": "Missing job name",
+                "descripion": "Missing job name",
             },
         ]
 
@@ -613,6 +637,37 @@ class TestConfigFilter(TestCase):
                 "expected": '{"include": [{"config": "default", "unstable": "unstable"}]}',
                 "description": "Both binary build and test jobs are unstable",
             },
+            {
+                "workflow": "inductor",
+                "job_name": "cuda12.1-py3.10-gcc9-sm86 / build",
+                "test_matrix": """
+                    { include: [
+                        { config: "inductor" },
+                        { config: "inductor_huggingface", shard: 1 },
+                        { config: "inductor_huggingface", shard: 2 },
+                        { config: "inductor_timm", shard: 1 },
+                        { config: "inductor_timm", shard: 2 },
+                        { config: "inductor_torchbench" },
+                        { config: "inductor_huggingface_dynamic" },
+                        { config: "inductor_torchbench_dynamic" },
+                        { config: "inductor_distributed" },
+                    ]}
+                """,
+                "expected": """
+                    { "include": [
+                        { "config": "inductor", "unstable": "unstable" },
+                        { "config": "inductor_huggingface", "shard": 1, "unstable": "unstable" },
+                        { "config": "inductor_huggingface", "shard": 2, "unstable": "unstable" },
+                        { "config": "inductor_timm", "shard": 1 },
+                        { "config": "inductor_timm", "shard": 2 },
+                        { "config": "inductor_torchbench" },
+                        { "config": "inductor_huggingface_dynamic", "unstable": "unstable" },
+                        { "config": "inductor_torchbench_dynamic" },
+                        { "config": "inductor_distributed" }
+                    ]}
+                """,
+                "description": "Marking multiple unstable configurations",
+            },
         ]
 
         for case in testcases:
@@ -628,7 +683,6 @@ class TestConfigFilter(TestCase):
         def _gen_expected_string(
             keep_going: bool = False,
             ci_verbose_test_logs: bool = False,
-            ci_test_showlocals: bool = False,
             ci_no_test_timeout: bool = False,
             ci_no_td: bool = False,
             ci_td_distributed: bool = False,
@@ -638,7 +692,6 @@ class TestConfigFilter(TestCase):
             return (
                 f"keep-going={keep_going}\n"
                 f"ci-verbose-test-logs={ci_verbose_test_logs}\n"
-                f"ci-test-showlocals={ci_test_showlocals}\n"
                 f"ci-no-test-timeout={ci_no_test_timeout}\n"
                 f"ci-no-td={ci_no_td}\n"
                 f"ci-td-distributed={ci_td_distributed}\n"
@@ -647,7 +700,7 @@ class TestConfigFilter(TestCase):
             )
 
         mocked_subprocess.return_value = b""
-        testcases: list[dict[str, Any]] = [
+        testcases: List[Dict[str, Any]] = [
             {
                 "labels": {},
                 "test_matrix": '{include: [{config: "default"}]}',
@@ -679,21 +732,6 @@ class TestConfigFilter(TestCase):
                     ci_verbose_test_logs=True, ci_no_test_timeout=True
                 ),
                 "description": "No pipe logs label and no test timeout in PR body",
-            },
-            {
-                "labels": {"ci-test-showlocals"},
-                "test_matrix": '{include: [{config: "default"}]}',
-                "job_name": "A job name",
-                "expected": _gen_expected_string(ci_test_showlocals=True),
-                "description": "Has ci-test-showlocals",
-            },
-            {
-                "labels": {},
-                "test_matrix": '{include: [{config: "default"}]}',
-                "job_name": "A job name",
-                "pr_body": "[ci-test-showlocals]",
-                "expected": _gen_expected_string(ci_test_showlocals=True),
-                "description": "ci-test-showlocals in body",
             },
             {
                 "labels": {"ci-no-test-timeout"},
@@ -807,7 +845,7 @@ class TestConfigFilter(TestCase):
         # test bad things
         pr_body = (
             "fixes189 fixeshttps://github.com/pytorch/pytorch/issues/75123 "
-            "closedhttps://githubcom/pytorch/pytorch/issues/75123"  # @lint-ignore
+            "closedhttps://githubcom/pytorch/pytorch/issues/75123"
             "fix 234, fixes # 45, fixing #123, close 234, closes#45, closing #123 resolve 234, "
             "resolves  #45, resolving #123"
         )

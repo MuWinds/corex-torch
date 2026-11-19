@@ -6,7 +6,6 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 import multiprocessing as mp
-import os
 import signal
 import time
 import unittest
@@ -38,7 +37,7 @@ if not (IS_WINDOWS or IS_MACOS):
         def setUp(self):
             super().setUp()
             self.max_interval = 0.01
-            self.file_path = f"/tmp/test_file_path_{os.getpid()}_{uuid.uuid4()}"
+            self.file_path = "/tmp/test_file_path_" + str(uuid.uuid4())
             self.server = timer.FileTimerServer(
                 self.file_path, "test", self.max_interval
             )
@@ -113,7 +112,7 @@ if not (IS_WINDOWS or IS_MACOS):
             num_clients = 10
             num_requests_per_client = 10
             processes = []
-            for _ in range(num_clients):
+            for i in range(num_clients):
                 p = mp.Process(
                     target=func, args=(num_requests_per_client, self.file_path)
                 )
@@ -190,7 +189,7 @@ if not (IS_WINDOWS or IS_MACOS):
         """
         client = timer.FileTimerClient(file_path)
         sem.release()
-        for _ in range(0, n):
+        for i in range(0, n):
             client.acquire("test_scope", 0)
             time.sleep(interval)
 
@@ -205,7 +204,7 @@ if not (IS_WINDOWS or IS_MACOS):
     class FileTimerServerTest(TestCase):
         def setUp(self):
             super().setUp()
-            self.file_path = f"/tmp/test_file_path_{os.getpid()}_{uuid.uuid4()}"
+            self.file_path = "/tmp/test_file_path_" + str(uuid.uuid4())
             self.max_interval = 0.01
             self.server = timer.FileTimerServer(
                 self.file_path, "test", self.max_interval

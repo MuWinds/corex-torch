@@ -6,7 +6,9 @@
 
 #include <cstddef>
 
-namespace torch::data::samplers {
+namespace torch {
+namespace data {
+namespace samplers {
 
 BatchSize::BatchSize(size_t size) : size_(size) {}
 size_t BatchSize::size() const noexcept {
@@ -18,17 +20,17 @@ BatchSize::operator size_t() const noexcept {
 
 StreamSampler::StreamSampler(size_t epoch_size) : epoch_size_(epoch_size) {}
 
-void StreamSampler::reset(std::optional<size_t> new_size) {
+void StreamSampler::reset(optional<size_t> new_size) {
   if (new_size.has_value()) {
     epoch_size_ = *new_size;
   }
   examples_retrieved_so_far_ = 0;
 }
 
-std::optional<BatchSize> StreamSampler::next(size_t batch_size) {
+optional<BatchSize> StreamSampler::next(size_t batch_size) {
   AT_ASSERT(examples_retrieved_so_far_ <= epoch_size_);
   if (examples_retrieved_so_far_ == epoch_size_) {
-    return std::nullopt;
+    return nullopt;
   }
   if (examples_retrieved_so_far_ + batch_size > epoch_size_) {
     batch_size = epoch_size_ - examples_retrieved_so_far_;
@@ -54,4 +56,6 @@ void StreamSampler::load(serialize::InputArchive& archive) {
   examples_retrieved_so_far_ = tensor.item<int64_t>();
 }
 
-} // namespace torch::data::samplers
+} // namespace samplers
+} // namespace data
+} // namespace torch

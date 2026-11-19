@@ -2,8 +2,10 @@
 #include <c10/util/Registry.h>
 #include <string>
 
-namespace torch::distributed::rpc {
-// All metrics are prefixed with the following key.
+namespace torch {
+namespace distributed {
+namespace rpc {
+// All metrics are prefixed with the following  key.
 // NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays)
 constexpr char kRpcMetricsKeyPrefix[] = "torch.distributed.rpc.";
 // APIs for logging time-series metrics for RPC-based distributed
@@ -33,8 +35,10 @@ struct RpcMetricsConfig {
 
 // A registry for different implementations of RpcMetricsHandler. Classes
 // implementing the above interface should use this to register implementations.
-TORCH_DECLARE_REGISTRY(
+C10_DECLARE_REGISTRY(
     RpcMetricsHandlerRegistry,
     torch::distributed::rpc::RpcMetricsHandler);
 
-} // namespace torch::distributed::rpc
+} // namespace rpc
+} // namespace distributed
+} // namespace torch

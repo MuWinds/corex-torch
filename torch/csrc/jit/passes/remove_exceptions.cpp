@@ -4,7 +4,8 @@
 
 #include <torch/csrc/jit/jit_log.h>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 static bool certainlyThrows(Block* block) {
   for (Node* n : block->nodes()) {
@@ -44,4 +45,5 @@ void EliminateExceptions(std::shared_ptr<Graph>& graph) {
   GRAPH_DUMP("After EliminateExceptions: ", graph);
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

@@ -7,7 +7,8 @@
 
 #include <unordered_map>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 namespace prim {
 using namespace ::c10::prim;
@@ -36,7 +37,7 @@ class DeadCodeEliminator {
 
     mark(block);
 
-    deleteCallback_(getLiveValues());
+    deleteCallback_(liveValues_);
 
     sweep(block, recurse);
   }
@@ -120,27 +121,27 @@ class DeadCodeEliminator {
           // Special handling for onnx loop.
           // The number of body carried inputs and outputs are different.
           // They cannot be mapped to each other easily by the same index.
-          insertLiveValue(loop.bodyCarriedOutputs().at(i));
+          liveValues_.insert(loop.bodyCarriedOutputs().at(i));
           continue;
         }
         auto innerInput = loop.bodyCarriedInputs().at(i);
         auto innerOutput = loop.bodyCarriedOutputs().at(i);
         auto outerOutput = loop.carriedOutputs().at(i);
-        if (liveValuesContains(outerOutput) || innerInput->hasUses()) {
-          insertLiveValue(innerOutput);
+        if (liveValues_.count(outerOutput) || innerInput->hasUses()) {
+          liveValues_.insert(innerOutput);
         }
       }
 
       // Also mark the loop next condition as live, since it will be used inside
       // the loop body.
-      insertLiveValue(loop.nextCond());
+      liveValues_.insert(loop.nextCond());
     } else {
       AT_ASSERT(outerNode->outputs().size() == node->inputs().size());
       for (const auto i : c10::irange(outerNode->outputs().size())) {
         auto innerOutput = node->inputs()[i];
         auto outerOutput = outerNode->outputs()[i];
-        if (liveValuesContains(outerOutput)) {
-          insertLiveValue(innerOutput);
+        if (liveValues_.count(outerOutput)) {
+          liveValues_.insert(innerOutput);
         }
       }
     }
@@ -215,14 +216,13 @@ class DeadCodeEliminator {
   // Returns true iff this marked something we haven't marked before.
   bool markIfLive(Node* node) {
     for (const auto output : node->outputs()) {
-      if (liveValuesContains(output)) {
+      if (liveValues_.count(output)) {
         return mark(node);
       }
     }
 
     if (useAliasDb_) {
-      if (getOrCreateAliasDb()->writesToAlias(
-              node, getLiveValuesAndMemoryLocations())) {
+      if (getOrCreateAliasDb()->writesToAlias(node, liveValues_)) {
         return mark(node);
       }
     }
@@ -252,11 +252,12 @@ class DeadCodeEliminator {
       curNode = curNode->owningBlock()->owningNode();
     }
 
+    // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage)
     for (const auto input : node->inputs()) {
-      if (liveValuesContains(input)) {
+      if (liveValues_.count(input)) {
         continue;
       }
-      insertLiveValue(input);
+      liveValues_.insert(input);
     }
     return true;
   }
@@ -420,46 +421,6 @@ class DeadCodeEliminator {
     return aliasDb_.get();
   }
 
-  ValueAndMemoryLocationSet& getLiveValuesAndMemoryLocations() {
-    if (!liveValuesAndMemoryLocations_) {
-      liveValuesAndMemoryLocations_ =
-          std::make_unique<ValueAndMemoryLocationSet>(
-              getOrCreateAliasDb()->getValueAndMemoryLocationSet());
-    }
-    return *liveValuesAndMemoryLocations_;
-  }
-
-  ValueSet& getLiveValuesSet() {
-    if (!liveValuesSet_) {
-      liveValuesSet_ = std::make_unique<ValueSet>();
-    }
-    return *liveValuesSet_;
-  }
-
-  ValueSet& getLiveValues() {
-    if (useAliasDb_) {
-      return getLiveValuesAndMemoryLocations().getValueSet();
-    } else {
-      return getLiveValuesSet();
-    }
-  }
-
-  void insertLiveValue(Value* v) {
-    if (useAliasDb_) {
-      getLiveValuesAndMemoryLocations().insert(v);
-    } else {
-      getLiveValuesSet().insert(v);
-    }
-  }
-
-  bool liveValuesContains(Value* v) {
-    if (useAliasDb_) {
-      return getLiveValuesAndMemoryLocations().getValueSet().count(v);
-    } else {
-      return getLiveValuesSet().count(v);
-    }
-  }
-
   DCESideEffectPolicy sideEffectPolicy_;
 
   std::shared_ptr<Graph> graph_;
@@ -468,15 +429,7 @@ class DeadCodeEliminator {
   std::unique_ptr<AliasDb> aliasDb_ = nullptr;
   std::unordered_map<Node*, bool> memo_;
   std::unordered_set<Node*> marked_;
-
-  // we should have at most 1 of these as a non-nullptr; they are lazily
-  // initialized. liveValuesAndMemoryLocations_ is used if we are using AliasDb
-  //   (in order to store aliasing info),
-  // otherwise liveValuesSet_ is used.
-  std::unique_ptr<ValueAndMemoryLocationSet> liveValuesAndMemoryLocations_ =
-      nullptr;
-  std::unique_ptr<ValueSet> liveValuesSet_ = nullptr;
-
+  std::unordered_set<const Value*> liveValues_;
   std::function<void(const std::unordered_set<const Value*>&)> deleteCallback_ =
       [](const std::unordered_set<const Value*>&) {};
 };
@@ -505,4 +458,5 @@ void EliminateDeadCode(
   eliminator.run(block, /*recurse=*/true);
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

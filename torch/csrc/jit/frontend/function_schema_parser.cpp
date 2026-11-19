@@ -1,14 +1,14 @@
 #include <torch/csrc/jit/frontend/function_schema_parser.h>
 
 #include <ATen/core/Reduction.h>
-#include <ATen/core/jit_type.h>
 #include <ATen/core/type_factory.h>
-#include <fmt/format.h>
+#include <c10/util/Optional.h>
+#include <c10/util/string_utils.h>
 #include <torch/csrc/jit/frontend/lexer.h>
 #include <torch/csrc/jit/frontend/parse_string_literal.h>
 #include <torch/csrc/jit/frontend/schema_type_parser.h>
-#include <optional>
 
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -25,8 +25,8 @@ namespace {
 struct SchemaParser {
   explicit SchemaParser(const std::string& str, bool allow_typevars)
       : L(std::make_shared<Source>(
-            std::string_view(str),
-            std::nullopt,
+            c10::string_view(str),
+            c10::nullopt,
             0,
             nullptr,
             Source::DONT_COPY)),
@@ -49,9 +49,8 @@ struct SchemaParser {
     size_t idx = 0;
     parseList('(', ',', ')', [&] {
       if (is_vararg)
-        throw(
-            ErrorReport(L.cur())
-            << "... must be the last element of the argument list");
+        throw ErrorReport(L.cur())
+            << "... must be the last element of the argument list";
       if (L.nextIf('*')) {
         kwarg_only = true;
       } else if (L.nextIf(TK_DOTS)) {
@@ -66,9 +65,8 @@ struct SchemaParser {
     if (is_vararg) {
       for (const auto& arg : arguments) {
         if (arg.default_value().has_value()) {
-          throw(
-              ErrorReport(L.cur())
-              << "schemas with vararg (...) can't have default value args");
+          throw ErrorReport(L.cur())
+              << "schemas with vararg (...) can't have default value args";
         }
       }
     }
@@ -80,9 +78,8 @@ struct SchemaParser {
     } else if (L.cur().kind == '(') {
       parseList('(', ',', ')', [&] {
         if (is_varret) {
-          throw(
-              ErrorReport(L.cur())
-              << "... must be the last element of the return list");
+          throw ErrorReport(L.cur())
+              << "... must be the last element of the return list";
         }
         if (L.nextIf(TK_DOTS)) {
           is_varret = true;
@@ -109,7 +106,7 @@ struct SchemaParser {
     std::string name = L.expect(TK_IDENT).text();
     if (L.nextIf(':')) {
       L.expect(':');
-      name = fmt::format("{}::{}", name, L.expect(TK_IDENT).text_view());
+      name = name + "::" + L.expect(TK_IDENT).text();
     }
     std::string overload_name = "";
     if (L.nextIf('.')) {
@@ -126,7 +123,7 @@ struct SchemaParser {
         is_a_valid_overload_name,
         overload_name,
         " is not a legal overload name for aten operators");
-    return {std::move(name), std::move(overload_name)};
+    return {name, overload_name};
   }
 
   std::vector<std::variant<OperatorName, FunctionSchema>> parseDeclarations() {
@@ -158,9 +155,9 @@ struct SchemaParser {
     std::string name;
     if (L.nextIf('[')) {
       // note: an array with a size hint can only occur at the Argument level
-      fake_type = c10::TypeFactory::create<ListType>(std::move(fake_type));
-      real_type = c10::TypeFactory::create<ListType>(std::move(real_type));
-      N = std::stoll(L.expect(TK_NUMBER).text());
+      fake_type = ListType::create(std::move(fake_type));
+      real_type = ListType::create(std::move(real_type));
+      N = c10::stoll(L.expect(TK_NUMBER).text());
       L.expect(']');
       auto container = type_parser.parseAliasAnnotation();
       if (alias_info) {
@@ -189,8 +186,7 @@ struct SchemaParser {
       name = L.expect(TK_IDENT).text();
       if (L.nextIf('=')) {
         // NB: this means we have to unswizzle default too
-        default_value =
-            parseDefaultValue(*fake_type, fake_type->kind(), *real_type, N);
+        default_value = parseDefaultValue(*fake_type, fake_type->kind(), N);
       }
     }
     return Argument(
@@ -202,29 +198,11 @@ struct SchemaParser {
         !is_return && kwarg_only,
         std::move(alias_info));
   }
-
-  bool isPossiblyOptionalScalarType(const c10::Type& type) {
-    if (type.kind() == at::ScalarTypeType::Kind) {
-      return true;
-    }
-    if (type.kind() == at::OptionalType::Kind) {
-      for (const auto& inner : type.containedTypes()) {
-        if (isPossiblyOptionalScalarType(*inner))
-          return true;
-      }
-    }
-    return false;
-  }
-
-  IValue parseSingleConstant(
-      const c10::Type& type,
-      TypeKind kind,
-      const c10::Type& real_type) {
+  IValue parseSingleConstant(const c10::Type& type, TypeKind kind) {
     if (kind == c10::TypeKind::DynamicType) {
       return parseSingleConstant(
-          type, type.expectRef<c10::DynamicType>().dynamicKind(), real_type);
+          type, type.expectRef<c10::DynamicType>().dynamicKind());
     }
-    const auto& str2dtype = c10::getStringToDtypeMap();
     switch (L.cur().kind) {
       case TK_TRUE:
         L.next();
@@ -241,31 +219,21 @@ struct SchemaParser {
       }
       case TK_IDENT: {
         auto tok = L.next();
-        auto text_view = tok.text_view();
-        // NB: float/complex/long are here for BC purposes. Other dtypes
-        // are handled via str2dtype.
-        // Please don't add more cases to this if-else block.
-        if ("float" == text_view) {
+        auto text = tok.text();
+        if ("float" == text) {
           return static_cast<int64_t>(at::kFloat);
-        } else if ("complex" == text_view) {
+        } else if ("complex" == text) {
           return static_cast<int64_t>(at::kComplexFloat);
-        } else if ("long" == text_view) {
+        } else if ("long" == text) {
           return static_cast<int64_t>(at::kLong);
-        } else if ("strided" == text_view) {
+        } else if ("strided" == text) {
           return static_cast<int64_t>(at::kStrided);
-        } else if ("Mean" == text_view) {
+        } else if ("Mean" == text) {
           return static_cast<int64_t>(at::Reduction::Mean);
-        } else if ("contiguous_format" == text_view) {
+        } else if ("contiguous_format" == text) {
           return static_cast<int64_t>(c10::MemoryFormat::Contiguous);
         } else {
-          auto text = tok.text();
-          if (isPossiblyOptionalScalarType(real_type) &&
-              str2dtype.count(text) > 0) {
-            return static_cast<int64_t>(str2dtype.at(text));
-          } else {
-            throw(
-                ErrorReport(L.cur().range) << "invalid numeric default value");
-          }
+          throw ErrorReport(L.cur().range) << "invalid numeric default value";
         }
       }
       default:
@@ -276,14 +244,14 @@ struct SchemaParser {
           n = L.expect(TK_NUMBER).text();
 
         if (kind == TypeKind::ComplexType || n.find('j') != std::string::npos) {
-          auto imag = std::stod(n.substr(0, n.size() - 1));
+          auto imag = c10::stod(n.substr(0, n.size() - 1));
           return c10::complex<double>(0, imag);
         } else if (
             kind == TypeKind::FloatType || n.find('.') != std::string::npos ||
             n.find('e') != std::string::npos) {
-          return std::stod(n);
+          return c10::stod(n);
         } else {
-          int64_t v = std::stoll(n);
+          int64_t v = c10::stoll(n);
           return v;
         }
     }
@@ -306,20 +274,16 @@ struct SchemaParser {
         return convertToList(
             type, type.expectRef<c10::DynamicType>().dynamicKind(), range, vs);
       default:
-        throw(
-            ErrorReport(range)
-            << "lists are only supported for float, int and complex types");
+        throw ErrorReport(range)
+            << "lists are only supported for float, int and complex types";
     }
   }
-  IValue parseConstantList(
-      const c10::Type& type,
-      TypeKind kind,
-      const c10::Type& real_type) {
+  IValue parseConstantList(const c10::Type& type, TypeKind kind) {
     auto tok = L.expect('[');
     std::vector<IValue> vs;
     if (L.cur().kind != ']') {
       do {
-        vs.push_back(parseSingleConstant(type, kind, real_type));
+        vs.push_back(parseSingleConstant(type, kind));
       } while (L.nextIf(','));
     }
     L.expect(']');
@@ -333,7 +297,6 @@ struct SchemaParser {
   IValue parseDefaultValue(
       const c10::Type& arg_type,
       TypeKind kind,
-      const c10::Type& real_type,
       std::optional<int32_t> arg_N) {
     auto range = L.cur().range;
     switch (kind) {
@@ -349,7 +312,7 @@ struct SchemaParser {
       case TypeKind::BoolType:
       case TypeKind::FloatType:
       case TypeKind::ComplexType:
-        return parseSingleConstant(arg_type, kind, real_type);
+        return parseSingleConstant(arg_type, kind);
         break;
       case TypeKind::DeviceObjType: {
         auto device_text =
@@ -359,27 +322,23 @@ struct SchemaParser {
       }
       case TypeKind::ListType: {
         auto elem_type = arg_type.containedType(0);
-        auto real_elem_type = real_type.containedType(0);
         if (L.cur().kind == TK_IDENT) {
           return parseTensorDefault(range);
         } else if (arg_N && L.cur().kind != '[') {
-          IValue v = parseSingleConstant(
-              *elem_type, elem_type->kind(), *real_elem_type);
+          IValue v = parseSingleConstant(*elem_type, elem_type->kind());
           std::vector<IValue> repeated(*arg_N, v);
           return convertToList(*elem_type, elem_type->kind(), range, repeated);
         } else {
-          return parseConstantList(
-              *elem_type, elem_type->kind(), *real_elem_type);
+          return parseConstantList(*elem_type, elem_type->kind());
         }
       } break;
       case TypeKind::DynamicType:
         return parseDefaultValue(
             arg_type,
             arg_type.expectRef<c10::DynamicType>().dynamicKind(),
-            real_type,
             arg_N);
       default:
-        throw(ErrorReport(range) << "unexpected type, file a bug report");
+        throw ErrorReport(range) << "unexpected type, file a bug report";
     }
     return IValue(); // silence warnings
   }
@@ -402,6 +361,7 @@ struct SchemaParser {
   }
   Lexer L;
   SchemaTypeParser type_parser;
+  bool allow_typevars_;
 };
 } // namespace
 

@@ -4,7 +4,9 @@
 #include <torch/csrc/jit/passes/constant_propagation.h>
 #include <torch/csrc/jit/passes/subgraph_rewrite.h>
 
-namespace torch::jit::graph_rewrite_helper {
+namespace torch {
+namespace jit {
+namespace graph_rewrite_helper {
 
 std::string getFuncName(Value* func_value) {
   auto func = func_value->type()->expectRef<FunctionType>().function();
@@ -285,7 +287,7 @@ bool isClampFusable(
         vmap.find("output_max") != vmap.end(),
         "Expected to find output_max as well given "
         "output_min exist in pattern graph.");
-    // If output_min/max are not constant, we get std::nullopt.
+    // If output_min/max are not constant, we get c10::nullopt.
     auto output_min =
         graph_rewrite_helper::getIValue("output_min", match_vmap, vmap);
     auto output_max =
@@ -297,4 +299,6 @@ bool isClampFusable(
   return is_fusable;
 }
 
-} // namespace torch::jit::graph_rewrite_helper
+} // namespace graph_rewrite_helper
+} // namespace jit
+} // namespace torch

@@ -2,10 +2,12 @@
 #include <torch/csrc/distributed/rpc/rpc_agent.h>
 #include <torch/csrc/jit/serialization/pickle.h>
 
-namespace torch::distributed::autograd {
+namespace torch {
+namespace distributed {
+namespace autograd {
 
 CleanupAutogradContextReq::CleanupAutogradContextReq(int64_t context_id)
-    : context_id_(context_id) {}
+    : context_id_(context_id){};
 
 int64_t CleanupAutogradContextReq::getContextId() {
   return context_id_;
@@ -38,4 +40,6 @@ std::unique_ptr<CleanupAutogradContextReq> CleanupAutogradContextReq::
   return std::make_unique<CleanupAutogradContextReq>(context_id);
 }
 
-} // namespace torch::distributed::autograd
+} // namespace autograd
+} // namespace distributed
+} // namespace torch

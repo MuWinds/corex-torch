@@ -12,7 +12,8 @@
 
 #include <onnx/onnx_pb.h>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 namespace onnx {
 using namespace ::c10::onnx;
 
@@ -240,7 +241,7 @@ Node* transformToONNXConcatNode(
   return concat_node;
 }
 
-static void ONNXLintGraph(
+void ONNXLintGraph(
     const Block* b,
     std::vector<NodeKind>& n_miss_source_range,
     std::vector<NodeKind>& n_miss_scope) {
@@ -295,4 +296,5 @@ void ONNXLintGraph(const std::shared_ptr<Graph>& graph) {
       " constants.");
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

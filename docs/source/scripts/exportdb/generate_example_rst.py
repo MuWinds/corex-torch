@@ -5,15 +5,16 @@ from pathlib import Path
 
 import torch
 import torch._dynamo as torchdynamo
-from torch._export.db.case import ExportCase
+
+from torch._export.db.case import ExportCase, normalize_inputs
 from torch._export.db.examples import all_examples
 from torch.export import export
 
 
 PWD = Path(__file__).absolute().parent
-ROOT = Path(__file__).absolute().parents[3]
-SOURCE = ROOT / "source"
-EXPORTDB_SOURCE = SOURCE / "generated" / "exportdb"
+ROOT = Path(__file__).absolute().parent.parent.parent.parent
+SOURCE = ROOT / Path("source")
+EXPORTDB_SOURCE = SOURCE / Path("generated") / Path("exportdb")
 
 
 def generate_example_rst(example_case: ExportCase):
@@ -32,6 +33,8 @@ def generate_example_rst(example_case: ExportCase):
     )
     with open(source_file) as file:
         source_code = file.read()
+    source_code = re.sub(r"from torch\._export\.db\.case import .*\n", "", source_code)
+    source_code = re.sub(r"@export_case\((.|\n)*?\)\n", "", source_code)
     source_code = source_code.replace("\n", "\n    ")
     splitted_source_code = re.split(r"@export_rewrite_case.*\n", source_code)
 
@@ -40,16 +43,10 @@ def generate_example_rst(example_case: ExportCase):
         2,
     }, f"more than one @export_rewrite_case decorator in {source_code}"
 
-    more_arguments = ""
-    if example_case.example_kwargs:
-        more_arguments += ", example_kwargs"
-    if example_case.dynamic_shapes:
-        more_arguments += ", dynamic_shapes=dynamic_shapes"
-
     # Generate contents of the .rst file
     title = f"{example_case.name}"
     doc_contents = f"""{title}
-{"^" * (len(title))}
+{'^' * (len(title))}
 
 .. note::
 
@@ -63,8 +60,6 @@ Original source code:
 
     {splitted_source_code[0]}
 
-    torch.export.export(model, example_args{more_arguments})
-
 Result:
 
 .. code-block::
@@ -73,12 +68,12 @@ Result:
 
     # Get resulting graph from dynamo trace
     try:
+        inputs = normalize_inputs(example_case.example_inputs)
         exported_program = export(
             model,
-            example_case.example_args,
-            example_case.example_kwargs,
+            inputs.args,
+            inputs.kwargs,
             dynamic_shapes=example_case.dynamic_shapes,
-            strict=True,
         )
         graph_output = str(exported_program)
         graph_output = re.sub(r"        # File(.|\n)*?\n", "", graph_output)
@@ -117,7 +112,7 @@ def generate_index_rst(example_cases, tag_to_modules, support_level_to_modules):
         module_contents = "\n\n".join(v)
         support_contents += f"""
 {support_level}
-{"-" * (len(support_level))}
+{'-' * (len(support_level))}
 
 {module_contents}
 """

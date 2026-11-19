@@ -17,7 +17,6 @@ from torch.testing._internal.common_utils import (
     TestCase,
 )
 
-
 # load_tests from common_utils is used to automatically filter tests for
 # sharding on sandcastle. This line silences flake warnings
 load_tests = load_tests
@@ -141,7 +140,7 @@ class TestSWAUtils(TestCase):
         averaged_dnn = AveragedModel(dnn)
         averaged_dnn2 = AveragedModel(dnn)
         n_updates = 10
-        for _ in range(n_updates):
+        for i in range(n_updates):
             for p in dnn.parameters():
                 p.detach().add_(torch.randn_like(p))
             averaged_dnn.update_parameters(dnn)

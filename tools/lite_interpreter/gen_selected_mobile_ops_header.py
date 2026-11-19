@@ -1,15 +1,12 @@
 #!/usr/bin/env python3
-
-from __future__ import annotations
-
 import argparse
 import os
+from typing import Set
 
 import yaml
 
 from torchgen.code_template import CodeTemplate
 from torchgen.selective_build.selector import SelectiveBuilder
-
 
 # Safely load fast C Yaml loader/dumper if they are available
 try:
@@ -33,9 +30,9 @@ inline constexpr bool should_include_kernel_dtype(
   const char *kernel_tag_str,
   at::ScalarType scalar_type
 ) {
-  [[maybe_unused]] auto kernel_tag_sv =
-      std::string_view(kernel_tag_str);
-  $body return false;
+  c10::string_view kernel_tag_sv C10_UNUSED = c10::string_view(kernel_tag_str);
+  $body
+  return false;
 }
 }
 """
@@ -49,7 +46,7 @@ selected_mobile_ops_preamble = """#pragma once
 """
 
 
-def extract_root_operators(selective_builder: SelectiveBuilder) -> set[str]:
+def extract_root_operators(selective_builder: SelectiveBuilder) -> Set[str]:
     ops = []
     for op_name, op in selective_builder.operators.items():
         if op.is_root_operator:
@@ -128,7 +125,7 @@ def write_selected_mobile_ops(
 # 2. All kernel dtypes
 def write_selected_mobile_ops_with_all_dtypes(
     output_file_path: str,
-    root_ops: set[str],
+    root_ops: Set[str],
 ) -> None:
     with open(output_file_path, "wb") as out_file:
         body_parts = [selected_mobile_ops_preamble]
@@ -161,7 +158,8 @@ def main() -> None:
         "--output_file_path",
         type=str,
         required=True,
-        help="Path to destinationfolder where selected_mobile_ops.h will be written.",
+        help="Path to destination"
+        "folder where selected_mobile_ops.h will be written.",
     )
     parsed_args = parser.parse_args()
     model_file_name = parsed_args.yaml_file_path

@@ -6,7 +6,6 @@
 
 #include <ATen/FunctionalTensorWrapper.h>
 #include <ATen/WrapDimUtils.h>
-#include <torch/csrc/functorch/init.h>
 #include <torch/csrc/utils/python_raii.h>
 #include <torch/python.h>
 
@@ -36,20 +35,17 @@ static bool has_level(const Tensor& self, int64_t level) {
   return batched->level() >= level;
 }
 
-static Tensor _add_batch_dim(
-    const Tensor& self,
-    int64_t batch_dim,
-    int64_t level) {
+Tensor _add_batch_dim(const Tensor& self, int64_t batch_dim, int64_t level) {
   return addBatchDim(self, batch_dim, level);
 }
 
-static Tensor _wrap_functional_tensor(const Tensor& self, int64_t level) {
+Tensor _wrap_functional_tensor(const Tensor& self, int64_t level) {
   auto t = at::functionalization::impl::to_functional_tensor(self);
   at::functionalization::impl::unsafeGetFunctionalWrapper(t)->set_level(level);
   return t;
 }
 
-static void _assert_wrapped_functional(
+void _assert_wrapped_functional(
     const Tensor& unwrapped,
     const Tensor& wrapped) {
   TORCH_INTERNAL_ASSERT(
@@ -63,7 +59,7 @@ static void _assert_wrapped_functional(
       unwrapped.unsafeGetTensorImpl() == wrapped_inner.unsafeGetTensorImpl())
 }
 
-static void _propagate_functional_input_mutation(
+void _propagate_functional_input_mutation(
     const Tensor& unwrapped,
     const Tensor& wrapped) {
   TORCH_INTERNAL_ASSERT(
@@ -79,7 +75,8 @@ static void _propagate_functional_input_mutation(
   // It would probably be more reasonable to check that the two tensors are
   // aliased, but we can't do that unless we give BatchedTensorImpl a notion of
   // storage.
-  if (unwrapped.unsafeGetTensorImpl() != wrapped_inner.unsafeGetTensorImpl()) {
+  if (unwrapped.unsafeGetTensorImpl() == wrapped_inner.unsafeGetTensorImpl()) {
+  } else {
     if (unwrapped.sym_nbytes() != wrapped_inner.sym_nbytes()) {
       // Functions might resize zero-sized inputs, which we need to reflect
       // ehre.
@@ -143,20 +140,20 @@ static Tensor _movedim(const Tensor& self, int64_t src, int64_t dst) {
 //
 // `out_dim` controls where we should put the batch dimension in the output
 // tensor.
-static Tensor _remove_batch_dim(
+Tensor _remove_batch_dim(
     const Tensor& self,
     int64_t level,
-    const c10::SymInt& batch_size,
+    int64_t batch_size,
     int64_t out_dim) {
   TORCH_CHECK(
       out_dim == 0 || !self.key_set().has(DispatchKey::BatchedNestedTensor),
       "Nested tensors can only be vmapped over dim=0, but got dim=",
       out_dim);
   if (!has_level(self, level)) {
-    auto self_sizes = self.sym_sizes();
-    VmapSymDimVector expanded_sizes(self_sizes.begin(), self_sizes.end());
+    auto self_sizes = self.sizes();
+    VmapDimVector expanded_sizes(self_sizes.begin(), self_sizes.end());
     expanded_sizes.insert(expanded_sizes.begin() + out_dim, batch_size);
-    auto result = self.expand_symint(expanded_sizes);
+    auto result = self.expand(expanded_sizes);
     return result;
   }
 
@@ -170,9 +167,7 @@ static Tensor _remove_batch_dim(
   return result;
 }
 
-static Tensor _unwrap_functional_tensor(
-    const Tensor& self,
-    bool add_back_views) {
+Tensor _unwrap_functional_tensor(const Tensor& self, bool add_back_views) {
   // We only ever call that after popping out of a functionalize() call, in
   // which case the current tensors should always be wrapped in a
   // FunctionalTensorWrapper.
@@ -193,7 +188,7 @@ static Tensor _unwrap_functional_tensor(
   return functional->value();
 }
 
-static Tensor _wrap_for_grad(const Tensor& self, int64_t level) {
+Tensor _wrap_for_grad(const Tensor& self, int64_t level) {
   // NB: different behavior inside??
   // return self;
   // TORCH_INTERNAL_ASSERT(!maybeGetTensorWrapper(self));
@@ -201,7 +196,7 @@ static Tensor _wrap_for_grad(const Tensor& self, int64_t level) {
   return makeTensorWrapper(self, level);
 }
 
-static Tensor _unwrap_for_grad(const Tensor& self, int64_t level) {
+Tensor _unwrap_for_grad(const Tensor& self, int64_t level) {
   auto* result = maybeGetTensorWrapper(self);
   if (!result) {
     return self;
@@ -213,7 +208,7 @@ static Tensor _unwrap_for_grad(const Tensor& self, int64_t level) {
   return self;
 }
 
-static int64_t dlevel(const Tensor& tensor) {
+int64_t dlevel(const Tensor& tensor) {
   auto* wrapped = maybeGetTensorWrapper(tensor);
   if (!wrapped) {
     return 0;
@@ -225,12 +220,12 @@ static int64_t dlevel(const Tensor& tensor) {
   return wrapped->level().value();
 }
 
-static bool dump_tensor(const Tensor& self) {
+bool dump_tensor(const Tensor& self) {
   dumpTensorCout(self);
   return true;
 }
 
-static RandomnessType get_randomness_enum(const std::string& randomness) {
+RandomnessType get_randomness_enum(const std::string& randomness) {
   if (randomness == "error") {
     return RandomnessType::Error;
   } else if (randomness == "same") {
@@ -243,38 +238,38 @@ static RandomnessType get_randomness_enum(const std::string& randomness) {
   }
 }
 
-static int64_t _grad_increment_nesting() {
+int64_t _grad_increment_nesting() {
   // See NOTE [grad and vjp interaction with no_grad]
   bool prev_grad_mode = c10::GradMode::is_enabled();
   return initAndPushDynamicLayer(
-      TransformType::Grad, std::nullopt, std::nullopt, prev_grad_mode);
+      TransformType::Grad, c10::nullopt, c10::nullopt, prev_grad_mode);
 }
 
-static int64_t _grad_decrement_nesting() {
+int64_t _grad_decrement_nesting() {
   auto layer = popDynamicLayerAndDeleteMetadata();
   TORCH_INTERNAL_ASSERT(layer.key() == TransformType::Grad);
   return layer.layerId();
 }
 
-static int64_t _jvp_increment_nesting() {
+int64_t _jvp_increment_nesting() {
   // See NOTE [grad and vjp interaction with no_grad]
   bool prev_fwd_grad_mode =
       c10::AutogradState::get_tls_state().get_fw_grad_mode();
   return initAndPushDynamicLayer(
       TransformType::Jvp,
-      std::nullopt,
-      std::nullopt,
-      std::nullopt,
+      c10::nullopt,
+      c10::nullopt,
+      c10::nullopt,
       prev_fwd_grad_mode);
 }
 
-static int64_t _jvp_decrement_nesting() {
+int64_t _jvp_decrement_nesting() {
   auto layer = popDynamicLayerAndDeleteMetadata();
   TORCH_INTERNAL_ASSERT(layer.key() == TransformType::Jvp);
   return layer.layerId();
 }
 
-static int64_t _vmap_increment_nesting(
+int64_t _vmap_increment_nesting(
     c10::SymInt batch_size,
     const std::string& randomness) {
   return initAndPushDynamicLayer(
@@ -283,23 +278,23 @@ static int64_t _vmap_increment_nesting(
       get_randomness_enum(randomness));
 }
 
-static int64_t _vmap_decrement_nesting() {
+int64_t _vmap_decrement_nesting() {
   auto layer = popDynamicLayerAndDeleteMetadata();
   TORCH_INTERNAL_ASSERT(layer.key() == TransformType::Vmap);
   return layer.layerId();
 }
 
-static int64_t _func_increment_nesting(bool reapply_views) {
+int64_t _func_increment_nesting(bool reapply_views) {
   return initAndPushDynamicLayer(
       TransformType::Functionalize,
-      std::nullopt,
-      std::nullopt,
-      std::nullopt,
-      std::nullopt,
+      c10::nullopt,
+      c10::nullopt,
+      c10::nullopt,
+      c10::nullopt,
       /*functionalize_add_back_views=*/reapply_views);
 }
 
-static int64_t _func_decrement_nesting() {
+int64_t _func_decrement_nesting() {
   auto layer = popDynamicLayerAndDeleteMetadata();
   TORCH_INTERNAL_ASSERT(layer.key() == TransformType::Functionalize);
   return layer.layerId();
@@ -384,7 +379,7 @@ static std::optional<int64_t> maybe_current_level() {
     int64_t current_level = maybe_layer->layerId();
     return current_level;
   }
-  return std::nullopt;
+  return nullopt;
 }
 
 static void tls_set_vmap_excluded(bool excluded) {
@@ -397,13 +392,13 @@ static void _set_dynamic_layer_keys_included(bool value) {
 }
 
 static void dump_dls() {
-  std::cout << getDynamicLayerStack() << '\n';
+  std::cout << getDynamicLayerStack() << std::endl;
 }
 
 static void dump_local_tls() {
   auto tls = c10::impl::tls_local_dispatch_key_set();
-  std::cout << "[Local Include] " << tls.included_ << '\n';
-  std::cout << "[Local Exclude] " << tls.excluded_ << '\n';
+  std::cout << "[Local Include] " << tls.included_ << std::endl;
+  std::cout << "[Local Exclude] " << tls.excluded_ << std::endl;
 }
 
 namespace {
@@ -439,12 +434,12 @@ static std::tuple<Tensor, std::optional<int64_t>> unwrapBatched(
     int64_t level) {
   auto* batched = maybeGetBatchedImpl(tensor);
   if (!batched) {
-    return std::make_tuple(tensor, std::nullopt);
+    return std::make_tuple(tensor, nullopt);
   }
   if (batched->level() == level) {
     return std::make_tuple(batched->value(), batched->bdim());
   }
-  return std::make_tuple(tensor, std::nullopt);
+  return std::make_tuple(tensor, nullopt);
 }
 
 void initFuncTorchBindings(PyObject* module) {
@@ -533,7 +528,7 @@ void initFuncTorchBindings(PyObject* module) {
       "get_interpreter_stack", []() -> std::optional<std::vector<Interpreter>> {
         const auto& stack = getDynamicLayerStack();
         if (stack.empty()) {
-          return std::nullopt;
+          return c10::nullopt;
         }
         std::vector<Interpreter> result;
         result.reserve(stack.size());
@@ -545,7 +540,7 @@ void initFuncTorchBindings(PyObject* module) {
   m.def("peek_interpreter_stack", []() -> std::optional<Interpreter> {
     const auto& stack = getDynamicLayerStack();
     if (stack.empty()) {
-      return std::nullopt;
+      return c10::nullopt;
     }
     auto result = stack.back().interpreter();
     return result;
@@ -575,9 +570,7 @@ void initFuncTorchBindings(PyObject* module) {
       .value("Different", RandomnessType::Different);
   py::class_<Interpreter>(m, "CInterpreter")
       .def("key", &Interpreter::key)
-      .def("level", &Interpreter::level)
-      .def("serialize", &Interpreter::serialize)
-      .def_static("deserialize", &Interpreter::deserialize);
+      .def("level", &Interpreter::level);
   py::class_<GradInterpreterPtr>(m, "CGradInterpreterPtr")
       .def(py::init<const Interpreter*>())
       .def("key", &GradInterpreterPtr::key)

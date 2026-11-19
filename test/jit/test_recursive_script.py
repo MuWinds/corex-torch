@@ -1,5 +1,4 @@
 # Owner(s): ["oncall: jit"]
-# ruff: noqa: F841
 
 import os
 import re
@@ -16,21 +15,26 @@ import torch.nn as nn
 from torch import Tensor
 from torch.testing import FileCheck
 
-
 # Make the helper files in test/ importable
 pytorch_test_dir = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.append(pytorch_test_dir)
-from torch.testing._internal.common_utils import raise_on_run_directly
 from torch.testing._internal.jit_utils import (
     _tmp_donotuse_dont_inline_everything,
     JitTestCase,
 )
 
+if __name__ == "__main__":
+    raise RuntimeError(
+        "This test file is not meant to be run directly, use:\n\n"
+        "\tpython test/test_jit.py TESTNAME\n\n"
+        "instead."
+    )
+
 
 class TestRecursiveScript(JitTestCase):
     def test_inferred_nonetype(self):
         class M(nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.x = None
 
@@ -96,7 +100,7 @@ class TestRecursiveScript(JitTestCase):
 
     def test_init_error(self):
         class M(nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 self.x = 2
 
             def forward(self):
@@ -133,7 +137,7 @@ class TestRecursiveScript(JitTestCase):
 
     def test_module_name(self):
         class MyModule(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.x = 2
 
@@ -171,7 +175,7 @@ class TestRecursiveScript(JitTestCase):
         class M1(torch.nn.Module):
             x: torch.jit.Final[int]
 
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.x = 2
 
@@ -183,7 +187,7 @@ class TestRecursiveScript(JitTestCase):
         class M2(torch.nn.Module):
             x: typing_extensions.Final[int]
 
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.x = 2
 
@@ -195,7 +199,7 @@ class TestRecursiveScript(JitTestCase):
         class M3(torch.nn.Module):
             x: typing.Final[int]
 
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.x = 2
 
@@ -238,7 +242,7 @@ class TestRecursiveScript(JitTestCase):
                 return x
 
         class MyModule(nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.conv = nn.Conv2d(10, 10, 3)
                 self.lin = nn.Linear(10, 10)
@@ -284,7 +288,7 @@ class TestRecursiveScript(JitTestCase):
                 self.assertTrue(attr in dir_scripted, attr)
 
         class MyModule(nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.conv = nn.Conv2d(10, 10, 3)
                 self.lin = nn.Linear(10, 10)
@@ -359,7 +363,7 @@ class TestRecursiveScript(JitTestCase):
                 return b(x)
 
         class M(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.submodule = Submodule()
 
@@ -444,7 +448,7 @@ class TestRecursiveScript(JitTestCase):
                 return t + self.x + self.param
 
         class M(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.other = Other(200)
 
@@ -470,7 +474,7 @@ class TestRecursiveScript(JitTestCase):
                 return t + self.x + self.param
 
         class M(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.other = Other(200)
 
@@ -485,7 +489,7 @@ class TestRecursiveScript(JitTestCase):
                 return x + 10
 
         class M(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.sequential = nn.Sequential(
                     Inner(), Inner(), nn.Sequential(Inner(), Inner())
@@ -518,7 +522,7 @@ class TestRecursiveScript(JitTestCase):
                 return nn.ReLU()
 
         class M(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 shared = SeluButReluWhenScripted()
                 self.sequential = nn.Sequential(
@@ -594,18 +598,18 @@ class TestRecursiveScript(JitTestCase):
     def test_attributes(self):
         @torch.jit.script
         class Inner2:
-            def __init__(self) -> None:
+            def __init__(self):
                 self.b = "a string"
 
         @torch.jit.script
         class Foo:
-            def __init__(self) -> None:
+            def __init__(self):
                 self.a = 4
                 self.inner = Inner2()
 
         @torch.jit.script
         class SFoo:
-            def __init__(self) -> None:
+            def __init__(self):
                 self.a = 4
                 self.inner = Inner2()
 
@@ -703,7 +707,7 @@ class TestRecursiveScript(JitTestCase):
                 return output
 
         class M(nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 encoder_norm = nn.ReLU()
                 self.encoder = N(encoder_norm)
@@ -748,7 +752,7 @@ class TestRecursiveScript(JitTestCase):
         dummy = self.getExportImportCopy(dummy)
 
         class ContainsLoaded(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.encoder = dummy
 
@@ -759,7 +763,7 @@ class TestRecursiveScript(JitTestCase):
 
     def test_optional_module(self):
         class Dummy(nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.foo = nn.Linear(2, 2)
 
@@ -792,7 +796,3 @@ class TestRecursiveScript(JitTestCase):
         # ScriptModule should correctly reflect the override.
         s = torch.jit.script(m)
         self.assertEqual(s.i_am_ignored(), "new")
-
-
-if __name__ == "__main__":
-    raise_on_run_directly("test/test_jit.py")

@@ -278,60 +278,48 @@ void spmmd<c10::complex<double>>(MKL_SPARSE_SPMMD_ARGTYPES(c10::complex<double>)
 }
 
 template <>
-sparse_status_t trsv<float>(MKL_SPARSE_TRSV_ARGTYPES(float)) {
-  sparse_status_t status = mkl_sparse_s_trsv(operation, alpha, A, descr, x, y);
-  TORCH_MKLSPARSE_CHECK_SUCCESS_OR_INVALID(status, "mkl_sparse_s_trsv");
-  return status;
+void trsv<float>(MKL_SPARSE_TRSV_ARGTYPES(float)) {
+  TORCH_MKLSPARSE_CHECK(mkl_sparse_s_trsv(operation, alpha, A, descr, x, y));
 }
 template <>
-sparse_status_t trsv<double>(MKL_SPARSE_TRSV_ARGTYPES(double)) {
-  sparse_status_t status = mkl_sparse_d_trsv(operation, alpha, A, descr, x, y);
-  TORCH_MKLSPARSE_CHECK_SUCCESS_OR_INVALID(status, "mkl_sparse_d_trsv");
-  return status;
+void trsv<double>(MKL_SPARSE_TRSV_ARGTYPES(double)) {
+  TORCH_MKLSPARSE_CHECK(mkl_sparse_d_trsv(operation, alpha, A, descr, x, y));
 }
 template <>
-sparse_status_t trsv<c10::complex<float>>(MKL_SPARSE_TRSV_ARGTYPES(c10::complex<float>)) {
-  sparse_status_t status = mkl_sparse_c_trsv(
+void trsv<c10::complex<float>>(MKL_SPARSE_TRSV_ARGTYPES(c10::complex<float>)) {
+  TORCH_MKLSPARSE_CHECK(mkl_sparse_c_trsv(
       operation,
       to_mkl_complex<float, MKL_Complex8>(alpha),
       A,
       descr,
       reinterpret_cast<const MKL_Complex8*>(x),
-      reinterpret_cast<MKL_Complex8*>(y));
-  TORCH_MKLSPARSE_CHECK_SUCCESS_OR_INVALID(status, "mkl_sparse_c_trsv");
-  return status;
+      reinterpret_cast<MKL_Complex8*>(y)));
 }
 template <>
-sparse_status_t trsv<c10::complex<double>>(
+void trsv<c10::complex<double>>(
     MKL_SPARSE_TRSV_ARGTYPES(c10::complex<double>)) {
-  sparse_status_t status = mkl_sparse_z_trsv(
+  TORCH_MKLSPARSE_CHECK(mkl_sparse_z_trsv(
       operation,
       to_mkl_complex<double, MKL_Complex16>(alpha),
       A,
       descr,
       reinterpret_cast<const MKL_Complex16*>(x),
-      reinterpret_cast<MKL_Complex16*>(y));
-  TORCH_MKLSPARSE_CHECK_SUCCESS_OR_INVALID(status, "mkl_sparse_z_trsv");
-  return status;
+      reinterpret_cast<MKL_Complex16*>(y)));
 }
 
 template <>
-sparse_status_t trsm<float>(MKL_SPARSE_TRSM_ARGTYPES(float)) {
-  sparse_status_t status = mkl_sparse_s_trsm(
-      operation, alpha, A, descr, layout, x, columns, ldx, y, ldy);
-  TORCH_MKLSPARSE_CHECK_SUCCESS_OR_INVALID(status, "mkl_sparse_s_trsm");
-  return status;
+void trsm<float>(MKL_SPARSE_TRSM_ARGTYPES(float)) {
+  TORCH_MKLSPARSE_CHECK(mkl_sparse_s_trsm(
+      operation, alpha, A, descr, layout, x, columns, ldx, y, ldy));
 }
 template <>
-sparse_status_t trsm<double>(MKL_SPARSE_TRSM_ARGTYPES(double)) {
-  sparse_status_t status = mkl_sparse_d_trsm(
-      operation, alpha, A, descr, layout, x, columns, ldx, y, ldy);
-  TORCH_MKLSPARSE_CHECK_SUCCESS_OR_INVALID(status, "mkl_sparse_d_trsm");
-  return status;
+void trsm<double>(MKL_SPARSE_TRSM_ARGTYPES(double)) {
+  TORCH_MKLSPARSE_CHECK(mkl_sparse_d_trsm(
+      operation, alpha, A, descr, layout, x, columns, ldx, y, ldy));
 }
 template <>
-sparse_status_t trsm<c10::complex<float>>(MKL_SPARSE_TRSM_ARGTYPES(c10::complex<float>)) {
-  sparse_status_t status = mkl_sparse_c_trsm(
+void trsm<c10::complex<float>>(MKL_SPARSE_TRSM_ARGTYPES(c10::complex<float>)) {
+  TORCH_MKLSPARSE_CHECK(mkl_sparse_c_trsm(
       operation,
       to_mkl_complex<float, MKL_Complex8>(alpha),
       A,
@@ -341,14 +329,12 @@ sparse_status_t trsm<c10::complex<float>>(MKL_SPARSE_TRSM_ARGTYPES(c10::complex<
       columns,
       ldx,
       reinterpret_cast<MKL_Complex8*>(y),
-      ldy);
-  TORCH_MKLSPARSE_CHECK_SUCCESS_OR_INVALID(status, "mkl_sparse_c_trsm");
-  return status;
+      ldy));
 }
 template <>
-sparse_status_t trsm<c10::complex<double>>(
+void trsm<c10::complex<double>>(
     MKL_SPARSE_TRSM_ARGTYPES(c10::complex<double>)) {
-  sparse_status_t status = mkl_sparse_z_trsm(
+  TORCH_MKLSPARSE_CHECK(mkl_sparse_z_trsm(
       operation,
       to_mkl_complex<double, MKL_Complex16>(alpha),
       A,
@@ -358,9 +344,7 @@ sparse_status_t trsm<c10::complex<double>>(
       columns,
       ldx,
       reinterpret_cast<MKL_Complex16*>(y),
-      ldy);
-  TORCH_MKLSPARSE_CHECK_SUCCESS_OR_INVALID(status, "mkl_sparse_z_trsm");
-  return status;
+      ldy));
 }
 
 } // namespace at::mkl::sparse

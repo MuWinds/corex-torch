@@ -1,8 +1,5 @@
 #include <c10/core/DeviceType.h>
 #include <c10/util/Exception.h>
-
-#include <algorithm>
-#include <array>
 #include <atomic>
 #include <mutex>
 
@@ -119,7 +116,7 @@ std::ostream& operator<<(std::ostream& stream, DeviceType type) {
 //     Whenever a user prints a privateuse1 device name, they need to read this
 //     variable. Although unlikely, we'll data race if someone else is trying to
 //     set this variable at the same time that another thread is print the
-//     device name. We could reuse the same mutex, but reading the atomic will
+//     device name. We could re-use the same mutex, but reading the atomic will
 //     be much faster.
 static std::atomic<bool> privateuse1_backend_name_set;
 static std::string privateuse1_backend_name;
@@ -134,9 +131,6 @@ std::string get_privateuse1_backend(bool lower_case) {
   // set, and will never be written to.
   auto backend_name =
       name_registered ? privateuse1_backend_name : "privateuseone";
-  auto op_case = lower_case ? ::tolower : ::toupper;
-  std::transform(
-      backend_name.begin(), backend_name.end(), backend_name.begin(), op_case);
   return backend_name;
 }
 
@@ -147,15 +141,6 @@ void register_privateuse1_backend(const std::string& backend_name) {
           privateuse1_backend_name == backend_name,
       "torch.register_privateuse1_backend() has already been set! Current backend: ",
       privateuse1_backend_name);
-
-  // corex fork: allow "cuda" as the PrivateUse1 alias, so customers keep using torch.cuda
-  // semantics on this card (see docs/00-FACTS.md 28).
-  static const std::array<std::string, 5> types = {
-      "cpu", "hip", "mps", "xpu", "mtia"};
-  TORCH_CHECK(
-      std::find(types.begin(), types.end(), backend_name) == types.end(),
-      "Cannot register privateuse1 backend with in-tree device name: ",
-      backend_name);
 
   privateuse1_backend_name = backend_name;
   // Invariant: once this flag is set, privateuse1_backend_name is NEVER written

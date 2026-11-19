@@ -1,6 +1,6 @@
 #include <ATen/NestedTensorImpl.h>
 #include <ATen/native/nested/NestedTensorUtils.h>
-#include <optional>
+#include <c10/util/Optional.h>
 
 #ifndef AT_PER_OPERATOR_HEADERS
 #include <ATen/NativeFunctions.h>
@@ -10,10 +10,10 @@
 #include <ATen/ops/_nested_tensor_strides_native.h>
 #include <ATen/ops/chunk_native.h>
 #include <ATen/ops/split_with_sizes_native.h>
-#include <ATen/ops/value_selecting_reduction_backward_native.h>
 #endif
 
-namespace at::native {
+namespace at {
+namespace native {
 
 /**
  * Thin wrapper around get_nested_sizes that is registered as a native function
@@ -61,7 +61,7 @@ std::vector<int64_t> NestedTensor_get_max_size(const NestedTensorImpl& nt) {
 int64_t get_consistent_last_dim_of_nested_tensor(const NestedTensorImpl& nt) {
   std::optional<int64_t> last_dim = nt.opt_size(-1);
   TORCH_CHECK(
-      last_dim.has_value(),
+      last_dim != c10::nullopt,
       "Expected all tensors in nested tensor to have the same trailing dimension, instead last dimension equals: ",
       nt.get_nested_sizes().select(1, -1));
   return *last_dim;
@@ -167,15 +167,5 @@ std::vector<Tensor> split_with_sizes_nested(
   return splits;
 }
 
-Tensor value_selecting_reduction_backward_nested_symint(
-    const Tensor& grad,
-    int64_t dim,
-    const Tensor& indices,
-    c10::SymIntArrayRef sizes,
-    bool keepdim) {
-  TORCH_INTERNAL_ASSERT(
-      false, "value_selecting_reduction_backward(): expected to be implemented in Python"
-  );
-}
-
-} // namespace at::native
+} // namespace native
+} // namespace at

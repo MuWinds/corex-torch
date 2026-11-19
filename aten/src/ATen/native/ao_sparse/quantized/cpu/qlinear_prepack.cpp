@@ -18,7 +18,8 @@
 
 #include <algorithm>
 
-namespace ao::sparse {
+namespace ao {
+namespace sparse {
 
 int register_linear_params();
 
@@ -146,6 +147,7 @@ c10::intrusive_ptr<LinearPackedParamsBase> PackedLinearWeightQnnp::
       weight, bias, out_features_block_size, in_features_block_size);
 }
 
+// NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
 PackedLinearWeightQnnp::PackedLinearWeightQnnp(
     const at::Tensor& weight,
     const std::optional<at::Tensor>& bias,
@@ -244,4 +246,4 @@ TORCH_LIBRARY_IMPL(sparse, QuantizedCPU, m) {
       TORCH_FN(QLinearPackWeightInt8::run));
 }
 }  // namespace
-}  // namespace ao::sparse
+}}  // namespace ao::sparse

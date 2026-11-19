@@ -8,14 +8,12 @@
 
 namespace at {
 
-#ifndef STRIP_ERROR_MESSAGES
 // Returns "Tensor['N', 'C', 'H', 'W']" for a tensor with names ('N', 'C', 'H', 'W').
 static std::string toDimnameRepr(const Tensor& tensor) {
   std::ostringstream os;
   os << "Tensor" << tensor.names();
   return os.str();
 }
-#endif
 
 int64_t dimname_to_position(const Tensor& tensor, Dimname dim) {
   TORCH_CHECK(dim.type() != NameType::WILDCARD,
@@ -40,7 +38,7 @@ std::vector<int64_t> dimnames_to_positions(const Tensor& tensor, DimnameList dim
   return result;
 }
 
-[[noreturn]] static void report_positional_error(
+static void report_positional_error(
     const Dimname& name,
     const Dimname& other_name,
     DimnameList names,
@@ -391,8 +389,10 @@ void propagate_names_for_expand(const Tensor& result, const Tensor& self) {
     return;
   }
   std::vector<Dimname> outnames(result_dim, Dimname::wildcard());
-  auto const names = self.names();
-  std::copy( names.begin(), names.end(), outnames.begin() + result_dim - self.dim());
+  std::copy(
+      self.opt_names()->begin(),
+      self.opt_names()->end(),
+      outnames.begin() + result_dim - self.dim());
   propagate_names(result, outnames);
 }
 

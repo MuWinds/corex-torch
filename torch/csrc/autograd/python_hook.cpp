@@ -26,7 +26,8 @@ static void check_single_result(
     PyObject* result,
     PyObject* hook);
 
-namespace torch::autograd {
+namespace torch {
+namespace autograd {
 
 namespace {
 
@@ -62,13 +63,10 @@ bool _call_hooks(PyObject* dict, PyObject* args) {
   // So, we use `PyDict_Values` which returns a new reference to the values
   // i.e. we hold the reference to the hooks till we have iterated over them.
   // Reference: https://github.com/pytorch/pytorch/issues/58354
-
   auto hooks = THPObjectPtr{PyDict_Values(dict)};
   bool is_modified = false;
   const auto len = PyList_Size(hooks);
   for (Py_ssize_t idx = 0; idx < len; ++idx) {
-    // Note that this call is NoGil safe as the list is created just above and
-    // not accessible by any other thread
     const auto hook = PyList_GetItem(hooks, idx);
 
     THPObjectPtr res(PyObject_CallObject(hook, args));
@@ -176,39 +174,33 @@ auto PyFunctionPostHook::operator()(
   return unwrap_variables(PyTuple_GetItem(tup.get(), 0));
 }
 
-void PyFunctionTensorPreHook::compiled_args(CompiledNodeArgs& args) const {
+void PyFunctionTensorPreHook::compiled_args(CompiledNodeArgs& args) {
   PyObject *key = nullptr, *value = nullptr;
   Py_ssize_t pos = 0;
-  Py_BEGIN_CRITICAL_SECTION(dict);
   while (PyDict_Next(dict, &pos, &key, &value)) {
     Py_INCREF(value);
     args.add_tensor_pre_hook(
         c10::SafePyObject(value, getPyInterpreter()),
         static_cast<int>(value_idx));
   }
-  Py_END_CRITICAL_SECTION();
 }
 
-void PyFunctionPreHook::compiled_args(CompiledNodeArgs& args) const {
+void PyFunctionPreHook::compiled_args(CompiledNodeArgs& args) {
   PyObject *key = nullptr, *value = nullptr;
   Py_ssize_t pos = 0;
-  Py_BEGIN_CRITICAL_SECTION(dict);
   while (PyDict_Next(dict, &pos, &key, &value)) {
     Py_INCREF(value);
     args.add_pre_hook(c10::SafePyObject(value, getPyInterpreter()));
   }
-  Py_END_CRITICAL_SECTION();
 }
 
-void PyFunctionPostHook::compiled_args(CompiledNodeArgs& args) const {
+void PyFunctionPostHook::compiled_args(CompiledNodeArgs& args) {
   PyObject *key = nullptr, *value = nullptr;
   Py_ssize_t pos = 0;
-  Py_BEGIN_CRITICAL_SECTION(dict);
   while (PyDict_Next(dict, &pos, &key, &value)) {
     Py_INCREF(value);
     args.add_post_hook(c10::SafePyObject(value, getPyInterpreter()));
   }
-  Py_END_CRITICAL_SECTION();
 }
 
 PyFunctionTensorPostAccGradHooks::PyFunctionTensorPostAccGradHooks(
@@ -237,16 +229,14 @@ auto PyFunctionTensorPostAccGradHooks::operator()(const Variable& tensor)
 }
 
 void PyFunctionTensorPostAccGradHooks::compiled_args(
-    torch::dynamo::autograd::CompiledNodeArgs& args) const {
+    torch::dynamo::autograd::CompiledNodeArgs& args) {
   PyObject *key = nullptr, *value = nullptr;
   Py_ssize_t pos = 0;
-  Py_BEGIN_CRITICAL_SECTION(dict);
   while (PyDict_Next(dict, &pos, &key, &value)) {
     Py_INCREF(value);
     c10::SafePyObject hook_obj(value, getPyInterpreter());
     args.add_post_acc_grad_hook(std::move(hook_obj));
   }
-  Py_END_CRITICAL_SECTION();
 }
 
 void PyFunctionTensorPostAccGradHooks::apply_with_saved(
@@ -263,7 +253,8 @@ void PyFunctionTensorPostAccGradHooks::apply_with_saved(
   }
 }
 
-} // namespace torch::autograd
+} // namespace autograd
+} // namespace torch
 
 static PyObject* wrap_variables(const variable_list& c_variables) {
   size_t num_vars = c_variables.size();

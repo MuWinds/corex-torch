@@ -16,7 +16,8 @@
 #include <unordered_map>
 #include <utility>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 namespace {
 c10::AliasAnalysisKind aliasAnalysisIsSpecialCase() {
@@ -110,7 +111,7 @@ static bool shape_is_fast_for_reduce(
   return m < 512 || ((l < 256 && r < 256) || (l > 256 && r > 256));
 }
 
-static RegisterOperators mm_tree_reduction_reg({Operator(
+RegisterOperators mm_tree_reduction_reg({Operator(
     "prim::MMTreeReduce(...) -> Tensor",
     [](Stack& stack) {
       auto num_inputs = pop(stack).toInt();
@@ -243,8 +244,7 @@ struct TreeToken {
         queue.push_back(n->inputs()[0]->node());
         queue.push_back(n->inputs()[1]->node());
       } else {
-        TORCH_INTERNAL_ASSERT(
-            false, "Unsupported node found in a BatchMM tree!");
+        AT_ASSERTM(false, "Unsupported node found in a BatchMM tree!");
       }
     }
     return matmuls;
@@ -323,7 +323,7 @@ static bool shape_is_fast_for_side(const at::Tensor& other_side_input) {
   return other_side_input.numel() <= 1024 * 2048;
 }
 
-static RegisterOperators mm_batch_side_reg({Operator(
+RegisterOperators mm_batch_side_reg({Operator(
     prim::MMBatchSide,
     [](const Node* node) -> Operation {
       size_t num_other_side_inputs = node->inputs().size() - 1;
@@ -464,6 +464,18 @@ static void BatchMMSide(Block* block, AliasDb& alias_db) {
   }
 }
 
+static bool hasMutableOperators(Block* block) {
+  for (auto n : block->nodes()) {
+    if (n->kind().is_aten() && n->schema().is_mutable())
+      return true;
+    for (auto b : n->blocks()) {
+      if (hasMutableOperators(b))
+        return true;
+    }
+  }
+  return false;
+}
+
 static bool hasMMOperators(std::shared_ptr<Graph>& graph) {
   DepthFirstGraphNodeIterator it(graph);
   Node* n = nullptr;
@@ -490,4 +502,5 @@ void BatchMM(std::shared_ptr<Graph>& graph) {
   PeepholeOptimize(graph, /*disable_shape_peepholes*/ true);
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

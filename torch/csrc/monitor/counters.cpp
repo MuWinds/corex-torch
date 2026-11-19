@@ -2,7 +2,8 @@
 
 #include <unordered_set>
 
-namespace torch::monitor {
+namespace torch {
+namespace monitor {
 
 const char* aggregationName(Aggregation agg) {
   switch (agg) {
@@ -63,4 +64,5 @@ void unregisterStat(Stat<int64_t>* stat) {
 }
 } // namespace detail
 
-} // namespace torch::monitor
+} // namespace monitor
+} // namespace torch

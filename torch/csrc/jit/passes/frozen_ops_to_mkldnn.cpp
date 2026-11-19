@@ -44,7 +44,8 @@
 
 // clang-format on
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 #if AT_MKLDNN_ENABLED()
 
@@ -85,7 +86,7 @@ void merge_sets(
 }
 
 // no uses of tensors in container types
-void assertNonTensorTypeDoesNotContainTensors(const TypePtr& type) {
+void assertNonTensorTypeDoesNotContainTensors(TypePtr type) {
   if (type->cast<TensorType>()) {
     return;
   }
@@ -94,7 +95,7 @@ void assertNonTensorTypeDoesNotContainTensors(const TypePtr& type) {
   }
 }
 
-void InplaceMKLDNNSubgraph(const std::shared_ptr<Graph>& graph) {
+void InplaceMKLDNNSubgraph(std::shared_ptr<Graph> graph) {
   // This function first calculates aliasing sets,
   // then calculates the last node each aliasing set is alive for.
   // Then we go through each node, if it's a node which has an equivalent
@@ -234,7 +235,7 @@ void InplaceMKLDNNSubgraph(const std::shared_ptr<Graph>& graph) {
 // innermost dimension is padded with 0s. The precondition, `aten_op(0) == 0`
 // allows us to avoid any special casing of padded elements.
 Operation createUnaryOp(
-    const std::function<void(at::Tensor output, at::Tensor input)>& aten_op,
+    std::function<void(at::Tensor output, at::Tensor input)> aten_op,
     bool inplace = false) {
   return [aten_op, inplace](Stack& stack) {
     auto a = pop(stack).toTensor();
@@ -303,7 +304,7 @@ void MKLDNNLayerNormOp(Stack& stack, bool inplace) {
       at::native::mkldnn_layer_norm_last_index_weight_bias_f32(
           input, shape, weight, bias, eps, inplace);
   push(stack, dst);
-}
+};
 
 Operation BroadOp(const Node* node) {
   return [](Stack& stack) {
@@ -395,7 +396,7 @@ static std::function<void(at::Tensor output, at::Tensor input)> hardtanh_helper(
     const Node* n) {
   auto min_val = n->f(attr::min_val);
   auto max_val = n->f(attr::max_val);
-  return [min_val, max_val](at::Tensor output, const at::Tensor& input) {
+  return [min_val, max_val](at::Tensor output, at::Tensor input) {
     at::cpu::hardtanh_out(output, input, min_val, max_val);
   };
 }
@@ -404,7 +405,7 @@ static std::function<void(at::Tensor output, at::Tensor input)> clamp_helper(
     const Node* n) {
   auto min_val = n->f(attr::min_val);
   auto max_val = n->f(attr::max_val);
-  return [min_val, max_val](at::Tensor output, const at::Tensor& input) {
+  return [min_val, max_val](at::Tensor output, at::Tensor input) {
     at::cpu::clamp_out(output, input, min_val, max_val);
   };
 }
@@ -415,7 +416,7 @@ const RegisterOperators MKLDNNHardSwishOpReg({
     torch::jit::Operator(
         "prim::MKLDNNHardSwish_(Tensor(a!) self) -> Tensor(a!)",
         createUnaryOp(
-            [](at::Tensor output, const at::Tensor& input) {
+            [](at::Tensor output, at::Tensor input) {
               at::cpu::hardswish_out(output, input);
             },
             true),
@@ -423,7 +424,7 @@ const RegisterOperators MKLDNNHardSwishOpReg({
     torch::jit::Operator(
         "prim::MKLDNNHardSigmoid_(Tensor(a!) self) -> Tensor(a!)",
         createUnaryOp(
-            [](at::Tensor output, const at::Tensor& input) {
+            [](at::Tensor output, at::Tensor input) {
               at::cpu::hardsigmoid_out(output, input);
             },
             true),
@@ -443,7 +444,7 @@ const RegisterOperators MKLDNNHardSwishOpReg({
     torch::jit::Operator(
         "prim::MKLDNNHardSwish(Tensor a) -> Tensor",
         createUnaryOp(
-            [](at::Tensor output, const at::Tensor& input) {
+            [](at::Tensor output, at::Tensor input) {
               at::cpu::hardswish_out(output, input);
             },
             false),
@@ -451,7 +452,7 @@ const RegisterOperators MKLDNNHardSwishOpReg({
     torch::jit::Operator(
         "prim::MKLDNNHardSigmoid(Tensor a) -> Tensor",
         createUnaryOp(
-            [](at::Tensor output, const at::Tensor& input) {
+            [](at::Tensor output, at::Tensor input) {
               at::cpu::hardsigmoid_out(output, input);
             },
             false),
@@ -1104,7 +1105,7 @@ class MKLDNNSubgraphSlicer {
         aliasDb_.moveAfterTopologicallyValid(consumer, producer);
 
     if (!canMerge) {
-      return std::nullopt;
+      return c10::nullopt;
     }
 
     SubgraphUtils::mergeNodeIntoSubgraphAndUpdateAliasing(
@@ -1178,4 +1179,5 @@ void ConvertFrozenOpsToMKLDNN(std::shared_ptr<Graph>& graph) {
 
 #endif
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

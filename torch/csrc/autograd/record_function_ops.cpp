@@ -9,10 +9,12 @@
 namespace caffe2 {
 // Required for cpp_custom_type_hack to work
 // NOLINTNEXTLINE(bugprone-exception-escape)
-CAFFE_KNOWN_TYPE(at::RecordFunction)
+CAFFE_KNOWN_TYPE(at::RecordFunction);
 } // namespace caffe2
 
-namespace torch::autograd::profiler {
+namespace torch {
+namespace autograd {
+namespace profiler {
 
 // Creates a new profiling scope using RecordFunction and invokes its starting
 // callbacks.
@@ -75,7 +77,7 @@ static void record_function_exit_new(
 }
 
 template <typename Func>
-static c10::intrusive_ptr<c10::ivalue::Future> _call_end_callbacks_on_fut(
+c10::intrusive_ptr<c10::ivalue::Future> _call_end_callbacks_on_fut(
     Func get_record,
     const c10::intrusive_ptr<c10::ivalue::Future>& fut) {
   // Profiling callback that ends the associated record_function
@@ -163,4 +165,6 @@ TORCH_LIBRARY_FRAGMENT(profiler, m) {
       c10::AliasAnalysisKind::FROM_SCHEMA));
 }
 
-} // namespace torch::autograd::profiler
+} // namespace profiler
+} // namespace autograd
+} // namespace torch

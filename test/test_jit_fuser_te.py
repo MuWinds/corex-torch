@@ -1,5 +1,4 @@
 # Owner(s): ["NNC"]
-# ruff: noqa: F841
 
 import contextlib
 import math
@@ -7,11 +6,11 @@ import operator
 import os
 import unittest
 import warnings
+from typing import List
 
 import torch
 import torch.nn.functional as F
 from torch.testing import FileCheck
-
 
 # these needs to be set before `common_utils`
 # infers `GRAPH_EXECUTOR`.
@@ -23,9 +22,11 @@ torch._C._jit_set_profiling_executor(True)
 torch._C._get_graph_executor_optimize(True)
 
 from itertools import combinations, permutations, product
+
 from textwrap import dedent
 
 from jit.test_fuser_common import TestFuserCommon  # noqa: F401
+
 from test_jit import (
     backward_graph,
     get_lstm_inputs,
@@ -43,6 +44,7 @@ from torch.testing._internal.common_device_type import (
     ops,
 )
 from torch.testing._internal.common_jit import JitCommonTestCase
+
 from torch.testing._internal.common_methods_invocations import op_db
 from torch.testing._internal.common_utils import (
     enable_profiling_mode_for_profiling_tests,
@@ -68,7 +70,6 @@ from torch.testing._internal.jit_utils import (
     TensorExprTestOptions,
     warmup_backward,
 )
-
 
 FUSION_GROUP = "prim::TensorExprGroup"
 LLVM_ENABLED = torch._C._llvm_enabled()
@@ -325,7 +326,13 @@ class TestTEFuser(JitTestCase):
 
             x = torch.randn(4, 4, dtype=torch.float, device=device)
             y = torch.randn(4, 4, dtype=torch.float, device=device)
-            traced_f = torch.jit.trace(f, (x, y))
+            traced_f = torch.jit.trace(
+                f,
+                (
+                    x,
+                    y,
+                ),
+            )
             self.assertEqual(traced_f(x.t().contiguous(), y), traced_f(x.t(), y))
 
     def test_broadcast(self):
@@ -493,7 +500,9 @@ class TestTEFuser(JitTestCase):
                 z0, z1 = z.chunk(2)
                 return z0 * z1
 
-            inputs = [torch.tensor([1.1, 1.2], device=device, dtype=torch.float)]
+            inputs = [
+                torch.tensor([1.1, 1.2], device=device, dtype=torch.float),
+            ]
             for func in [func1, func2]:
                 self.checkScript(func, inputs)
                 self.assertLastGraphAllFused()
@@ -1080,7 +1089,7 @@ class TestTEFuser(JitTestCase):
         class M(torch.jit.ScriptModule):
             __constants__ = ["d"]
 
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.d = torch.device("cuda")
 
@@ -2192,7 +2201,13 @@ class TestTEFuser(JitTestCase):
             dtypes.remove(torch.float16)
             dtypes.remove(torch.bfloat16)
             for dtype1, dtype2 in product(dtypes, dtypes):
-                x = torch.randint(2, (1, 13)).to(dtype1)
+                x = torch.randint(
+                    2,
+                    (
+                        1,
+                        13,
+                    ),
+                ).to(dtype1)
                 zero = torch.tensor([[0]]).to(dtype2)
                 one = torch.tensor([[1]]).to(dtype2)
                 script = torch.jit.trace(eager, (x, zero))
@@ -2325,7 +2340,7 @@ class TestTEFuser(JitTestCase):
 
             @torch.jit.script
             def repro(
-                xs: list[torch.Tensor], ys: list[torch.Tensor], zs: list[torch.Tensor]
+                xs: List[torch.Tensor], ys: List[torch.Tensor], zs: List[torch.Tensor]
             ):
                 return [
                     torch.cat([x, torch.cat([y, z], dim=-1)], dim=-1)
@@ -2499,7 +2514,7 @@ class TestTEFuser(JitTestCase):
 
                     for i, func in enumerate(funcs):
                         num_args = i + 1
-                        for gen in gen_tensor:
+                        for j, gen in enumerate(gen_tensor):
                             inps = (gen(n), gen(n), gen(n))
                             func_s = torch.jit.trace(func, inps, check_trace=False)
                             torch._C._jit_pass_erase_shape_information(func_s.graph)
@@ -2878,8 +2893,8 @@ class TestNNCOpInfo(TestNNCOpInfoParent):
                     fx_args.append(f"{k} = {repr(v)}")
 
             code = f"""
-def f({", ".join(param_names)}):
-    return op.op({", ".join(fx_args)})"""
+def f({', '.join(param_names)}):
+    return op.op({', '.join(fx_args)})"""
             g = {"torch": torch, "inf": math.inf, "op": op}
             exec(code, g)
             f = g["f"]

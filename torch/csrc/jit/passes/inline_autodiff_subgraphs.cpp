@@ -5,7 +5,8 @@
 #include <torch/csrc/jit/passes/update_differentiable_graph_requires_grad.h>
 #include <torch/csrc/jit/passes/utils/subgraph_utils.h>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 // aten and prim nodes (except FusionGroup) are guaranteed to work
 // with Autograd, other nodes (e.g. user-defined nodes) are not necessarily
@@ -67,7 +68,7 @@ graph_node_list::iterator scanNode(Node* node, size_t threshold) {
   // so the profiles will have outdated requires_grad=False.
   // conservatively update them to maybe requiring grad, bc we might create
   // autodiff graphs when the tensors maybe require grad
-  UpdateDifferentiableGraphRequiresGrad(subgraph, std::nullopt);
+  UpdateDifferentiableGraphRequiresGrad(subgraph, c10::nullopt);
   SubgraphUtils::unmergeSubgraph(node);
   return next_node;
 }
@@ -85,4 +86,5 @@ void InlineAutodiffSubgraphs(std::shared_ptr<Graph>& graph, size_t threshold) {
   EliminateDeadCode(graph);
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

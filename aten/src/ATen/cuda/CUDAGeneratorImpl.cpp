@@ -14,6 +14,9 @@ namespace cuda::detail {
 
 namespace {
 
+// Ensures we only call cudaGetDeviceCount only once.
+static c10::once_flag num_gpu_init_flag;
+
 // Total number of gpus in the system.
 static int64_t num_gpus;
 
@@ -28,13 +31,9 @@ static std::vector<Generator> default_gens_cuda;
  * Warning: this function must only be called once!
  */
 static void initCUDAGenVector() {
-  // Ensures we only call cudaGetDeviceCount only once.
-  static bool num_gpu_init_flag [[maybe_unused]] = []() {
-    num_gpus = static_cast<int32_t>(c10::cuda::device_count());
-    cuda_gens_init_flag.resize(num_gpus);
-    default_gens_cuda.resize(num_gpus);
-    return true;
-  }();
+  num_gpus = c10::cuda::device_count();
+  cuda_gens_init_flag.resize(num_gpus);
+  default_gens_cuda.resize(num_gpus);
 }
 
 } // anonymous namespace
@@ -48,7 +47,7 @@ static void initCUDAGenVector() {
  * cuda device.
  */
 const Generator& getDefaultCUDAGenerator(DeviceIndex device_index) {
-  initCUDAGenVector();
+  c10::call_once(num_gpu_init_flag, initCUDAGenVector);
   DeviceIndex idx = device_index;
   if (idx == -1) {
     idx = c10::cuda::current_device();
@@ -66,7 +65,7 @@ const Generator& getDefaultCUDAGenerator(DeviceIndex device_index) {
  * Utility to create a CUDAGeneratorImpl. Returns a shared_ptr
  */
 Generator createCUDAGenerator(DeviceIndex device_index) {
-  initCUDAGenVector();
+  c10::call_once(num_gpu_init_flag, initCUDAGenVector);
   DeviceIndex idx = device_index;
   if (idx == -1) {
     idx = c10::cuda::current_device();
@@ -215,13 +214,11 @@ void CUDAGeneratorState::replay_prologue(uint64_t wholegraph_increment) {
   // Ensures the generator is not in capturing mode.
   at::cuda::assertNotCapturing(
       "Cannot prepare for replay during capturing stage.");
-  if (wholegraph_increment) {
-      seed_extragraph_.fill_(int64_t(seed_));
-      offset_extragraph_.fill_(int64_t(philox_offset_per_thread_));
-      // Applies the total increment achieved during previous captures to update the
-      // offset.
-      increase(wholegraph_increment);
-  }
+  seed_extragraph_.fill_(int64_t(seed_));
+  offset_extragraph_.fill_(int64_t(philox_offset_per_thread_));
+  // Applies the total increment achieved during previous captures to update the
+  // offset.
+  increase(wholegraph_increment);
 }
 
 /**
@@ -329,7 +326,7 @@ c10::intrusive_ptr<c10::TensorImpl> CUDAGeneratorImpl::get_state() const {
   static const size_t offset_size = sizeof(int64_t);
   static const size_t total_size = seed_size + offset_size;
 
-  auto state_tensor = at::detail::empty_cpu({(int64_t)total_size}, ScalarType::Byte, std::nullopt, std::nullopt, std::nullopt, std::nullopt);
+  auto state_tensor = at::detail::empty_cpu({(int64_t)total_size}, ScalarType::Byte, c10::nullopt, c10::nullopt, c10::nullopt, c10::nullopt);
   auto rng_state = state_tensor.data_ptr<uint8_t>();
   auto current_seed = this->current_seed();
   auto offset = static_cast<int64_t>(this->philox_offset_per_thread()); // Note that old THCGeneratorState had offset as std::atomic<int64_t>

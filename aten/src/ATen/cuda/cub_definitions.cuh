@@ -4,15 +4,15 @@
 #include <cuda.h>  // for CUDA_VERSION
 #endif
 
-#if !defined(USE_ROCM)
+#if !defined(USE_ROCM) && !defined(__ILUVATAR__)
 #include <cub/version.cuh>
 #else
-#define CUB_VERSION 200001
+#define CUB_VERSION 0
 #endif
 
 // cub sort support for __nv_bfloat16 is added to cub 1.13 in:
 // https://github.com/NVIDIA/cub/pull/306
-#if CUB_VERSION >= 101300
+#if CUB_VERSION >= 101300 || defined(__ILUVATAR__)
 #define CUB_SUPPORTS_NV_BFLOAT16() true
 #else
 #define CUB_SUPPORTS_NV_BFLOAT16() false

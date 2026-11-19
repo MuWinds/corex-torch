@@ -1043,7 +1043,8 @@ TEST(Reductions, ReduceSplitRfactor) {
   SimpleIREvaluator cg(s, {b, c});
 
   cg.call({in, out});
-  for ([[maybe_unused]] const auto i : c10::irange(M)) {
+  for (const auto i : c10::irange(M)) {
+    (void)i; // Suppress unused variable warning
     ASSERT_EQ(out[0], 4950);
   }
 }
@@ -1066,6 +1067,7 @@ TEST(Reductions, ReduceOverSplitRfactor) {
   Tensor c = Reduce("sum", {}, Sum(), b, {N, K});
   LoopNest loop({c});
   std::vector<ForPtr> loops = loop.getLoopStmtsFor(c);
+  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
   ForPtr i, t;
   LoopNest::splitWithTail(loops[1], SPLIT_FACTOR, &i, &t);
   LoopNest::reorderAxis(loops[0], i);
@@ -1572,6 +1574,7 @@ TEST(Reductions, ReductionSplitCacheConsumerAccess) {
 
   LoopNest l({e}, {c, d, e});
 
+  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
   ForPtr inner;
 
   // Split outer reduction axis.
@@ -1621,6 +1624,7 @@ TEST(Reductions, ReductionReorderCacheConsumerAccess) {
 
   LoopNest l({e}, {c, d, e});
 
+  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
   ForPtr inner;
 
   // reorder outer reduction axes.
@@ -1675,6 +1679,7 @@ TEST(Reductions, ReductionRfactorCacheTempOuter) {
   LoopNest::reorderAxis(loops.at(0), loops.at(1));
   loops = loop.getLoopStmtsFor(c);
   auto c_body = loop.getAllWritesToBuf(c.buf())[1];
+  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
   BufPtr rfac_buf;
   ASSERT_TRUE(loop.rfactor(c_body, loops.at(0), &rfac_buf));
   loop.distributeLoop(loops.at(0));
@@ -1740,6 +1745,7 @@ TEST(Reductions, ReductionRfactorCacheTempInner) {
 
   LoopNest::reorderAxis(loops.at(0), loops.at(1));
   loops = loop.getLoopStmtsFor(c);
+  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
   BufPtr rfac_buf;
   ASSERT_TRUE(loop.rfactor(c_body, loops.at(0), &rfac_buf));
   loop.distributeLoop(loops.at(0));

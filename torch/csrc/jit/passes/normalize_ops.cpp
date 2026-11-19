@@ -2,7 +2,8 @@
 
 #include <c10/util/Exception.h>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 namespace {
 
@@ -166,4 +167,5 @@ void NormalizeOps(const std::shared_ptr<Graph>& graph) {
   NormalizeOps(graph->block());
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

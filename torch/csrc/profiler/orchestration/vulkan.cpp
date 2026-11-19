@@ -2,7 +2,10 @@
 
 #include <utility>
 
-namespace torch::profiler::impl::vulkan {
+namespace torch {
+namespace profiler {
+namespace impl {
+namespace vulkan {
 namespace {
 
 GetShaderNameAndDurationNsFn get_shader_name_and_duration_ns_fn;
@@ -38,4 +41,7 @@ std::tuple<std::string, uint64_t> getShaderNameAndDurationNs(
   return get_shader_name_and_duration_ns_fn(vulkan_id.value_of());
 }
 
-} // namespace torch::profiler::impl::vulkan
+} // namespace vulkan
+} // namespace impl
+} // namespace profiler
+} // namespace torch

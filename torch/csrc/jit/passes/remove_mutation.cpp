@@ -1,7 +1,8 @@
 #include <torch/csrc/jit/passes/remove_mutation.h>
 #include <torch/csrc/jit/passes/restore_mutation.h>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 bool MutationRemover::removeListMutation() {
   return RemoveListMutation(graph_->block());
@@ -28,7 +29,8 @@ bool MutationRemover::hasSideEffectOrAlias(Value* v, AliasDb* aliasDb) {
 Node* MutationRemover::createSpecialMappedOp(Node* n) {
   WithInsertPoint guard(n);
   auto inputs = n->inputs();
-  Node* new_node = nullptr;
+  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+  Node* new_node;
   if (n->matches(
           "aten::fill_.Scalar(Tensor(a!) self, Scalar value) -> Tensor(a!)")) {
     auto dtype = graph_->insert(prim::dtype, {inputs.at(0)});
@@ -251,7 +253,8 @@ bool MutationRemover::RemoveTensorMutation(Block* block) {
       continue;
     }
 
-    Node* new_node = nullptr;
+    // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+    Node* new_node;
     if (isSpecialMappedOp(node)) {
       new_node = createSpecialMappedOp(node);
     } else {
@@ -377,4 +380,5 @@ bool InplaceToFunctionalActivation(const std::shared_ptr<Graph>& graph) {
   });
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

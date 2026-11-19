@@ -25,10 +25,9 @@ bool Dimname::isValidName(const std::string& name) {
   }
   for (auto it = name.begin(); it != name.end(); ++it) {
     // NOLINTNEXTLINE(bugprone-branch-clone)
-    const unsigned char ch = static_cast<unsigned char>(*it);
-    if (std::isalpha(ch) || ch == '_') {
+    if (std::isalpha(*it) || *it == '_') {
       continue;
-    } else if (it != name.begin() && std::isdigit(ch)) {
+    } else if (it != name.begin() && std::isdigit(*it)) {
       continue;
     }
     return false;
@@ -58,7 +57,7 @@ Dimname Dimname::wildcard() {
   return result;
 }
 
-std::optional<Dimname> Dimname::unify(Dimname other) const {
+optional<Dimname> Dimname::unify(Dimname other) const {
   if (other.type() == NameType::WILDCARD) {
     return *this;
   }
@@ -68,7 +67,7 @@ std::optional<Dimname> Dimname::unify(Dimname other) const {
   if (name_ == other.symbol()) {
     return *this;
   }
-  return std::nullopt;
+  return c10::nullopt;
 }
 
 bool Dimname::matches(Dimname other) const {

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <type_traits>
 #include <c10/macros/Macros.h>
+#include <ATen/core/Array.h>
 #include <ATen/native/TensorIterator.h>
 #include <ATen/cuda/detail/IntegerDivider.cuh>
 
@@ -12,7 +13,7 @@
 // Operands that share the same shape, but may have different strides.
 // OffsetCalculator iterates the tensor in a column-major order
 
-#if defined(USE_ROCM)
+#if defined(USE_ROCM) || defined(__ILUVATAR__)
 constexpr int MAX_DIMS = 16;
 #else
 constexpr int MAX_DIMS = 25;
@@ -28,7 +29,7 @@ struct OffsetCalculator {
   // On CUDA, zero sized array is not allowed, so when we are handling nullary
   // operators, we need to create a size 1 offset to avoid compiler failure.
   // This size 1 offset is just a placeholder, and we will not use it.
-  using offset_type = std::array<stride_t, std::max<int>(NARGS, 1)>;
+  using offset_type = at::detail::Array<stride_t, std::max<int>(NARGS, 1)>;
 
   // if element_sizes is nullptr, then the strides will be in bytes, otherwise
   // the strides will be in # of elements.
@@ -79,7 +80,7 @@ struct TrivialOffsetCalculator {
   // On CUDA, zero sized array is not allowed, so when we are handling nullary
   // operators, we need to create a size 1 offset to avoid compiler failure.
   // This size 1 offset is just a placeholder, and we will not use it.
-  using offset_type = std::array<index_t, std::max<int>(NARGS, 1)>;
+  using offset_type = at::detail::Array<index_t, std::max<int>(NARGS, 1)>;
 
   C10_HOST_DEVICE offset_type get(index_t linear_idx) const {
     offset_type offsets;
@@ -90,6 +91,34 @@ struct TrivialOffsetCalculator {
     return offsets;
   }
 };
+
+#ifdef __ILUVATAR_DIAG__
+// A special Offset Calculator for binary elementwise kernel
+// with broadcasting behavior.
+// TODO: make it more generic to handle more cases.
+template <typename index_t = uint32_t>
+struct TrivialAndModOffsetCalculator {
+  using offset_type = at::detail::Array<index_t, 3>;
+
+  TrivialAndModOffsetCalculator(int64_t mod_size, const int64_t* type_sizes) {
+    mod_div = at::cuda::detail::IntDivider<index_t>(static_cast<index_t>(mod_size));
+    for (int i = 0; i < 3; i++) {
+      element_sizes[i] = static_cast<index_t>(type_sizes[i]);
+    }
+  }
+
+  C10_HOST_DEVICE offset_type get(index_t linear_idx) const {
+    offset_type offsets;
+    offsets[0] = linear_idx * element_sizes[0];
+    offsets[1] = linear_idx * element_sizes[1];
+    offsets[2] = mod_div.mod(linear_idx) * element_sizes[2];
+    return offsets;
+  }
+
+  at::cuda::detail::IntDivider<index_t> mod_div;
+  std::array<index_t, 3> element_sizes;
+};
+#endif
 
 // Make an OffsetCalculator with byte offsets
 template<int N, bool signed_strides = false>

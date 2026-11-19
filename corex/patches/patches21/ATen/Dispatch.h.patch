@@ -1,0 +1,44 @@
+--- /data/home/2024240384035/build/pytorch-2.1.0/aten/src/ATen/Dispatch.h	2023-09-22 06:25:09.000000000 +0800
++++ /data/software/Anaconda3/2024.10-1/envs/py310/lib/python3.10/site-packages/torch/include/ATen/Dispatch.h	2025-03-13 11:53:02.012028669 +0800
+@@ -29,6 +29,19 @@
+ ) {
+   return true;
+ }
++
++#ifdef __ILUVATAR__
++inline bool double_check(
++  const char *kernel_tag_str,
++  at::ScalarType scalar_type
++) {
++  if (strstr(kernel_tag_str, "cuda") && (scalar_type == at::ScalarType::Double)) {
++    return true;
++  } else {
++    return false;
++  }
++}
++#endif
+ } // namespace at
+ #endif
+ 
+@@ -306,6 +319,21 @@
+       NAME,                                                              \
+       AT_DISPATCH_CASE_FLOATING_TYPES_AND4(                              \
+           SCALARTYPE1, SCALARTYPE2, SCALARTYPE3, SCALARTYPE4, __VA_ARGS__))
++#define AT_DISPATCH_CASE_FLOATING_TYPES_NODOUBLE(...)  \
++  AT_DISPATCH_CASE(at::ScalarType::Float, __VA_ARGS__)
++
++#define AT_DISPATCH_CASE_FLOATING_TYPES_AND2_NODOUBLE(SCALARTYPE1, SCALARTYPE2, ...) \
++  AT_DISPATCH_CASE_FLOATING_TYPES_NODOUBLE(__VA_ARGS__)                              \
++  AT_DISPATCH_CASE(SCALARTYPE1, __VA_ARGS__)                                         \
++  AT_DISPATCH_CASE(SCALARTYPE2, __VA_ARGS__)
++
++#define AT_DISPATCH_FLOATING_TYPES_AND2_NODOUBLE(    \
++    SCALARTYPE1, SCALARTYPE2, TYPE, NAME, ...)       \
++  AT_DISPATCH_SWITCH(                                \
++      TYPE,                                          \
++      NAME,                                          \
++      AT_DISPATCH_CASE_FLOATING_TYPES_AND2_NODOUBLE( \
++          SCALARTYPE1, SCALARTYPE2, __VA_ARGS__))
+ 
+ #define AT_DISPATCH_CASE_COMPLEX_TYPES(...)                    \
+   AT_DISPATCH_CASE(at::ScalarType::ComplexDouble, __VA_ARGS__) \

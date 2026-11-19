@@ -17,7 +17,7 @@ from torch.fx.experimental.rewriter import RewritingTracer
 from torch.fx.experimental.unify_refinements import infer_symbolic_types
 from torch.fx.passes.shape_prop import ShapeProp
 from torch.fx.tensor_type import Dyn, is_consistent, is_more_precise, TensorType
-from torch.testing._internal.common_utils import raise_on_run_directly, TestCase
+from torch.testing._internal.common_utils import TestCase
 
 
 try:
@@ -672,7 +672,7 @@ class TypeCheckerTest(TestCase):
 
     def test_type_check_conv2D_maxpool2d_flatten(self):
         class BasicBlock(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
 
                 self.conv1 = torch.nn.Conv2d(3, 6, 5)
@@ -761,7 +761,7 @@ class TypeCheckerTest(TestCase):
 
     def test_type_typechecl_maxpool2d_3dinput(self):
         class BasicBlock(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.pool = torch.nn.MaxPool2d(5, 8)
 
@@ -913,7 +913,7 @@ class TypeCheckerTest(TestCase):
             (2, 2, 10, 10),
         ]
 
-        intermediate_list = [  # noqa: F841
+        intermediate_list = [
             Dyn,
             (2, 5, 6, 9),
             (10, 15, 13, 14),
@@ -1119,7 +1119,7 @@ class TypeCheckerTest(TestCase):
 
     def test_type_check_symbolic_inferenceconv2D_maxpool2d_flatten(self):
         class BasicBlock(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
 
                 self.conv1 = torch.nn.Conv2d(3, 6, 5)
@@ -1139,7 +1139,7 @@ class TypeCheckerTest(TestCase):
                 return out
 
         B = BasicBlock()
-        ast_rewriter = RewritingTracer()  # noqa: F841
+        ast_rewriter = RewritingTracer()
         traced = symbolic_trace(B)
         tc = GraphTypeChecker({}, traced)
         tc.type_check()
@@ -1168,4 +1168,4 @@ class TypeCheckerTest(TestCase):
 
 
 if __name__ == "__main__":
-    raise_on_run_directly("test/test_fx.py")
+    unittest.main()

@@ -1,0 +1,14 @@
+--- /data/home/2024240384035/build/pytorch-2.1.0/c10/util/order_preserving_flat_hash_map.h	2023-09-22 06:25:09.000000000 +0800
++++ /data/software/Anaconda3/2024.10-1/envs/py310/lib/python3.10/site-packages/torch/include/c10/util/order_preserving_flat_hash_map.h	2025-03-13 11:53:06.656025320 +0800
+@@ -824,7 +824,11 @@
+ 
+   uint64_t num_buckets_for_reserve(uint64_t num_elements_) const {
+     return static_cast<uint64_t>(std::ceil(
++#ifdef __ILUVATAR__
++        num_elements_ / std::min((double)0.5, static_cast<double>(_max_load_factor))));
++#else
+         num_elements_ / std::min(0.5, static_cast<double>(_max_load_factor))));
++#endif
+   }
+   void rehash_for_other_container(const sherwood_v3_table& other) {
+     rehash(

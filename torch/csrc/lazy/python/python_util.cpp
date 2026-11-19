@@ -8,16 +8,17 @@
 #include <torch/csrc/utils/python_compat.h>
 #include <torch/csrc/utils/python_strings.h>
 
-namespace torch::lazy {
+namespace torch {
+namespace lazy {
 
 std::optional<SourceLocation> GetPythonFrameTop() {
   if (!Py_IsInitialized()) {
-    return std::nullopt;
+    return c10::nullopt;
   }
   pybind11::gil_scoped_acquire gil;
   PyFrameObject* frame = PyEval_GetFrame();
   if (frame == nullptr) {
-    return std::nullopt;
+    return c10::nullopt;
   }
   SourceLocation loc;
   auto code = THPCodeObjectPtr(PyFrame_GetCode(frame));
@@ -50,4 +51,5 @@ std::vector<SourceLocation> GetPythonFrames() {
   return frames;
 }
 
-} // namespace torch::lazy
+} // namespace lazy
+} // namespace torch

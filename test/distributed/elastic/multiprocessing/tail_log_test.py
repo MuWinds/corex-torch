@@ -16,6 +16,7 @@ import unittest
 from concurrent.futures import wait
 from concurrent.futures._base import ALL_COMPLETED
 from concurrent.futures.thread import ThreadPoolExecutor
+from typing import Dict, Set
 from unittest import mock
 
 from torch.distributed.elastic.multiprocessing.tail_log import TailLog
@@ -71,7 +72,7 @@ class TailLogTest(unittest.TestCase):
         tail.stop()
 
         dst.seek(0)
-        actual: dict[int, set[int]] = {}
+        actual: Dict[int, Set[int]] = {}
 
         for line in dst.readlines():
             header, num = line.split(":")
@@ -122,7 +123,7 @@ class TailLogTest(unittest.TestCase):
         tail.stop()
         dst.seek(0)
 
-        headers: set[str] = set()
+        headers: Set[str] = set()
         for line in dst.readlines():
             header, _ = line.split(":")
             headers.add(header)

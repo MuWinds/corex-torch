@@ -1,18 +1,14 @@
 # For testing specific heuristics
-from __future__ import annotations
-
 import io
 import json
+import pathlib
 import sys
 import unittest
-from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Set
 from unittest import mock
 
-
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent.parent
 sys.path.append(str(REPO_ROOT))
-
 from tools.test.heuristics.test_interface import TestTD
 from tools.testing.target_determination.determinator import TestPrioritizations
 from tools.testing.target_determination.heuristics.filepath import (
@@ -27,20 +23,19 @@ from tools.testing.target_determination.heuristics.previously_failed_in_pr impor
 )
 from tools.testing.test_run import TestRun
 
-
 sys.path.remove(str(REPO_ROOT))
 
 HEURISTIC_CLASS = "tools.testing.target_determination.heuristics.historical_class_failure_correlation."
 
 
-def mocked_file(contents: dict[Any, Any]) -> io.IOBase:
+def mocked_file(contents: Dict[Any, Any]) -> io.IOBase:
     file_object = io.StringIO()
     json.dump(contents, file_object)
     file_object.seek(0)
     return file_object
 
 
-def gen_historical_class_failures() -> dict[str, dict[str, float]]:
+def gen_historical_class_failures() -> Dict[str, Dict[str, float]]:
     return {
         "file1": {
             "test1::classA": 0.5,
@@ -85,8 +80,8 @@ class TestHistoricalClassFailureCorrelation(TestTD):
     )
     def test_get_prediction_confidence(
         self,
-        historical_class_failures: dict[str, dict[str, float]],
-        changed_files: list[str],
+        historical_class_failures: Dict[str, Dict[str, float]],
+        changed_files: List[str],
     ) -> None:
         tests_to_prioritize = ALL_TESTS
 
@@ -118,7 +113,7 @@ class TestHistoricalClassFailureCorrelation(TestTD):
 class TestParsePrevTests(TestTD):
     @mock.patch("os.path.exists", return_value=False)
     def test_cache_does_not_exist(self, mock_exists: Any) -> None:
-        expected_failing_test_files: set[str] = set()
+        expected_failing_test_files: Set[str] = set()
 
         found_tests = get_previous_failures()
 
@@ -127,7 +122,7 @@ class TestParsePrevTests(TestTD):
     @mock.patch("os.path.exists", return_value=True)
     @mock.patch("builtins.open", return_value=mocked_file({"": True}))
     def test_empty_cache(self, mock_exists: Any, mock_open: Any) -> None:
-        expected_failing_test_files: set[str] = set()
+        expected_failing_test_files: Set[str] = set()
 
         found_tests = get_previous_failures()
 
@@ -155,12 +150,11 @@ class TestParsePrevTests(TestTD):
 
 class TestFilePath(TestTD):
     def test_get_keywords(self) -> None:
-        self.assertEqual(get_keywords("test/test_car.py"), ["car"])
-        self.assertEqual(get_keywords("test/nn/test_amp.py"), ["nn", "amp"])
-        self.assertEqual(get_keywords("torch/nn/test_amp.py"), ["nn", "amp"])
+        self.assertEqual(get_keywords("test/test_car.py"), [])
+        self.assertEqual(get_keywords("test/nn/test_amp.py"), ["nn"])
+        self.assertEqual(get_keywords("torch/nn/test_amp.py"), ["nn"])
         self.assertEqual(
-            get_keywords("torch/nn/mixed_precision/test_something.py"),
-            ["nn", "amp", "something"],
+            get_keywords("torch/nn/mixed_precision/test_amp.py"), ["nn", "amp"]
         )
 
     def test_match_keywords(self) -> None:

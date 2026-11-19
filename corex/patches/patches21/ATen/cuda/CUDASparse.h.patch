@@ -1,0 +1,22 @@
+--- /data/home/2024240384035/build/pytorch-2.1.0/aten/src/ATen/cuda/CUDASparse.h	2023-09-22 06:25:09.000000000 +0800
++++ /data/software/Anaconda3/2024.10-1/envs/py310/lib/python3.10/site-packages/torch/include/ATen/cuda/CUDASparse.h	2025-03-13 11:53:02.236028508 +0800
+@@ -4,7 +4,7 @@
+ 
+ // cuSparse Generic API added in CUDA 10.1
+ // Windows support added in CUDA 11.0
+-#if defined(CUDART_VERSION) && defined(CUSPARSE_VERSION) && ((CUSPARSE_VERSION >= 10300) || (CUSPARSE_VERSION >= 11000 && defined(_WIN32)))
++#if defined(CUDART_VERSION) && defined(CUSPARSE_VERSION) && ((CUSPARSE_VERSION >= 10300) || (CUSPARSE_VERSION >= 11000 && defined(_WIN32))) && !defined(__ILUVATAR__)
+ #define AT_USE_CUSPARSE_GENERIC_API() 1
+ #else
+ #define AT_USE_CUSPARSE_GENERIC_API() 0
+@@ -61,8 +61,8 @@
+ #endif
+ 
+ // BSR triangular solve functions were added in hipSPARSE 1.11.2 (ROCm 4.5.0)
+-#if defined(CUDART_VERSION) ||                            \
+-      (defined(USE_ROCM) && ROCM_VERSION >= 40500 )
++#if (defined(CUDART_VERSION) ||                            \
++      (defined(USE_ROCM) && ROCM_VERSION >= 40500 )) && !defined(__ILUVATAR__)
+ #define AT_USE_HIPSPARSE_TRIANGULAR_SOLVE() 1
+ #else
+ #define AT_USE_HIPSPARSE_TRIANGULAR_SOLVE() 0

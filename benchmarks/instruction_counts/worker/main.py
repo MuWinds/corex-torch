@@ -15,7 +15,6 @@ The life of a worker is very simple:
 Because this file only expects to run in a child context, error handling means
 plumbing failures up to the caller, not raising in this process.
 """
-
 import argparse
 import dataclasses
 import io
@@ -24,7 +23,7 @@ import pickle
 import sys
 import timeit
 import traceback
-from typing import Any, TYPE_CHECKING, Union
+from typing import Any, Tuple, TYPE_CHECKING, Union
 
 
 if TYPE_CHECKING:
@@ -81,8 +80,8 @@ class WorkerTimerArgs:
 @dataclasses.dataclass(frozen=True)
 class WorkerOutput:
     # Only return values to reduce communication between main process and workers.
-    wall_times: tuple[float, ...]
-    instructions: tuple[int, ...]
+    wall_times: Tuple[float, ...]
+    instructions: Tuple[int, ...]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -145,7 +144,7 @@ def _run(timer_args: WorkerTimerArgs) -> WorkerOutput:
 
     m = timer.blocked_autorange(min_run_time=MIN_RUN_TIME)
 
-    stats: tuple[CallgrindStats, ...] = timer.collect_callgrind(
+    stats: Tuple[CallgrindStats, ...] = timer.collect_callgrind(
         number=CALLGRIND_NUMBER,
         collect_baseline=False,
         repeats=CALLGRIND_REPEATS,

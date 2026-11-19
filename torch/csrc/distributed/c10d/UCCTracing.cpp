@@ -1,16 +1,13 @@
 #ifdef USE_C10D_UCC
 
-#include <c10/util/env.h>
 #include <torch/csrc/distributed/c10d/UCCTracing.hpp>
 #include <torch/csrc/distributed/c10d/UCCUtils.hpp>
 
-#include <fmt/format.h>
 #include <torch/csrc/distributed/c10d/ParamCommsUtils.hpp>
 
 #include <sys/stat.h>
 #include <cstdlib>
 #include <ctime>
-#include <filesystem>
 #include <fstream>
 
 namespace c10d {
@@ -34,21 +31,21 @@ void ProcessGroupUCCLogger::flushComms(int rank, int world_size) {
         "_", (1 + ltm->tm_mon), "_", ltm->tm_mday, "_", (1900 + ltm->tm_year));
   }
 
-  std::filesystem::path fullpath = std::filesystem::path("/tmp") / dirname;
-  auto user_path = c10::utils::get_env("TORCH_UCC_COMMS_TRACE_OUTPUT_DIR");
-  if (user_path.has_value()) {
-    fullpath = std::move(user_path.value());
+  std::string fullpath = "/tmp/" + dirname;
+  char* user_path = std::getenv("TORCH_UCC_COMMS_TRACE_OUTPUT_DIR");
+  if (user_path) {
+    fullpath = user_path;
   }
-  std::filesystem::path trace_filename =
-      fullpath / fmt::format("rank{}.json", rank);
-  std::error_code ec{};
-  if (!std::filesystem::create_directories(fullpath, ec)) {
-    LOG(INFO) << getLogPrefix() << "[INFO] failed to mkdir " << fullpath
-              << " with error " << ec.message();
-    return;
-  }
+  std::string trace_filename = c10::str(fullpath, "/rank", rank, ".json");
   std::ofstream _outfile;
-  _outfile.open(trace_filename, std::ofstream::out | std::ofstream::trunc);
+  if (!_outfile.is_open()) {
+    if (!mkdir(fullpath.c_str(), 0777)) {
+      LOG(INFO) << getLogPrefix() << "[INFO] failed to mkdir " << fullpath;
+    } else if (errno != EEXIST) {
+      return;
+    }
+    _outfile.open(trace_filename, std::ofstream::out | std::ofstream::trunc);
+  }
   // flush the traced comms
   if (_outfile.is_open()) {
     _outfile << "[" << c10::Join(",", trace_generator->getCommsTrace())
@@ -94,7 +91,7 @@ void CommTraceLogger::recordComms(
       (!outputTensors.empty()) ? outputTensors[0].scalar_type() : at::kByte;
   auto devType = (!outputTensors.empty()) ? outputTensors[0].device().type()
                                           : c10::DeviceType::CPU;
-  auto now = std::chrono::steady_clock::now();
+  auto now = std::chrono::system_clock::now();
   static auto startTS = now;
   int64_t time_since_begin =
       std::chrono::duration_cast<std::chrono::nanoseconds>(now - startTS)
@@ -152,7 +149,7 @@ void CommTraceLogger::recordComms(
 
   // record the trace to kineto trace if applicable
   RECORD_PARAM_COMMS(
-      std::make_tuple(static_cast<int64_t>(seqnum), false), // (seq, isP2P)
+      static_cast<int64_t>(seqnum), // seq
       std::make_tuple("0", ""), // pg_name tuple
       rank,
       commName.c_str(),

@@ -12,7 +12,7 @@ namespace c10 {
 
 using std::string;
 
-C10_DEFINE_REGISTRY(C10FlagsRegistry, C10FlagParser, const string&)
+C10_DEFINE_REGISTRY(C10FlagsRegistry, C10FlagParser, const string&);
 
 namespace {
 static bool gCommandLineFlagsParsed = false;
@@ -40,7 +40,7 @@ C10_EXPORT bool ParseCommandLineFlags(int* pargc, char*** pargv) {
     return true;
   char** argv = *pargv;
   bool success = true;
-  GlobalInitStream() << "Parsing commandline arguments for c10." << '\n';
+  GlobalInitStream() << "Parsing commandline arguments for c10." << std::endl;
   // write_head is the location we write the unused arguments to.
   int write_head = 1;
   for (int i = 1; i < *pargc; ++i) {
@@ -48,11 +48,11 @@ C10_EXPORT bool ParseCommandLineFlags(int* pargc, char*** pargv) {
 
     if (arg.find("--help") != string::npos) {
       // Print the help message, and quit.
-      std::cout << UsageMessage() << '\n';
-      std::cout << "Arguments: " << '\n';
+      std::cout << UsageMessage() << std::endl;
+      std::cout << "Arguments: " << std::endl;
       for (const auto& help_msg : C10FlagsRegistry()->HelpMessage()) {
         std::cout << "    " << help_msg.first << ": " << help_msg.second
-                  << '\n';
+                  << std::endl;
       }
       exit(0);
     }
@@ -61,7 +61,7 @@ C10_EXPORT bool ParseCommandLineFlags(int* pargc, char*** pargv) {
       GlobalInitStream()
           << "C10 flag: commandline argument does not match --name=var "
              "or --name format: "
-          << arg << ". Ignoring this argument." << '\n';
+          << arg << ". Ignoring this argument." << std::endl;
       argv[write_head++] = argv[i];
       continue;
     }
@@ -92,14 +92,14 @@ C10_EXPORT bool ParseCommandLineFlags(int* pargc, char*** pargv) {
     // If the flag is not registered, we will ignore it.
     if (!C10FlagsRegistry()->Has(key)) {
       GlobalInitStream() << "C10 flag: unrecognized commandline argument: "
-                         << arg << '\n';
+                         << arg << std::endl;
       success = false;
       break;
     }
     std::unique_ptr<C10FlagParser> parser(
         C10FlagsRegistry()->Create(key, value));
     if (!parser->success()) {
-      GlobalInitStream() << "C10 flag: illegal argument: " << arg << '\n';
+      GlobalInitStream() << "C10 flag: illegal argument: " << arg << std::endl;
       success = false;
       break;
     }
@@ -138,7 +138,7 @@ C10_EXPORT bool C10FlagParser::Parse<int>(const string& content, int* value) {
     return true;
   } catch (...) {
     GlobalInitStream() << "C10 flag error: Cannot convert argument to int: "
-                       << content << '\n';
+                       << content << std::endl;
     return false;
   }
 }
@@ -158,7 +158,7 @@ C10_EXPORT bool C10FlagParser::Parse<int64_t>(
     return true;
   } catch (...) {
     GlobalInitStream() << "C10 flag error: Cannot convert argument to int: "
-                       << content << '\n';
+                       << content << std::endl;
     return false;
   }
 }
@@ -172,7 +172,7 @@ C10_EXPORT bool C10FlagParser::Parse<double>(
     return true;
   } catch (...) {
     GlobalInitStream() << "C10 flag error: Cannot convert argument to double: "
-                       << content << '\n';
+                       << content << std::endl;
     return false;
   }
 }
@@ -191,12 +191,12 @@ C10_EXPORT bool C10FlagParser::Parse<bool>(const string& content, bool* value) {
   } else {
     GlobalInitStream()
         << "C10 flag error: Cannot convert argument to bool: " << content
-        << '\n'
+        << std::endl
         << "Note that if you are passing in a bool flag, you need to "
            "explicitly specify it, like --arg=True or --arg True. Otherwise, "
            "the next argument may be inadvertently used as the argument, "
            "causing the above error."
-        << '\n';
+        << std::endl;
     return false;
   }
 }

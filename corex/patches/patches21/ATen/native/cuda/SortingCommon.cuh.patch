@@ -1,0 +1,11 @@
+--- /data/home/2024240384035/build/pytorch-2.1.0/aten/src/ATen/native/cuda/SortingCommon.cuh	2023-09-22 06:25:09.000000000 +0800
++++ /data/software/Anaconda3/2024.10-1/envs/py310/lib/python3.10/site-packages/torch/include/ATen/native/cuda/SortingCommon.cuh	2025-03-13 11:53:02.387028399 +0800
+@@ -12,7 +12,7 @@
+ namespace native {
+ 
+ // Is this questionable namespace pollution?
+-#if defined(USE_ROCM)
++#if defined(USE_ROCM) || defined(__ILUVATAR__)
+ constexpr int MAX_BLOCK_SIZE = 256;
+ 
+ #else

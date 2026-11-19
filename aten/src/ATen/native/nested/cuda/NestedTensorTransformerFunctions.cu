@@ -19,14 +19,12 @@
 #include <ATen/native/nested/NestedTensorTransformerFunctions.h>
 #include <ATen/native/nested/NestedTensorUtils.h>
 
-#if !defined(USE_ROCM) && !defined(_WIN32) && (defined(CUDA_VERSION) && CUDA_VERSION > 12000)
-#define build_grouped_gemm
-#endif
-
-#ifdef build_grouped_gemm
+#ifndef USE_ROCM
+#ifndef _WIN32
 #include <cutlass/gemm/device/default_gemm_configuration.h>
 #include <cutlass/gemm/device/gemm_grouped.h>
 #include <cutlass/gemm/kernel/default_gemm_grouped.h>
+#endif
 #endif
 
 #include <ATen/NestedTensorImpl.h>
@@ -156,8 +154,8 @@ void remove_padding_kernelLauncher(
     const int* offsets,
     const int* input_sizes,
     const int* output_sizes,
-    int64_t output_dim,
-    const int64_t batch_size) {
+    int output_dim,
+    const int batch_size) {
   dim3 grid;
   grid.x = batch_size;
   grid.y = GRID_DIM_Y;
@@ -190,8 +188,8 @@ void remove_padding_transform0213_kernelLauncher(
     const int* offsets,
     const int* input_sizes,
     const int* output_sizes,
-    int64_t output_dim,
-    const int64_t batch_size) {
+    int output_dim,
+    const int batch_size) {
   dim3 grid;
   grid.x = batch_size;
   grid.y = GRID_DIM_Y;
@@ -216,8 +214,8 @@ template void remove_padding_kernelLauncher<float>(
     const int* offsets,
     const int* input_sizes,
     const int* output_sizes,
-    int64_t output_dim,
-    const int64_t batch_size);
+    int output_dim,
+    const int batch_size);
 
 template void remove_padding_kernelLauncher<c10::Half>(
     const c10::Half* input,
@@ -225,8 +223,8 @@ template void remove_padding_kernelLauncher<c10::Half>(
     const int* offsets,
     const int* input_sizes,
     const int* output_sizes,
-    int64_t output_dim,
-    const int64_t batch_size);
+    int output_dim,
+    const int batch_size);
 
 template void remove_padding_transform0213_kernelLauncher<float>(
     const float* input,
@@ -234,8 +232,8 @@ template void remove_padding_transform0213_kernelLauncher<float>(
     const int* offsets,
     const int* input_sizes,
     const int* output_sizes,
-    int64_t output_dim,
-    const int64_t batch_size);
+    int output_dim,
+    const int batch_size);
 
 template void remove_padding_transform0213_kernelLauncher<c10::Half>(
     const c10::Half* input,
@@ -243,8 +241,8 @@ template void remove_padding_transform0213_kernelLauncher<c10::Half>(
     const int* offsets,
     const int* input_sizes,
     const int* output_sizes,
-    int64_t output_dim,
-    const int64_t batch_size);
+    int output_dim,
+    const int batch_size);
 
 template <typename T>
 __global__ void add_padding_1(
@@ -502,7 +500,7 @@ inline std::string torch_tensor_device_name(const at::Tensor& ten) {
 }
 
 inline std::string torch_tensor_device_name(
-    const std::optional<at::Tensor>& ten) {
+    const c10::optional<at::Tensor>& ten) {
   if (ten.has_value()) {
     return torch_tensor_device_name(ten.value());
   } else {
@@ -515,7 +513,7 @@ inline bool torch_tensor_on_cuda_gpu_check(const at::Tensor& ten) {
 }
 
 inline bool torch_tensor_on_cuda_gpu_check(
-    const std::optional<at::Tensor>& ten) {
+    const c10::optional<at::Tensor>& ten) {
   return !ten.has_value() || torch_tensor_on_cuda_gpu_check(ten.value());
 }
 
@@ -581,9 +579,9 @@ inline std::tuple<dim3, dim3, StackArray<int64_t>> check_shape_and_partition_(
   const dim3 blocks(
       div_round_up(outer_dense_size * jagged_folded_size, threads_y));
 
-  StackArray<int64_t> jagged_dims_tensor{};
+  StackArray<int64_t> jagged_dims_tensor;
   const int num_jagged_dim = dense_tensor.dim() - 2;
-  TORCH_CHECK(num_jagged_dim <= static_cast<int>(kStackArrayMaxDims));
+  TORCH_CHECK(num_jagged_dim <= kStackArrayMaxDims);
   jagged_dims_tensor.ndim = num_jagged_dim;
   std::memcpy(
       &(jagged_dims_tensor.vals[0]),
@@ -759,7 +757,9 @@ void jagged_dense_elementwise_dense_output_(
 
 #define INVOKE_KERNEL_WITH_DIM(NUM_JAGGED_DIM)                                 \
   {                                                                            \
-    auto [threads, blocks, jagged_dims_tensor] =                               \
+    dim3 threads, blocks;                                                      \
+    StackArray<int64_t> jagged_dims_tensor;                                    \
+    std::tie(threads, blocks, jagged_dims_tensor) =                            \
         check_shape_and_partition_(x_values, x_offsets, y);                    \
     blocks.x = div_round_up(x_values.size(0), threads.y);                      \
     std::vector<Tensor> x_offsets_contig;                                      \
@@ -847,7 +847,7 @@ __launch_bounds__(kMaxThreads) void jagged_dense_dense_elementwise_jagged_output
     }
     if (!truncated) {
       const int oidx = offset_temp;
-      int iidx = 0;
+      int iidx;
       for (iidx = threadIdx.x; iidx * 2 + 1 < inner_dense_size;
            iidx += blockDim.x) {
         output_values[offset][2 * iidx] =
@@ -1066,6 +1066,12 @@ __device__ void f32(
         __high2half(y1.data.val)));
 }
 
+template <typename F>
+__device__ void
+fh(__half& v_out, const __half& x, const __half& y0, const __half& y1, F f) {
+  v_out = f(x, y0, y1);
+}
+
 template <typename index_t, typename F>
 __global__ void jagged_dense_dense_elementwise_jagged_output_opt_gather_kernel_(
     at::PackedTensorAccessor32<c10::Half, 2, at::RestrictPtrTraits> values,
@@ -1132,10 +1138,12 @@ __global__ void jagged_dense_dense_elementwise_jagged_output_opt_gather_kernel_(
             v_out.data.mask;
       }
       for (int tid = threadIdx.x + (E / 2) * 2; tid < E; tid += blockDim.x) {
-        auto v_x = static_cast<__half>(x_ptr[tid]);
-        auto v_y0 = static_cast<__half>(y0_ptr[tid]);
-        auto v_y1 = static_cast<__half>(y1_ptr[tid]);
-        values_ptr[tid] = f(v_x, v_y0, v_y1);
+        __half v_x, v_out, v_y0, v_y1;
+        v_x = static_cast<__half>(x_ptr[tid]);
+        v_y0 = static_cast<__half>(y0_ptr[tid]);
+        v_y1 = static_cast<__half>(y1_ptr[tid]);
+        fh(v_out, v_x, v_y0, v_y1, f);
+        values_ptr[tid] = v_out;
       }
     } else {
       for (int tid = threadIdx.x; tid < E / 8; tid += blockDim.x) {
@@ -1163,8 +1171,10 @@ __global__ void jagged_dense_dense_elementwise_jagged_output_opt_gather_kernel_(
             v_out.data.mask;
       }
       for (int tid = threadIdx.x + (E / 2) * 2; tid < E; tid += blockDim.x) {
-        auto v_x = static_cast<__half>(x_ptr[tid]);
-        values_ptr[tid] = f(v_x, __half{}, __half{});
+        __half v_x, v_out, v_y0, v_y1;
+        v_x = static_cast<__half>(x_ptr[tid]);
+        fh(v_out, v_x, v_y0, v_y1, f);
+        values_ptr[tid] = v_out;
       }
     }
   }
@@ -1203,7 +1213,7 @@ inline bool jagged_dense_dense_elementwise_jagged_output_matches_opt(
   matches &= (y_0_reshaped.size(0) < INT_MAX);
   matches &= (y_0_reshaped.size(1) < INT_MAX);
 
-  int max_shared_bytes = 0;
+  int max_shared_bytes;
 #ifndef USE_ROCM
   C10_CUDA_CHECK(cudaDeviceGetAttribute(
       &max_shared_bytes,
@@ -1222,13 +1232,13 @@ inline bool jagged_dense_dense_elementwise_jagged_output_matches_opt(
   // MI100 has independent shared mem and L1
   int used_shared_kb = shared_kb;
 #endif
-  auto used_shared_bytes = static_cast<size_t>(used_shared_kb << 10);
+  int used_shared_bytes = used_shared_kb << 10;
   AT_DISPATCH_INDEX_TYPES(
       x_offsets[0].scalar_type(), "check_shared_memory", [&] {
         auto B = y_0_reshaped.size(0);
         // the default shared memory on V100/A100/H100 is 48 KB from
         // https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#shared-memory-8-x
-        if ((B + 1) * sizeof(index_t) >= static_cast<size_t>(used_shared_bytes)) {
+        if ((B + 1) * sizeof(index_t) >= used_shared_bytes) {
           matches = false;
         }
       });
@@ -1237,7 +1247,9 @@ inline bool jagged_dense_dense_elementwise_jagged_output_matches_opt(
 
 #define INVOKE_KERNEL_WITH_DIM(NUM_JAGGED_DIM)                                 \
   {                                                                            \
-    auto [threads, blocks, jagged_dims_tensor] =                               \
+    dim3 threads, blocks;                                                      \
+    StackArray<int64_t> jagged_dims_tensor;                                    \
+    std::tie(threads, blocks, jagged_dims_tensor) =                            \
         check_shape_and_partition_(x_values, x_offsets, y);                    \
     blocks.x = div_round_up(x_values.size(0), threads.y);                      \
     std::vector<Tensor> x_offsets_contig;                                      \
@@ -1357,7 +1369,7 @@ void jagged_dense_elementwise_jagged_output_opt_(
             int used_shared_bytes = calc_used_shared_bytes(y_reshaped.get_device());
             set_max_dynamic_shared_mem_size_for_opt_search_kernel<index_t>(used_shared_bytes);
             C10_CUDA_KERNEL_LAUNCH_CHECK();
-            TORCH_CHECK(dynamic_smem_size <= static_cast<size_t>(used_shared_bytes));
+            TORCH_CHECK(dynamic_smem_size <= used_shared_bytes);
           }
           dim3 threads_bs = dim3(1024, 1, 1);
           dim3 blocks_bs = dim3(div_round_up(nnz, threads_bs.x), 1, 1);
@@ -1485,7 +1497,7 @@ at::Tensor _fbgemm_jagged_to_padded_dense_forward(
 Tensor _fbgemm_dense_to_jagged_forward_symint(
     const Tensor& dense,
     TensorList offsets,
-    std::optional<at::SymInt> total_L) {
+    c10::optional<at::SymInt> total_L) {
   // D is the embedding dimension
   auto D = dense.size(-1);
 

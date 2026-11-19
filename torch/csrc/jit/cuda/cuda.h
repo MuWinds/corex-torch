@@ -3,7 +3,8 @@
 #include <c10/cuda/CUDAStream.h>
 #include <torch/custom_class.h>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 class CUDAEvent;
 // This class is a wrapper around c10::cuda::CUDAStream.
@@ -12,8 +13,9 @@ class CUDAEvent;
 // c10/cuda/CUDAStream.h.
 class CUDAStream final : public CustomClassHolder {
  public:
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
   CUDAStream(
-      std::optional<c10::Device> device = std::nullopt,
+      std::optional<c10::Device> device = c10::nullopt,
       int64_t priority = 0) {
     c10::DeviceIndex device_index =
         device.has_value() ? device->index() : c10::cuda::current_device();
@@ -21,6 +23,7 @@ class CUDAStream final : public CustomClassHolder {
         c10::cuda::getStreamFromPool(static_cast<int>(priority), device_index));
   }
 
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
   CUDAStream(c10::cuda::CUDAStream s) {
     stream_ = std::make_unique<c10::cuda::CUDAStream>(s);
   }
@@ -36,9 +39,9 @@ class CUDAStream final : public CustomClassHolder {
     stream_->synchronize();
   }
 
-  void waitEvent(const c10::intrusive_ptr<CUDAEvent>& event);
+  void waitEvent(c10::intrusive_ptr<CUDAEvent> event);
 
-  void waitStream(const c10::intrusive_ptr<CUDAStream>& stream);
+  void waitStream(c10::intrusive_ptr<CUDAStream> stream);
 
   /// Get the CUDA device index that this stream is associated with.
   int64_t device_index() const {
@@ -67,10 +70,12 @@ class CUDAStream final : public CustomClassHolder {
 // aten/src/ATen/cuda/CUDAEvent.h.
 class CUDAEvent final : public CustomClassHolder {
  public:
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
   CUDAEvent(
       bool enable_timing = false,
       bool blocking = false,
       bool interprocess = false) {
+    // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
     int flags = cudaEventDisableTiming;
     if (enable_timing) {
       flags = cudaEventDefault;
@@ -86,12 +91,13 @@ class CUDAEvent final : public CustomClassHolder {
     event_ = std::make_unique<at::cuda::CUDAEvent>(flags);
   }
 
-  double elapsedTime(const c10::intrusive_ptr<CUDAEvent>& end) {
+  double elapsedTime(c10::intrusive_ptr<CUDAEvent> end) {
     return event_->elapsed_time(*end->event_);
   }
 
   std::string ipcHandle() {
-    cudaIpcEventHandle_t handle{};
+    // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+    cudaIpcEventHandle_t handle;
     event_->ipc_handle(&handle);
     std::string str_handle((const char*)&handle, sizeof(handle));
     return str_handle;
@@ -101,12 +107,12 @@ class CUDAEvent final : public CustomClassHolder {
     return event_->query();
   }
 
-  void record(const c10::intrusive_ptr<CUDAStream>& stream);
+  void record(c10::intrusive_ptr<CUDAStream> stream);
 
   void synchronize() {
     event_->synchronize();
   }
-  void wait(const c10::intrusive_ptr<CUDAStream>& stream);
+  void wait(c10::intrusive_ptr<CUDAStream> stream);
 
  private:
   void recordInternal(CUDAStream* stream);
@@ -115,7 +121,7 @@ class CUDAEvent final : public CustomClassHolder {
   friend class CUDAStream;
 };
 
-inline c10::intrusive_ptr<CUDAEvent> CUDAStream::recordEvent(
+c10::intrusive_ptr<CUDAEvent> CUDAStream::recordEvent(
     c10::intrusive_ptr<CUDAEvent> event) {
   if (!event) {
     event = c10::make_intrusive<CUDAEvent>();
@@ -125,26 +131,25 @@ inline c10::intrusive_ptr<CUDAEvent> CUDAStream::recordEvent(
   return event;
 }
 
-inline void CUDAStream::waitEvent(const c10::intrusive_ptr<CUDAEvent>& event) {
+void CUDAStream::waitEvent(c10::intrusive_ptr<CUDAEvent> event) {
   event->event_->block(*stream_);
 }
 
-inline void CUDAStream::waitStream(
-    const c10::intrusive_ptr<CUDAStream>& stream) {
+void CUDAStream::waitStream(c10::intrusive_ptr<CUDAStream> stream) {
   auto ev = c10::make_intrusive<CUDAEvent>();
   stream->recordEvent(ev);
   waitEvent(ev);
 }
 
-inline void CUDAEvent::record(const c10::intrusive_ptr<CUDAStream>& stream) {
+void CUDAEvent::record(c10::intrusive_ptr<CUDAStream> stream) {
   event_->record(*stream->stream_);
 }
 
-inline void CUDAEvent::recordInternal(CUDAStream* stream) {
+void CUDAEvent::recordInternal(CUDAStream* stream) {
   event_->record(*stream->stream_);
 }
 
-inline void CUDAEvent::wait(const c10::intrusive_ptr<CUDAStream>& stream) {
+void CUDAEvent::wait(c10::intrusive_ptr<CUDAStream> stream) {
   event_->block(*stream->stream_);
 }
 
@@ -152,7 +157,7 @@ TORCH_LIBRARY(cuda, m) {
   auto stream_class = m.class_<torch::jit::CUDAStream>("Stream").def(
       torch::init<std::optional<c10::Device>, int64_t>(),
       "",
-      {torch::arg("device") = std::nullopt, torch::arg("priority") = 0});
+      {torch::arg("device") = c10::nullopt, torch::arg("priority") = 0});
   auto event_class = m.class_<torch::jit::CUDAEvent>("Event").def(
       torch::init<bool, bool, bool>(),
       "",
@@ -174,6 +179,7 @@ TORCH_LIBRARY(cuda, m) {
       .def("record", &CUDAEvent::record)
       .def("synchronize", &CUDAEvent::synchronize)
       .def("wait", &CUDAEvent::wait);
-}
+};
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

@@ -148,7 +148,7 @@ Module::Module(
 // as we bring up the system since it will degrade performance
 // and may introduce bugs. test_jit.py provides context managers
 // that enable it for specific tests.
-static thread_local bool inline_everything = false;
+thread_local bool inline_everything = false;
 bool& getInlineEverythingMode() {
   return inline_everything;
 }
@@ -158,11 +158,11 @@ void Module::to(at::Device device, at::ScalarType dtype, bool non_blocking) {
 }
 
 void Module::to(at::ScalarType dtype, bool non_blocking) {
-  to_impl(/*device=*/std::nullopt, dtype, non_blocking);
+  to_impl(/*device=*/c10::nullopt, dtype, non_blocking);
 }
 
 void Module::to(at::Device device, bool non_blocking) {
-  to_impl(device, /*dtype=*/std::nullopt, non_blocking);
+  to_impl(device, /*dtype=*/c10::nullopt, non_blocking);
 }
 
 static void module_state_to(
@@ -451,8 +451,7 @@ IValue Module::create_class(const c10::QualifiedName& name, Stack stack) const {
   const auto classType =
       _ivalue()->compilation_unit()->get_class(c10::QualifiedName(name));
   if (!classType) {
-    TORCH_CHECK(
-        false,
+    AT_ERROR(
         "Could not find class with name: '",
         name.qualifiedName(),
         "' in module.");
@@ -565,46 +564,47 @@ std::string Module::dump_to_str(
   std::stringstream parameters_ss;
   std::stringstream attributes_ss;
   std::stringstream methods_ss;
+  std::stringstream submodules_ss;
 
   for (const NameTensor& p : named_parameters(/*recurse=*/false)) {
     parameters_ss << p.name << " = ";
     if (print_param_values) {
-      parameters_ss << p.value << '\n';
+      parameters_ss << p.value << std::endl;
     } else {
-      parameters_ss << "..." << '\n';
+      parameters_ss << "..." << std::endl;
     }
   }
 
   for (const NameValue& p : named_attributes(/*recurse=*/false)) {
     attributes_ss << p.name << " = ";
     if (!p.value.isTensor() || print_attr_values) {
-      attributes_ss << p.value << '\n';
+      attributes_ss << p.value << std::endl;
     } else {
-      attributes_ss << "..." << '\n';
+      attributes_ss << "..." << std::endl;
     }
   }
 
   for (const Method& method : get_methods()) {
-    methods_ss << "  method " << method.name() << " {" << '\n';
+    methods_ss << "  method " << method.name() << " {" << std::endl;
     if (print_method_bodies) {
       methods_ss << torch::jit::jit_log_prefix(
                         "    ", method.graph()->toString())
-                 << '\n';
+                 << std::endl;
     }
-    methods_ss << "  }" << '\n';
+    methods_ss << "  }" << std::endl;
   }
 
-  ss << "module " << type()->name()->qualifiedName() << " {" << '\n';
-  ss << "  parameters {" << '\n';
+  ss << "module " << type()->name()->qualifiedName() << " {" << std::endl;
+  ss << "  parameters {" << std::endl;
   ss << torch::jit::jit_log_prefix("    ", parameters_ss.str());
-  ss << "  }" << '\n';
-  ss << "  attributes {" << '\n';
+  ss << "  }" << std::endl;
+  ss << "  attributes {" << std::endl;
   ss << torch::jit::jit_log_prefix("    ", attributes_ss.str());
-  ss << "  }" << '\n';
-  ss << "  methods {" << '\n';
+  ss << "  }" << std::endl;
+  ss << "  methods {" << std::endl;
   ss << torch::jit::jit_log_prefix("  ", methods_ss.str());
-  ss << "  }" << '\n';
-  ss << "  submodules {" << '\n';
+  ss << "  }" << std::endl;
+  ss << "  submodules {" << std::endl;
   for (const NameModule& s : named_children()) {
     // We do 4 spaces here, because one level of indentation comes from
     // 'submodules' scope and the other one goes from a specific submodule we're
@@ -614,8 +614,8 @@ std::string Module::dump_to_str(
         s.value.dump_to_str(
             print_method_bodies, print_attr_values, print_param_values));
   }
-  ss << "  }" << '\n';
-  ss << "}" << '\n';
+  ss << "  }" << std::endl;
+  ss << "}" << std::endl;
 
   return ss.str();
 }
@@ -626,7 +626,7 @@ void Module::dump(
     bool print_param_values = true) const {
   std::cout << dump_to_str(
                    print_method_bodies, print_attr_values, print_param_values)
-            << '\n';
+            << std::endl;
 }
 
 } // namespace torch::jit

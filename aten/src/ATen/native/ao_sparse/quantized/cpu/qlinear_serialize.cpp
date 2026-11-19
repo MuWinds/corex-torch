@@ -9,7 +9,8 @@
 #include <utility>
 #endif
 
-namespace ao::sparse {
+namespace ao {
+namespace sparse {
 
 namespace {
 /**
@@ -244,4 +245,5 @@ BCSRSerializationType PackedLinearWeightQnnp::serialize() {
 
 #endif // USE_PYTORCH_QNNPACK
 
+} // namespace sparse
 } // namespace ao

@@ -18,7 +18,9 @@
 #include <ATen/ops/layer_norm.h>
 #endif
 
-namespace at::native {
+namespace at {
+
+namespace native {
 
 namespace {
 Tensor linear_for_ffn(
@@ -54,7 +56,7 @@ Tensor ffn(
   TORCH_CHECK(w1.dim() == 2, "2d weights expected");
   TORCH_CHECK(w2.dim() == 2, "2d weights expected");
   Tensor res = linear_for_ffn(b1, input, w1, use_gelu);
-  res = linear_for_ffn(b2, res, w2, std::nullopt);
+  res = linear_for_ffn(b2, res, w2, c10::nullopt);
   return res;
 }
 
@@ -145,4 +147,5 @@ Tensor transformer_encoder_layer_forward(
   return x;
 }
 
+} // namespace native
 } // namespace at

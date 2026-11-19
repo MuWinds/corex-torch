@@ -1,7 +1,9 @@
 #include <torch/csrc/jit/tensorexpr/ir_simplifier.h>
 #include <torch/csrc/jit/tensorexpr/operators/matmul.h>
 
-namespace torch::jit::tensorexpr {
+namespace torch {
+namespace jit {
+namespace tensorexpr {
 
 Tensor computeMatmul(
     const std::vector<ArgValue>& inputs,
@@ -74,4 +76,6 @@ Tensor computeAddMM(
                inputs[4])})); // TODO: handle other dtypes of alpha and beta
 }
 
-} // namespace torch::jit::tensorexpr
+} // namespace tensorexpr
+} // namespace jit
+} // namespace torch

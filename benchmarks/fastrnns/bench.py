@@ -205,7 +205,7 @@ def bench(rnn_runners, group_name, print_json=False, sep=" ", **params):
                 result_with_no_info = result._replace(info_fwd="None", info_bwd="None")
                 print_stderr(pretty_print(result_with_no_info, sep=sep))
                 results[name] = result
-            except Exception:
+            except Exception as e:
                 if not print_json:
                     raise
 
@@ -214,7 +214,8 @@ def bench(rnn_runners, group_name, print_json=False, sep=" ", **params):
             k: {"avg": v.avg_fwd, "std": v.std_fwd, "info": v.info_fwd}
             for k, v in results.items()
         },
-        f"{group_name}-backward": {
+        group_name
+        + "-backward": {
             k: {"avg": v.avg_bwd, "std": v.std_bwd, "info": v.info_bwd}
             for k, v in results.items()
         },

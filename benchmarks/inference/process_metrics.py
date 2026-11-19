@@ -10,7 +10,6 @@ import os
 
 import pandas as pd
 
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Parse output files")
     parser.add_argument("--csv", type=str, help="Path to csv file")
@@ -25,8 +24,8 @@ if __name__ == "__main__":
 
     # Calculate mean and standard deviation for a subset of metrics
     metrics = ["warmup_latency", "average_latency", "throughput", "gpu_util"]
-    means = {}
-    stds = {}
+    means = dict()
+    stds = dict()
 
     for metric in metrics:
         means[metric] = df[metric].mean()

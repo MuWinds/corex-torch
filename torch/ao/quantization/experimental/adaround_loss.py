@@ -1,8 +1,9 @@
+from typing import Tuple
+
 import numpy as np
 
 import torch
 from torch.nn import functional as F
-
 
 ADAROUND_ZETA: float = 1.1
 ADAROUND_GAMMA: float = -0.1
@@ -19,7 +20,7 @@ class AdaptiveRoundingLoss(torch.nn.Module):
         self,
         max_iter: int,
         warm_start: float = 0.2,
-        beta_range: tuple[int, int] = (20, 2),
+        beta_range: Tuple[int, int] = (20, 2),
         reg_param: float = 0.001,
     ) -> None:
         super().__init__()
@@ -37,9 +38,9 @@ class AdaptiveRoundingLoss(torch.nn.Module):
         Major logics copied from official Adaround Implementation.
         Apply rounding regularization to the input tensor V.
         """
-        assert curr_iter < self.max_iter, (
-            "Current iteration strictly les sthan max iteration"
-        )
+        assert (
+            curr_iter < self.max_iter
+        ), "Current iteration strictly les sthan max iteration"
         if curr_iter < self.warm_start * self.max_iter:
             return torch.tensor(0.0)
         else:
@@ -85,7 +86,7 @@ class AdaptiveRoundingLoss(torch.nn.Module):
         original_output: torch.Tensor,
         V: torch.Tensor,
         curr_iter: int,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Compute the asymmetric reconstruction formulation as eq [25]
         """

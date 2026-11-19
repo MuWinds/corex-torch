@@ -4,7 +4,7 @@
 #include <ATen/TensorIterator.h>
 #include <ATen/TensorOperators.h>
 #include <c10/util/Exception.h>
-#include <optional>
+#include <c10/util/Optional.h>
 
 #include <ATen/CPUGeneratorImpl.h>
 #include <ATen/core/DistributionsHelper.h>
@@ -23,7 +23,6 @@
 #include <ATen/ops/_sample_dirichlet_native.h>
 #include <ATen/ops/_standard_gamma_grad_native.h>
 #include <ATen/ops/_standard_gamma_native.h>
-#include <ATen/ops/_assert_async.h>
 #include <ATen/ops/argmax.h>
 #include <ATen/ops/bernoulli_native.h>
 #include <ATen/ops/binomial_native.h>
@@ -43,7 +42,13 @@
 #include <ATen/ops/zeros.h>
 #endif
 
+#include <functional>
+#include <type_traits>
 #include <utility>
+// NOLINTNEXTLINE(modernize-deprecated-headers)
+#include <assert.h>
+// NOLINTNEXTLINE(modernize-deprecated-headers)
+#include <float.h>
 
 namespace {
 /*
@@ -83,38 +88,47 @@ int64_t sample_poisson(double lambda, at::CPUGeneratorImpl* generator) {
   at::uniform_real_distribution<double> standard_uniform(0.0, 1.0);
   if (lambda >= 10) {
     // transformed rejection method, (Hoermann, 1993)
+    // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+    int64_t k;
+    // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+    double U, V, a, b, invalpha, vr, us;
 
     double slam = std::sqrt(lambda);
     double loglam = std::log(lambda);
-    double b = 0.931 + 2.53 * slam;
-    double a = -0.059 + 0.02483 * b;
-    double invalpha = 1.1239 + 1.1328 / (b - 3.4);
-    double vr = 0.9277 - 3.6224 / (b - 2);
+    b = 0.931 + 2.53 * slam;
+    a = -0.059 + 0.02483 * b;
+    invalpha = 1.1239 + 1.1328 / (b - 3.4);
+    vr = 0.9277 - 3.6224 / (b - 2);
 
     while (true) {
-      double U = standard_uniform(generator) - 0.5;
-      double V = standard_uniform(generator);
-      double us = 0.5 - std::fabs(U);
-      auto k = std::floor((2 * a / us + b) * U + lambda + 0.43);
+      U = standard_uniform(generator) - 0.5;
+      V = standard_uniform(generator);
+      us = 0.5 - std::fabs(U);
+      k = (int64_t)std::floor((2 * a / us + b) * U + lambda + 0.43);
       if ((us >= 0.07) && (V <= vr)) {
-        return static_cast<int64_t>(k);
+        return k;
       }
       if ((k < 0) || ((us < 0.013) && (V > us))) {
         continue;
       }
       if ((std::log(V) + std::log(invalpha) - std::log(a / (us * us) + b)) <=
-          (-lambda + k * loglam - std::lgamma(k + 1))) {
-        return static_cast<int64_t>(k);
+          (-lambda + k * loglam - std::lgamma((double)k + 1))) {
+        return k;
       }
     }
   } else if (lambda == 0) {
     return 0;
   } else {
-    auto enlam = std::exp(-lambda);
-    int64_t X = 0;
-    auto prod = 1.0;
+    // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+    int64_t X;
+    // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+    double prod, U, enlam;
+
+    enlam = std::exp(-lambda);
+    X = 0;
+    prod = 1.0;
     while (true) {
-      auto U = standard_uniform(generator);
+      U = standard_uniform(generator);
       prod *= U;
       if (prod > enlam) {
         X += 1;
@@ -363,7 +377,7 @@ struct RandomFromToStub {
   }
 };
 
-Tensor& random_(Tensor& self, int64_t from, std::optional<int64_t> to, std::optional<Generator> gen) {
+Tensor& random_(Tensor& self, int64_t from, optional<int64_t> to, std::optional<Generator> gen) {
   return at::native::templates::random_from_to_impl<RandomFromToStub, Generator>(self, from, to, std::move(gen));
 }
 
@@ -376,7 +390,7 @@ Tensor& random_meta_(Tensor& self, std::optional<Generator> gen) {
   return self;
 }
 
-Tensor& random_meta_(Tensor& self, int64_t from, std::optional<int64_t> to, std::optional<Generator> gen) {
+Tensor& random_meta_(Tensor& self, int64_t from, optional<int64_t> to, std::optional<Generator> gen) {
   // No error checking yay
   return self;
 }
@@ -586,15 +600,20 @@ Tensor& multinomial_out(const Tensor& self,
   // https://github.com/pytorch/pytorch/issues/11931#issuecomment-625882503
   if (!with_replacement || n_sample == 1) {
     // Sanity checks on `self`.
-    auto is_valid = ((self.max() < INFINITY) & (self.min() >= 0));
-    at::_assert_async(is_valid, "probability tensor contains either `inf`, `nan` or element < 0");
-    at::Tensor zero_prob_condition;
+    auto is_valid = ((self.max() < INFINITY) & (self.min() >= 0)).item();
+    TORCH_CHECK(
+        is_valid.to<bool>(),
+        "probability tensor contains either `inf`, `nan` or element < 0");
+    // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+    bool zero_prob_condition;
     if (self.dim() == 1){
-      zero_prob_condition = (self.sum() == 0);
+      zero_prob_condition = (self.sum() == 0).item().to<bool>();
     } else {
-      zero_prob_condition = (self.sum(1) == 0).any();
+      zero_prob_condition = (self.sum(1) == 0).sum().item().to<bool>();
     }
-    at::_assert_async(~zero_prob_condition, "invalid multinomial distribution (sum of probabilities <= 0)");
+    TORCH_CHECK(
+        !zero_prob_condition,
+        "invalid multinomial distribution (sum of probabilities <= 0)");
 
     // The algorithm is from gumbel softmax.
     // s = argmax( logp - log(-log(eps)) ) where eps ~ U(0, 1)

@@ -8,7 +8,8 @@
 #include <torch/csrc/jit/passes/remove_dropout.h>
 #include <torch/csrc/jit/runtime/graph_executor.h>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 void OptimizeFrozenGraph(
     std::shared_ptr<Graph>& graph,
@@ -28,4 +29,5 @@ void OptimizeFrozenGraph(
   }
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

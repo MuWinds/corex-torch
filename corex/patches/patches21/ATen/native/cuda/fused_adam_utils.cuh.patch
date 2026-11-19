@@ -1,0 +1,54 @@
+--- /data/home/2024240384035/build/pytorch-2.1.0/aten/src/ATen/native/cuda/fused_adam_utils.cuh	2023-09-22 06:25:09.000000000 +0800
++++ /data/software/Anaconda3/2024.10-1/envs/py310/lib/python3.10/site-packages/torch/include/ATen/native/cuda/fused_adam_utils.cuh	2025-03-13 11:53:02.395028393 +0800
+@@ -24,11 +24,19 @@
+ C10_DEVICE __forceinline__ void adam_math(
+     scalar_type r_args[depth][kILP],
+     const float* step_count,
++#ifndef __ILUVATAR__
+     const double lr,
+     const double beta1,
+     const double beta2,
+     const double weight_decay,
+     const double eps,
++#else
++    const float lr,
++    const float beta1,
++    const float beta2,
++    const float weight_decay,
++    const float eps,
++#endif
+     const bool maximize,
+     const bool amsgrad,
+     const float* grad_scale_ptr,
+@@ -41,7 +49,11 @@
+         opmath_t param = static_cast<opmath_t>(r_args[kParamIdx][ii]);
+         opmath_t grad = static_cast<opmath_t>(r_args[kGradIdx][ii]);
+         if (grad_scale_ptr) {
++#ifndef __ILUVATAR__
+             grad /= (static_cast<double>(*grad_scale_ptr));
++#else
++            grad /= (static_cast<float>(*grad_scale_ptr));
++#endif
+         }
+         const opmath_t grad_to_store = grad;
+         if (maximize) {
+@@ -112,11 +124,19 @@
+             int chunk_size,
+             FusedOptimizerTensorListMetadata<depth>& tl,
+             const float* lr_ptr,
++#ifndef __ILUVATAR__
+             const double lr,
+             const double beta1,
+             const double beta2,
+             const double weight_decay,
+             const double eps,
++#else
++            const float lr,
++            const float beta1,
++            const float beta2,
++            const float weight_decay,
++            const float eps,
++#endif
+             const bool maximize,
+             const bool amsgrad,
+             const float* grad_scale_ptr,

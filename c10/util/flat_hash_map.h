@@ -780,7 +780,7 @@ class sherwood_v3_table : private EntryAlloc,
   uint64_t num_buckets_for_reserve(uint64_t num_elements_) const {
     return static_cast<uint64_t>(std::ceil(
         static_cast<double>(num_elements_) /
-        std::min(0.5, static_cast<double>(_max_load_factor))));
+        std::min<double>(0.5, static_cast<double>(_max_load_factor))));
   }
   void rehash_for_other_container(const sherwood_v3_table& other) {
     rehash(

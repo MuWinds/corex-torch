@@ -9,9 +9,9 @@ from datasets import load_dataset, load_metric
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 import torch
+
 import torch._dynamo
 from torch.utils.data import DataLoader
-
 
 torch.backends.cuda.matmul.allow_tf32 = True
 
@@ -99,7 +99,10 @@ def check_loss(ref_loss, res_loss):
     assert len(ref_loss) == len(res_loss)
     length = len(ref_loss)
     x = min(length, 10)
-    return sum(res_loss[-x:]) / 10 <= sum(ref_loss[-x:]) / 10 + 0.1
+    if sum(res_loss[-x:]) / 10 <= sum(ref_loss[-x:]) / 10 + 1e-1:
+        return True
+    else:
+        return False
 
 
 def parse_args():
@@ -193,9 +196,9 @@ def main():
     print(
         f"Train model on {args.epochs} epochs with backend {args.backend} and optimizer {args.optimizer}:"
     )
-    print(f"PyTorch spent {timedelta(seconds=native_elapsed / args.epochs)} per epoch")
+    print(f"PyTorch spent {timedelta(seconds=native_elapsed/args.epochs)} per epoch")
     print(
-        f"TorchDynamo spent {timedelta(seconds=dynamo_elapsed / args.epochs)} per epoch"
+        f"TorchDynamo spent {timedelta(seconds=dynamo_elapsed/args.epochs)} per epoch"
     )
 
 

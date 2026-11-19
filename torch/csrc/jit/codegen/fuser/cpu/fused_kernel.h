@@ -1,7 +1,6 @@
 #pragma once
 
 #include <ATen/ATen.h>
-#include <ATen/DynamicLibrary.h>
 #include <torch/csrc/Export.h>
 #include <torch/csrc/jit/codegen/fuser/fused_kernel.h>
 
@@ -9,7 +8,15 @@
 #include <memory>
 #include <string>
 
-namespace torch::jit::fuser::cpu {
+// Forward declare DynamicLibrary
+namespace at {
+struct DynamicLibrary;
+}
+
+namespace torch {
+namespace jit {
+namespace fuser {
+namespace cpu {
 
 // Represents a compiled CPU kernel and the metadata necessary to run it
 struct TORCH_API FusedKernelCPU : public FusedKernel {
@@ -36,4 +43,7 @@ struct TORCH_API FusedKernelCPU : public FusedKernel {
   void (*kernel)(uint32_t, void**) = nullptr;
 };
 
-} // namespace torch::jit::fuser::cpu
+} // namespace cpu
+} // namespace fuser
+} // namespace jit
+} // namespace torch

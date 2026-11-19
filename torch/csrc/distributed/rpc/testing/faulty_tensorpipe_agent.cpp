@@ -3,7 +3,9 @@
 #include <torch/csrc/distributed/rpc/testing/faulty_tensorpipe_agent.h>
 #include <torch/csrc/distributed/rpc/utils.h>
 
-namespace torch::distributed::rpc {
+namespace torch {
+namespace distributed {
+namespace rpc {
 
 static std::string fromVecToString(const std::vector<char>& vec) {
   return std::string(vec.begin(), vec.end());
@@ -27,11 +29,8 @@ FaultyTensorPipeAgent::FaultyTensorPipeAgent(
           std::move(reverseDeviceMaps),
           std::move(devices),
           std::move(callback)),
-      // NOLINTNEXTLINE(bugprone-use-after-move)
       numFailSends_(opts.numFailSends),
-      // NOLINTNEXTLINE(bugprone-use-after-move)
       messageTypesToFail_(parseMessagesToFailInput(opts.messagesToFail)),
-      // NOLINTNEXTLINE(bugprone-use-after-move)
       messageTypesToDelay_(parseMessagesToDelay(opts.messagesToDelay)) {}
 
 std::vector<MessageType> FaultyTensorPipeAgent::parseMessagesToFailInput(
@@ -99,7 +98,7 @@ c10::intrusive_ptr<JitFuture> FaultyTensorPipeAgent::send(
 
 void FaultyTensorPipeAgent::pipeWrite(
     const std::shared_ptr<tensorpipe::Pipe>& pipe,
-    const c10::intrusive_ptr<Message>& rpcMessage,
+    c10::intrusive_ptr<Message> rpcMessage,
     std::vector<c10::Device>&& devices,
     std::vector<c10::Stream> streams,
     std::function<void(const tensorpipe::Error&)> fn) noexcept {
@@ -147,6 +146,8 @@ MessageType FaultyTensorPipeAgent::messageStringToType(
   return it->second;
 }
 
-} // namespace torch::distributed::rpc
+} // namespace rpc
+} // namespace distributed
+} // namespace torch
 
 #endif // USE_TENSORPIPE

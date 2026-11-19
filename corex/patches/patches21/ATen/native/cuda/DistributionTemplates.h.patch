@@ -1,0 +1,55 @@
+--- /data/home/2024240384035/build/pytorch-2.1.0/aten/src/ATen/native/cuda/DistributionTemplates.h	2023-09-22 06:25:09.000000000 +0800
++++ /data/software/Anaconda3/2024.10-1/envs/py310/lib/python3.10/site-packages/torch/include/ATen/native/cuda/DistributionTemplates.h	2025-03-13 11:53:02.366028414 +0800
+@@ -51,10 +51,18 @@
+   const uint32_t unroll = curand4_engine_calls;
+   dim3 dim_block(block_size);
+   dim3 grid((numel + block_size - 1) / block_size);
++#ifdef __ILUVATAR__
++  // hard-coded hardware configuration value to keep it same as Nvidia V100
++  uint32_t blocks_per_sm = 2048 / block_size;
++  grid.x = std::min(
++      static_cast<uint32_t>(80) * blocks_per_sm,
++      grid.x);
++#else
+   uint32_t blocks_per_sm = at::cuda::getCurrentDeviceProperties()->maxThreadsPerMultiProcessor / block_size;
+   grid.x = std::min(
+       static_cast<uint32_t>(at::cuda::getCurrentDeviceProperties()->multiProcessorCount) * blocks_per_sm,
+       grid.x);
++#endif
+   //number of times random will be generated per thread, to offset philox counter in thc random state
+   uint64_t counter_offset = ((numel - 1) / (block_size * grid.x * unroll) + 1)
+                                 * curand4_engine_calls;
+@@ -515,9 +523,16 @@
+   AT_DISPATCH_ALL_TYPES_AND2(at::ScalarType::Half, at::ScalarType::BFloat16, iter.dtype(), "geometric_cuda", [&] {
+     using accscalar_t = at::DiscreteDistributionType<scalar_t>::type;
+     // define lambda for geometric transformation
++#ifdef __ILUVATAR__
++    auto p_ = static_cast<accscalar_t>(p);
++    auto geometric_func = [p_] __device__ (accscalar_t rand) {
++      return static_cast<scalar_t>(transformation::geometric<accscalar_t>(rand, p_));
++    };
++#else
+     auto geometric_func = [p] __device__ (accscalar_t rand) {
+       return static_cast<scalar_t>(transformation::geometric<accscalar_t>(rand, p));
+     };
++#endif
+     uniform_and_transform<scalar_t, accscalar_t, curand4_engine_calls>(iter, gen, geometric_func);
+   });
+ }
+@@ -651,9 +666,16 @@
+     at::ScalarType::Half, at::ScalarType::BFloat16, at::ScalarType::Bool, iter.dtype(), "bernoulli_scalar_cuda_", [&] {
+       using accscalar_t = at::DiscreteDistributionType<scalar_t>::type;
+       // define lambda for bernoulli transformation
++#ifdef __ILUVATAR__
++      auto p_ = static_cast<accscalar_t>(p);
++      auto bernoulli_func = [p_] __device__ (accscalar_t rand) {
++        return static_cast<scalar_t>(transformation::bernoulli<accscalar_t>(rand, p_));
++      };
++#else
+       auto bernoulli_func = [p] __device__ (accscalar_t rand) {
+         return static_cast<scalar_t>(transformation::bernoulli<accscalar_t>(rand, p));
+       };
++#endif
+       uniform_and_transform<scalar_t, accscalar_t, curand4_engine_calls>(iter, gen, bernoulli_func);
+    });
+ }

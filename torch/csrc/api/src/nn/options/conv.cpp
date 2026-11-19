@@ -1,6 +1,7 @@
 #include <torch/nn/options/conv.h>
 
-namespace torch::nn {
+namespace torch {
+namespace nn {
 
 template struct ConvOptions<1>;
 template struct ConvOptions<2>;
@@ -18,4 +19,5 @@ template struct ConvTransposeFuncOptions<3>;
 
 } // namespace functional
 
-} // namespace torch::nn
+} // namespace nn
+} // namespace torch

@@ -21,7 +21,8 @@
 
 #include <algorithm>
 
-namespace at::native {
+namespace at {
+namespace native {
 
 DEFINE_DISPATCH(qclamp_stub);
 DEFINE_DISPATCH(qclamp_min_stub);
@@ -94,8 +95,8 @@ Tensor qnnpack_clamp(Tensor input, const Scalar& min, const Scalar& max) {
 
 Tensor quantized_clamp_impl(
     const Tensor& qx,
-    const std::optional<Scalar>& min,
-    const std::optional<Scalar>& max) {
+    const optional<Scalar>& min,
+    const optional<Scalar>& max) {
   Tensor qy;
   if (min && max) {
 #ifdef USE_PYTORCH_QNNPACK
@@ -127,8 +128,8 @@ Tensor quantized_clamp_impl(
 // at::native functions for the native_functions.yaml
 Tensor clamp_quantized_cpu(
     const Tensor& qx,
-    const std::optional<Scalar>& min,
-    const std::optional<Scalar>& max) {
+    const optional<Scalar>& min,
+    const optional<Scalar>& max) {
   Tensor qy;
   AT_DISPATCH_QINT_TYPES(qx.scalar_type(), "clamp", [&]() {
     qy = quantized_clamp_impl(qx, min, max);
@@ -169,4 +170,5 @@ TORCH_LIBRARY_IMPL(quantized, QuantizedCPU, m) {
   m.impl(TORCH_SELECTIVE_NAME("quantized::clamp"), TORCH_FN(clamp_quantized_cpu));
 }
 
-} // namespace at::native
+} // namespace native
+} // namespace at

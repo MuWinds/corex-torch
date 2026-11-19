@@ -3,7 +3,9 @@
 #include <torch/csrc/profiler/stubs/base.h>
 #include <torch/csrc/profiler/util.h>
 
-namespace torch::profiler::impl {
+namespace torch {
+namespace profiler {
+namespace impl {
 
 struct ITTThreadLocalState : ProfilerStateBase {
   explicit ITTThreadLocalState(const ProfilerConfig& config)
@@ -32,8 +34,7 @@ struct ITTThreadLocalState : ProfilerStateBase {
 };
 
 template <bool report_input_shapes>
-static std::unique_ptr<at::ObserverContext> enterITT(
-    const at::RecordFunction& fn) {
+std::unique_ptr<at::ObserverContext> enterITT(const at::RecordFunction& fn) {
   if (ITTThreadLocalState::getTLS() != nullptr) {
     torch::profiler::impl::ittStubs()->rangePush(fn.name());
   }
@@ -67,4 +68,6 @@ void pushITTCallbacks(
   state_ptr->setCallbackHandle(handle);
 }
 
-} // namespace torch::profiler::impl
+} // namespace impl
+} // namespace profiler
+} // namespace torch

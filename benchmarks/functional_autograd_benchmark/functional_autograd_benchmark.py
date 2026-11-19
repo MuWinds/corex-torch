@@ -1,11 +1,10 @@
 import time
 from argparse import ArgumentParser
 from collections import defaultdict
-from typing import Any, Callable, NamedTuple
+from typing import Any, Callable, List, NamedTuple
 
 import torch
 from torch.autograd import functional
-
 
 try:
     import functorch as ft
@@ -147,8 +146,8 @@ ALL_TASKS = ALL_TASKS_NON_VECTORIZED + VECTORIZED_TASKS
 class ModelDef(NamedTuple):
     name: str
     getter: GetterType
-    tasks: list[str]
-    unsupported: list[str]
+    tasks: List[str]
+    unsupported: List[str]
 
 
 MODELS = [
@@ -190,9 +189,9 @@ def run_once(model: Callable, inp: InputsType, task: str, v: VType, **kwargs) ->
     func = get_task_func(task)
 
     if v is not None:
-        func(model, inp, v=v, strict=True)
+        res = func(model, inp, v=v, strict=True)
     else:
-        func(model, inp, strict=True)
+        res = func(model, inp, strict=True)
 
 
 def run_once_functorch(
@@ -223,7 +222,7 @@ def run_once_functorch(
 
 def run_model(
     model_getter: GetterType, args: Any, task: str, run_once_fn: Callable = run_once
-) -> list[float]:
+) -> List[float]:
     if args.gpu == -1:
         device = torch.device("cpu")
 

@@ -16,29 +16,19 @@ c10::Allocator* GetCPUAllocatorMaybePinned(bool pin_memory) {
     // NB: This is not quite right, if you somehow had both CUDA and PrivateUse1 initialized
     // in the same PyTorch build, you would ONLY ever get the CUDA pinned memory allocator.
     // To properly support this, see https://github.com/pytorch/pytorch/issues/14560
-
-    std::optional<c10::DeviceType> opt_device_type = std::nullopt;
-    // As mentioned in Note [Accelerator Context], the accelerators in PyTorch should be mutually exclusive,
-    // and PrivateUse1 has the highest priority, followed by CUDA;
-    // However, since exclusivity between accelerators cannot be guaranteed at present,
-    // in order to ensure backward compatibility (previously the default was CUDA), CUDA are prioritized.
     if (at::globalContext().hasCUDA()) {
-      opt_device_type = c10::DeviceType::CUDA;
+      return at::detail::getCUDAHooks().getPinnedMemoryAllocator();
+    } else if (at::globalContext().hasXPU()) {
+      return at::detail::getXPUHooks().getPinnedMemoryAllocator();
+    } else if(at::isPrivateUse1HooksRegistered()) {
+      return at::GetPrivateUse1HooksInterface()->getPinnedMemoryAllocator();
     } else {
-      opt_device_type = at::getAccelerator(false);
-    }
-    if (opt_device_type.has_value()) {
-      return at::globalContext().getPinnedMemoryAllocator(opt_device_type);
-    } else {
-      TORCH_CHECK(
-          false, "Need to provide pin_memory allocator to use pin memory.")
+      TORCH_CHECK(false, "Need to provide pin_memory allocator to use pin memory.")
     }
   }
-
   return c10::GetCPUAllocator();
 }
 
-#ifndef C10_MOBILE
 constexpr uint64_t storage_max() {
   // int64_t and size_t are used somewhat inconsistently throughout ATen.
   // To be safe, storage size calculations must fit in both types.
@@ -48,7 +38,6 @@ constexpr uint64_t storage_max() {
       std::numeric_limits<size_t>::max());
   return std::min(int64_max, size_max);
 }
-#endif
 
 inline void raise_warning_for_complex_half(ScalarType dtype) {
   if (dtype == kComplexHalf) {
@@ -159,22 +148,17 @@ SymInt computeStorageNbytes(
   // of the last element according to stride
   SymInt size = 1;
   for (const auto i : c10::irange(sizes.size())) {
-    if (TORCH_GUARD_OR_FALSE(sizes[i].sym_eq(0))) {
+    if (TORCH_GUARD_SIZE_OBLIVIOUS(sizes[i].sym_eq(0))) {
       return 0;
     }
 
-    // NOTE: while this can technically return negative sizes for
-    // 0-element tensors, there's a check in TensorShape:set_storage_meta__symint
-    // that skips setting nbytes with unbacked expressions.
-    // Would probably be safer to wrap this with a max(*, 0),
-    // once our min/max symbolic reasoning improves.
     size += strides[i] * (sizes[i] - 1);
   }
   return itemsize_bytes * (storage_offset + size);
 }
 
 template <typename T>
-static TensorBase _empty_generic(
+TensorBase _empty_generic(
     ArrayRef<T> size,
     c10::Allocator* allocator,
     c10::DispatchKeySet ks,
@@ -227,7 +211,7 @@ TensorBase empty_generic_symint(
 }
 
 template <typename T>
-static TensorBase _empty_strided_generic(
+TensorBase _empty_strided_generic(
     T size,
     T stride,
     c10::Allocator* allocator,
@@ -344,7 +328,7 @@ struct MetaAllocator final : public at::Allocator {
   static void deleter(void* const pointer) {
     TORCH_INTERNAL_ASSERT(!pointer);
   }
-  DataPtr allocate(const size_t nbytes [[maybe_unused]]) override {
+  DataPtr allocate(const size_t nbytes) override {
     return {nullptr, nullptr, &deleter, at::Device(DeviceType::Meta)};
   }
   DeleterFnPtr raw_deleter() const override {
@@ -355,7 +339,7 @@ struct MetaAllocator final : public at::Allocator {
 
 static MetaAllocator g_meta_alloc;
 
-REGISTER_ALLOCATOR(kMeta, &g_meta_alloc)
+REGISTER_ALLOCATOR(kMeta, &g_meta_alloc);
 
 TensorBase empty_meta(IntArrayRef size, ScalarType dtype,
                      std::optional<c10::MemoryFormat> memory_format_opt) {
@@ -458,7 +442,8 @@ TensorBase empty_strided_symint_meta(
     SymIntArrayRef stride,
     std::optional<ScalarType> dtype_opt,
     std::optional<Layout> layout_opt,
-    std::optional<Device> device_opt) {
+    std::optional<Device> device_opt,
+    std::optional<bool> pin_memory_opt) {
   TORCH_INTERNAL_ASSERT_DEBUG_ONLY(device_or_default(device_opt).type() == DeviceType::Meta);
   TORCH_INTERNAL_ASSERT_DEBUG_ONLY(layout_or_default(layout_opt) == Layout::Strided);
 
@@ -475,7 +460,8 @@ TensorBase empty_strided_symint_meta(
       stride,
       optTypeMetaToScalarType(options.dtype_opt()),
       options.layout_opt(),
-      options.device_opt());
+      options.device_opt(),
+      options.pinned_memory_opt());
 }
 
 } // namespace at::detail

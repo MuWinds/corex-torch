@@ -1,10 +1,11 @@
 # Owner(s): ["oncall: quantization"]
-# ruff: noqa: F841
 import copy
 import unittest
-from typing import Any
+from typing import Any, Dict
 
 import torch
+from torch._export import capture_pre_autograd_graph
+
 from torch.ao.quantization.observer import (
     HistogramObserver,
     MinMaxObserver,
@@ -24,14 +25,14 @@ from torch.ao.quantization.quantizer.xnnpack_quantizer_utils import (
     OP_TO_ANNOTATOR,
     QuantizationConfig,
 )
-from torch.export import export_for_training
+
 from torch.testing._internal.common_quantization import QuantizationTestCase
-from torch.testing._internal.common_utils import IS_WINDOWS, raise_on_run_directly
+from torch.testing._internal.common_utils import IS_WINDOWS
 
 
 class TestHelperModules:
     class Conv2dWithObsSharingOps(torch.nn.Module):
-        def __init__(self) -> None:
+        def __init__(self):
             super().__init__()
             self.conv = torch.nn.Conv2d(3, 3, 3)
             self.hardtanh = torch.nn.Hardtanh()
@@ -47,7 +48,7 @@ class TestHelperModules:
             return x
 
     class Conv2dWithSharedDQ(torch.nn.Module):
-        def __init__(self) -> None:
+        def __init__(self):
             super().__init__()
             self.conv1 = torch.nn.Conv2d(3, 3, 3)
             self.conv2 = torch.nn.Conv2d(3, 3, 1)
@@ -65,7 +66,7 @@ class TestHelperModules:
             return w, add_output, extra_output
 
     class ModuleForDifferentQconfig(torch.nn.Module):
-        def __init__(self) -> None:
+        def __init__(self):
             super().__init__()
             self.conv1 = torch.nn.Conv2d(3, 3, 3)
             self.conv2 = torch.nn.Conv2d(3, 3, 1)
@@ -101,7 +102,10 @@ class TestDuplicateDQPass(QuantizationTestCase):
 
         # program capture
         m = copy.deepcopy(m_eager)
-        m = export_for_training(m, example_inputs, strict=True).module()
+        m = capture_pre_autograd_graph(
+            m,
+            example_inputs,
+        )
 
         m = prepare_pt2e(m, quantizer)
         # Calibrate
@@ -250,7 +254,7 @@ class TestDuplicateDQPass(QuantizationTestCase):
                 MinMaxObserver
             )
 
-            extra_args: dict[str, Any] = {"eps": 2**-12}
+            extra_args: Dict[str, Any] = {"eps": 2**-12}
             weight_quantization_spec = QuantizationSpec(
                 dtype=torch.uint8,
                 quant_min=0,
@@ -307,7 +311,3 @@ class TestDuplicateDQPass(QuantizationTestCase):
             example_inputs,
             BackendAQuantizer(),
         )
-
-
-if __name__ == "__main__":
-    raise_on_run_directly("test/test_quantization.py")

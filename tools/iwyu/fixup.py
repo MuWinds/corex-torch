@@ -1,7 +1,6 @@
 import re
 import sys
 
-
 QUOTE_INCLUDE_RE = re.compile(r'^#include "(.*)"')
 ANGLE_INCLUDE_RE = re.compile(r"^#include <(.*)>")
 
@@ -41,7 +40,7 @@ def main() -> None:
         # Convert all quoted includes to angle brackets
         match = QUOTE_INCLUDE_RE.match(line)
         if match is not None:
-            print(f"#include <{match.group(1)}>{line[match.end(0) :]}", end="")
+            print(f"#include <{match.group(1)}>{line[match.end(0):]}", end="")
             continue
 
         match = ANGLE_INCLUDE_RE.match(line)

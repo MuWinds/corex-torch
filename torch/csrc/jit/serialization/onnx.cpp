@@ -8,6 +8,7 @@
 namespace torch::jit {
 
 namespace {
+namespace onnx_torch = ::torch::onnx;
 namespace onnx = ::ONNX_NAMESPACE;
 
 // Pretty printing for ONNX

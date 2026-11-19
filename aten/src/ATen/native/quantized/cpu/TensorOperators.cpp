@@ -24,7 +24,8 @@
 #include <ATen/ops/resize_native.h>
 #endif
 
-namespace at::native {
+namespace at {
+namespace native {
 
 /*
 All comparator operators will be named "<aten op name>_quantized_cpu".
@@ -94,8 +95,9 @@ const Tensor& quantized_resize_cpu_(
           qscheme == QScheme::PER_TENSOR_SYMMETRIC,
       "Can only resize quantized tensors with per-tensor schemes!");
   auto* self_ = self.unsafeGetTensorImpl();
-  resize_impl_cpu_(self_, size, /*stride=*/std::nullopt);
+  // NOLINTNEXTLINE(bugprone-argument-comment)
+  resize_impl_cpu_(self_, size, /*strides=*/c10::nullopt);
   return self;
 }
 
-}  // namespace at::native
+}}  // at::native

@@ -1,6 +1,7 @@
 #include <torch/nn/options/adaptive.h>
 
-namespace torch::nn {
+namespace torch {
+namespace nn {
 
 AdaptiveLogSoftmaxWithLossOptions::AdaptiveLogSoftmaxWithLossOptions(
     int64_t in_features,
@@ -10,4 +11,5 @@ AdaptiveLogSoftmaxWithLossOptions::AdaptiveLogSoftmaxWithLossOptions(
       n_classes_(n_classes),
       cutoffs_(std::move(cutoffs)) {}
 
-} // namespace torch::nn
+} // namespace nn
+} // namespace torch

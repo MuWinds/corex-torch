@@ -5,7 +5,8 @@
 #include <torch/csrc/jit/passes/constant_pooling.h>
 #include <torch/csrc/jit/passes/remove_mutation.h>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 namespace {
 
@@ -232,4 +233,5 @@ bool RemoveListMutationAndUseVariadicStack(
   return RemoveListMutationAndUseVariadicOp(graph, aten::stack, prim::VarStack);
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

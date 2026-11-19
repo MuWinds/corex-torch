@@ -14,7 +14,6 @@
 #include <ATen/native/TensorFactories.h>
 #include <ATen/quantized/QTensorImpl.h>
 #include <ATen/quantized/Quantizer.h>
-#include <ATen/native/quantized/library.h>
 #include <c10/core/QScheme.h>
 #include <c10/core/TensorOptions.h>
 #include <c10/util/accumulate.h>
@@ -29,10 +28,13 @@
 #include <utility>
 #endif
 
+int register_embedding_params();
 
 #ifdef USE_FBGEMM
 
-namespace at::native::fbgemm_utils {
+namespace at {
+namespace native {
+namespace fbgemm_utils {
 
 namespace {
 
@@ -109,12 +111,18 @@ fbgemm::conv_param_t<kSpatialDim> MakeFbgemmConvParam(
     const std::vector<int>& dilations,
     const std::vector<int>& output_padding,
     bool transposed) {
-  std::array<int, kSpatialDim> image_shape_{};
-  std::array<int, kSpatialDim> kernels_{};
-  std::array<int, kSpatialDim> strides_{};
-  std::array<int, kSpatialDim * 2> pads_{};
-  std::array<int, kSpatialDim> dilations_{};
-  std::array<int, kSpatialDim> output_padding_{};
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
+  std::array<int, kSpatialDim> image_shape_;
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
+  std::array<int, kSpatialDim> kernels_;
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
+  std::array<int, kSpatialDim> strides_;
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
+  std::array<int, kSpatialDim * 2> pads_;
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
+  std::array<int, kSpatialDim> dilations_;
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
+  std::array<int, kSpatialDim> output_padding_;
   std::move(image_shape.begin(), image_shape.begin() + image_shape.size(), image_shape_.begin());
   std::move(
       kernels.begin(), kernels.begin() + kernels.size(), kernels_.begin());
@@ -360,7 +368,9 @@ Tensor ConvertConvWeightsToChannelLastTensor<3>(
   }
 }
 
-} // namespace at::native::fbgemm_utils
+} // namespace fbgemm_utils
+} // namespace native
+} // namespace at
 
 
 #endif // USE_FBGEMM
@@ -381,8 +391,10 @@ namespace {
   }
 }
 
-template <int kSpatialDim> int register_conv_params() {
-  [[maybe_unused]] static auto register_conv_params =
+template <int kSpatialDim = 2>
+TORCH_API int
+register_conv_params() {
+  static auto register_conv_params =
     torch::selective_class_<ConvPackedParamsBase<kSpatialDim>>(
         "quantized", TORCH_SELECTIVE_CLASS(_hack_int_to_class_name(kSpatialDim)))
     .def_pickle(
@@ -392,7 +404,7 @@ template <int kSpatialDim> int register_conv_params() {
         },
         // __setstate__ takes c10::IValue because we support parsing historical
         // serialization versions.
-        [](const c10::IValue& v)
+        [](c10::IValue v)
         -> c10::intrusive_ptr<ConvPackedParamsBase<kSpatialDim>> { // __setstate__
           ConvParamsSerializationTypeV3 state = parse_conv_serialized_state<kSpatialDim>(v);
           return deserialize_conv<kSpatialDim>(state);
@@ -418,9 +430,11 @@ TORCH_API int register_conv_params<2>();
 template
 TORCH_API int register_conv_params<3>();
 
-int register_linear_params() {
+TORCH_API int register_linear_params();
+
+TORCH_API int register_linear_params() {
   using SerializationType = std::tuple<at::Tensor, std::optional<at::Tensor>>;
-  [[maybe_unused]] static auto register_linear_params =
+  static auto register_linear_params =
       torch::selective_class_<LinearPackedParamsBase>(
           "quantized", TORCH_SELECTIVE_CLASS("LinearPackedParamsBase"))
           .def_pickle(
@@ -431,15 +445,21 @@ int register_linear_params() {
               [](SerializationType state)
                   -> c10::intrusive_ptr<
                       LinearPackedParamsBase> { // __setstate__
+                at::Tensor weight;
+                std::optional<at::Tensor> bias;
+                weight = std::move(std::get<0>(state));
+                bias = std::move(std::get<1>(state));
+
 #ifdef USE_FBGEMM
                 if (at::globalContext().qEngine() == at::QEngine::FBGEMM ||
                     at::globalContext().qEngine() == at::QEngine::X86) {
-                  const auto& weight = std::get<0>(state);
                   if (weight.scalar_type() == at::kQInt8) {
-                    return std::apply(PackedLinearWeight::prepack, std::move(state));
+                    return PackedLinearWeight::prepack(
+                        std::move(weight), std::move(bias));
                   } else if (weight.scalar_type() == at::kFloat) {
                     // NB: fp16 weight is serialized as float
-                    return std::apply(PackedLinearWeightFp16::prepack, std::move(state));
+                    return PackedLinearWeightFp16::prepack(
+                        std::move(weight), std::move(bias));
                   } else {
                     TORCH_CHECK(
                         false,
@@ -451,22 +471,22 @@ int register_linear_params() {
 #endif // USE_FBGEMM
 #ifdef USE_PYTORCH_QNNPACK
                 if (at::globalContext().qEngine() == at::QEngine::QNNPACK) {
-                  const auto& weight = std::get<0>(state);
                   TORCH_CHECK(
                       weight.scalar_type() == at::kQInt8,
                       "QNNPACK only supports INT8 bit width currently. Got ",
                       c10::toString(weight.scalar_type()));
-                  return std::apply(PackedLinearWeightsQnnp::prepack, std::move(state));
+                  return PackedLinearWeightsQnnp::prepack(
+                      std::move(weight), std::move(bias));
                 }
 #endif // USE_PYTORCH_QNNPACK
 #if AT_MKLDNN_ENABLED()
                 if (at::globalContext().qEngine() == at::QEngine::ONEDNN) {
-                  const auto& weight = std::get<0>(state);
                   TORCH_CHECK(
                       weight.scalar_type() == at::kQInt8,
                       "ONEDNN only supports INT8 bit width currently. Got ",
                       c10::toString(weight.scalar_type()));
-                  return std::apply(PackedLinearWeightsOnednn::prepack, std::move(state));
+                  return PackedLinearWeightsOnednn::prepack(
+                      std::move(weight), std::move(bias));
                 }
 #endif // #if AT_MKLDNN_ENABLED()
                 TORCH_CHECK(false, "Unknown qengine");
@@ -474,15 +494,6 @@ int register_linear_params() {
               .def("bias", [](const c10::intrusive_ptr<LinearPackedParamsBase>& self) {
                   return std::get<1>(self->unpack());
                  })
-#if defined(USE_FBGEMM) && defined(FBCODE_CAFFE2)
-              .def("__obj_flatten__", [](const c10::intrusive_ptr<LinearPackedParamsBase>& self) -> std::tuple<std::tuple<std::string, at::Tensor>, std::tuple<std::string, std::optional<at::Tensor>>> {
-                auto [weight, bias] = self->unpack();
-                return std::tuple(
-                  std::tuple("weight", std::move(weight)),
-                  std::tuple("bias", std::move(bias))
-                );
-              })
-#endif // defined(USE_FBGEMM) && defined(FBCODE_CAFFE2)
               .def("unpack", &LinearPackedParamsBase::unpack);
   // (1) we can't (easily) return the static initializer itself because it can have a different type because of selective build
   // (2) we can't return void and be able to call the function in the global scope
@@ -504,7 +515,7 @@ int register_embedding_params() {
     std::vector<double>,
     std::vector<int64_t>>;
 
-  [[maybe_unused]] static auto register_embedding_params =
+  static auto register_embedding_params =
     torch::selective_class_<EmbeddingPackedParamsBase>(
       "quantized", TORCH_SELECTIVE_CLASS("EmbeddingPackedParamsBase"))
       .def_pickle(
@@ -543,9 +554,9 @@ int register_embedding_params() {
 
 namespace {
 
-[[maybe_unused]] static auto conv2d_params = register_conv_params<2>();
-[[maybe_unused]] static auto conv3d_params = register_conv_params<3>();
-[[maybe_unused]] static auto linear_params = register_linear_params();
-[[maybe_unused]] static auto embedding_params = register_embedding_params();
+static C10_UNUSED auto conv2d_params = register_conv_params<2>();
+static C10_UNUSED auto conv3d_params = register_conv_params<3>();
+static C10_UNUSED auto linear_params = register_linear_params();
+static C10_UNUSED auto embedding_params = register_embedding_params();
 
 } // namespace

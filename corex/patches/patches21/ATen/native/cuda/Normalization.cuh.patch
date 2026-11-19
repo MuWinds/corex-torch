@@ -1,0 +1,83 @@
+--- /data/home/2024240384035/build/pytorch-2.1.0/aten/src/ATen/native/cuda/Normalization.cuh	2023-09-22 06:25:09.000000000 +0800
++++ /data/software/Anaconda3/2024.10-1/envs/py310/lib/python3.10/site-packages/torch/include/ATen/native/cuda/Normalization.cuh	2025-03-13 11:53:02.377028406 +0800
+@@ -22,7 +22,7 @@
+ namespace at { namespace native {
+ 
+ // The maximum number of threads in a block
+-#if defined(USE_ROCM)
++#if defined(USE_ROCM) || defined(__ILUVATAR__)
+ constexpr int MAX_BLOCK_SIZE = 256;
+ #else
+ constexpr int MAX_BLOCK_SIZE = 512;
+@@ -32,7 +32,7 @@
+ 
+ // Number of threads in a block given an input size up to MAX_BLOCK_SIZE
+ static int getNumThreads(int nElem) {
+-#if defined(USE_ROCM)
++#if defined(USE_ROCM) || defined(__ILUVATAR__)
+   int threadSizes[5] = { 16, 32, 64, 128, MAX_BLOCK_SIZE };
+ #else
+   int threadSizes[5] = { 32, 64, 128, 256, MAX_BLOCK_SIZE };
+@@ -249,7 +249,11 @@
+ 
+ struct InvStd {
+   template <typename T>
++#ifndef __ILUVATAR__
+   __device__ __forceinline__ T operator()(T var, double epsilon) const {
++#else
++  __device__ __forceinline__ T operator()(T var, float epsilon) const {
++#endif
+     T invstd = 0;
+     if (var != static_cast<T>(0) || epsilon != static_cast<T>(0)) {
+       invstd = static_cast<T>(1) / device_sqrt(var + epsilon);
+@@ -260,7 +264,11 @@
+ 
+ struct Var {
+   template <typename T>
++#ifndef __ILUVATAR__
+   __device__ __forceinline__ T operator()(T var, double epsilon) const {
++#else
++  __device__ __forceinline__ T operator()(T var, float epsilon) const {
++#endif
+     return var;
+   }
+ };
+@@ -725,7 +733,11 @@
+   int tb = std::max<int>(64/tf, 1);
+   dim3 blocks_trans(input.size(1), std::max<int>(1, std::min<int>((256*1024)/input.size(1),
+                                                                   (input.size(0)+tb-1)/tb)));
+-  blocks_trans.y = std::min(blocks_trans.y, MAX_GRID_SIZE);
++#ifdef __ILUVATAR__
++  blocks_trans.y = std::min<int>(blocks_trans.y, MAX_GRID_SIZE / tb);
++#else
++  blocks_trans.y = std::min<int>(blocks_trans.y, MAX_GRID_SIZE);
++#endif
+   dim3 threads_trans(tf, tb);
+   batch_norm_transform_input_kernel<input_scalar_t, stat_scalar_t, stat_accscalar_t, true, index_t> <<<blocks_trans, threads_trans, 0, stream>>>
+     (input, output, mean, invstd, weight, bias, dummy_epsilon);
+@@ -873,7 +885,11 @@
+   int tb = std::max<int>(64/tf, 1);
+   dim3 blocks_trans(input.size(1), std::max<int>(1, std::min<int>((256*1024)/input.size(1),
+                                                                   (input.size(0)+tb-1)/tb)));
+-  blocks_trans.y = std::min(blocks_trans.y, MAX_GRID_SIZE);
++#ifdef __ILUVATAR__
++  blocks_trans.y = std::min<int>(blocks_trans.y, MAX_GRID_SIZE / tb);
++#else
++  blocks_trans.y = std::min<int>(blocks_trans.y, MAX_GRID_SIZE);
++#endif
+   dim3 threads_trans(tf, tb);
+   auto reduction_size = input_.numel() / n_input;
+   auto norm_fct = static_cast<stat_accscalar_t>(1.0 / reduction_size);
+@@ -924,7 +940,11 @@
+   int tb = std::max<int>(64/tf, 1);
+   dim3 blocks_trans(input.size(1), std::max<int>(1, std::min<int>((256*1024)/input.size(1),
+                                                                   (input.size(0)+tb-1)/tb)));
+-  blocks_trans.y = std::min(blocks_trans.y, MAX_GRID_SIZE);
++#ifdef __ILUVATAR__
++  blocks_trans.y = std::min<int>(blocks_trans.y, MAX_GRID_SIZE / tb);
++#else
++  blocks_trans.y = std::min<int>(blocks_trans.y, MAX_GRID_SIZE);
++#endif
+   dim3 threads_trans(tf, tb);
+   batch_norm_backward_elemt_kernel<input_scalar_t, stat_scalar_t, stat_accscalar_t, index_t> <<<blocks_trans, threads_trans, 0, stream>>>
+     (input, grad_output, mean, invstd, weight, sum_dy, sum_dy_xmu, grad_input, count.const_data_ptr<int>(), count.numel());

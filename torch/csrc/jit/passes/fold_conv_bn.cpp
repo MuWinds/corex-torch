@@ -19,7 +19,8 @@
 #include <stack>
 #include <utility>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 std::tuple<at::Tensor, at::Tensor> computeUpdatedConvWeightAndBias(
     const ConvBNParameters& p) {
@@ -406,4 +407,5 @@ graph(%self, %input, %conv, %batchnorm):
   return m;
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

@@ -12,9 +12,7 @@ namespace ops {
 
 using namespace api::utils;
 
-#ifdef USE_VULKAN_API
-
-static Tensor& uniform_(
+Tensor& uniform_(
     Tensor& self,
     const double from,
     const double to,
@@ -59,7 +57,7 @@ static Tensor& uniform_(
   return self;
 }
 
-static Tensor rand_like(
+Tensor rand_like(
     const at::Tensor& input_arg,
     const std::optional<c10::ScalarType> /* not implemented */,
     const std::optional<c10::Layout> /* not implemented */,
@@ -70,10 +68,10 @@ static Tensor rand_like(
   // numbers from a uniform distribution on the interval [0,1). To match the CPU
   // implementation, we simplify the range to [0,1] and tolerate the small
   // chance of 1 being sampled.
-  return input_arg.detach().clone().uniform_(0.0, 1.0);
+  return input_arg.clone().detach().uniform_(0.0, 1.0);
 }
 
-static Tensor& normal_(
+Tensor& normal_(
     Tensor& self,
     const double mean,
     const double std,
@@ -120,7 +118,7 @@ static Tensor& normal_(
   return self;
 }
 
-static Tensor randn_like(
+Tensor randn_like(
     const at::Tensor& input_arg,
     const std::optional<c10::ScalarType> /* not implemented */,
     const std::optional<c10::Layout> /* not implemented */,
@@ -129,8 +127,10 @@ static Tensor randn_like(
     const std::optional<c10::MemoryFormat> /* not implemented */) {
   // Returns a tensor with the same size as input that is filled with random
   // numbers from a normal distribution with mean 0 and standard deviation 1.
-  return input_arg.detach().clone().normal_(0.0, 1.0);
+  return input_arg.clone().detach().normal_(0.0, 1.0);
 }
+
+#ifdef USE_VULKAN_API
 
 TORCH_LIBRARY_IMPL(aten, Vulkan, m) {
   m.impl(TORCH_SELECTIVE_NAME("aten::uniform_"), TORCH_FN(uniform_));

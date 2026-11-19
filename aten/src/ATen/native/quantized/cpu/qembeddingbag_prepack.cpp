@@ -7,7 +7,6 @@
 #include <ATen/core/custom_class.h>
 #include <ATen/native/quantized/cpu/EmbeddingPackedParams.h>
 #include <ATen/native/quantized/cpu/fbgemm_utils.h>
-#include <ATen/native/quantized/library.h>
 #include <c10/core/ScalarType.h>
 #include <torch/library.h>
 
@@ -23,6 +22,8 @@
 #include <c10/util/irange.h>
 
 #include <utility>
+
+int register_embedding_params();
 
 /*
  * Prepack function for embedding_bag weights.
@@ -46,7 +47,8 @@ c10::intrusive_ptr<EmbeddingPackedParamsBase> PackedEmbeddingBagWeight::prepack(
   at::Tensor weight_contig =
       qweight.contiguous(qweight.suggest_memory_format());
 
-  int bit_width = 0, scale_bias_bytes = 0;
+  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+  int bit_width, scale_bias_bytes;
   uint8_t* weight_data = static_cast<uint8_t*>(weight_contig.data_ptr());
   if (qweight.scalar_type() == c10::kQUInt8) {
     bit_width = 8;
@@ -153,7 +155,8 @@ c10::intrusive_ptr<EmbeddingPackedParamsBase> PackedEmbeddingBagWeight::prepack(
   return packed_ptr;
 }
 
-namespace at::native {
+namespace at {
+namespace native {
 
 // Note - This is a temporary pack function for embedding bag which quantizes
 // and packs the float weight tensor. In the next step it will be replaced by a
@@ -247,7 +250,7 @@ Tensor& qembeddingbag_byte_prepack_out(Tensor& output, const Tensor& weight) {
   // Adjust output dimensions to account for FP32 scale and zero_points.
   std::vector<int64_t> output_shape = weight_sizes.vec();
   output_shape[cols_dim] = output_columns;
-  at::native::resize_(output, output_shape, std::nullopt);
+  at::native::resize_(output, output_shape, c10::nullopt);
   auto* output_data = output.data_ptr<uint8_t>();
 
 #ifdef USE_FBGEMM
@@ -315,8 +318,8 @@ Tensor qembeddingbag_byte_prepack(const Tensor& weight) {
       at::kByte,
       weight_contig->layout(),
       weight_contig->device(),
-      std::nullopt,
-      std::nullopt);
+      c10::nullopt,
+      c10::nullopt);
   qembeddingbag_byte_prepack_out(output, weight);
   return output;
 }
@@ -339,10 +342,7 @@ Tensor qembeddingbag_byte_prepack_meta(const Tensor& weight) {
   output_shape[cols_dim] = output_columns;
   at::SymDimVector output_shape_vec(output_shape);
 
-  return at::empty_symint(
-      output_shape_vec,
-      weight.options().dtype(weight.scalar_type()),
-      weight.suggest_memory_format());
+  return at::empty_symint(output_shape_vec, weight.options().dtype(weight.scalar_type()), weight.suggest_memory_format());
 }
 
 namespace {
@@ -373,10 +373,9 @@ Tensor _qembeddingbag_nbit_prepack_helper(
   int NUM_ELEM_PER_BYTE = 8 / bit_width;
   TORCH_CHECK(
       weight_contig.size(weight.dim() - 1) % NUM_ELEM_PER_BYTE == 0,
-      "qembeddingbag_",
-      std::to_string(bit_width),
-      "bit_prepack only works for the number of columns a multiple of ",
-      std::to_string(NUM_ELEM_PER_BYTE));
+      "qembeddingbag_" + c10::to_string(bit_width) +
+          "bit_prepack only works for the number of columns a multiple of " +
+          c10::to_string(NUM_ELEM_PER_BYTE));
 
   // The "fused" representation stores the scale and bias with the
   // row-wise quantized data in one tensor.
@@ -434,7 +433,8 @@ Tensor _qembeddingbag_nbit_prepack_helper(
       const float* input_row = weight_data + row * embedding_cols;
       std::uint8_t* output_row = output_data + row * output_columns;
 
-      float Xmin = std::numeric_limits<float>::quiet_NaN(), Xmax = std::numeric_limits<float>::quiet_NaN();
+      // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+      float Xmin, Xmax;
       if (optimized_qparams) {
         auto [xmax_tensor, xmin_tensor] = at::choose_qparams_optimized(
             float_weight[row], embedding_cols, nbins, ratio, bit_width);
@@ -551,10 +551,13 @@ TORCH_LIBRARY_IMPL(quantized, QuantizedCPU, m) {
       TORCH_FN(QEmbeddingPackWeights::run));
 }
 
+
 TORCH_LIBRARY_IMPL(quantized, Meta, m) {
   m.impl(
-      "quantized::embedding_bag_byte_prepack", qembeddingbag_byte_prepack_meta);
+      "quantized::embedding_bag_byte_prepack",
+      qembeddingbag_byte_prepack_meta);
 }
 
 } // namespace
-} // namespace at::native
+} // namespace native
+} // namespace at

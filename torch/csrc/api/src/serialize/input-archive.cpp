@@ -13,7 +13,8 @@
 #include <string>
 #include <utility>
 
-namespace torch::serialize {
+namespace torch {
+namespace serialize {
 
 InputArchive::InputArchive()
     : module_("Module", std::make_shared<jit::CompilationUnit>()) {}
@@ -92,20 +93,20 @@ void InputArchive::read(const std::string& key, InputArchive& archive) {
 
 void InputArchive::load_from(
     const std::string& filename,
-    std::optional<torch::Device> device /*= std::nullopt*/) {
-  module_ = torch::jit::load(filename, device);
+    std::optional<torch::Device> device /*= c10::nullopt*/) {
+  module_ = torch::jit::load(filename, std::move(device));
 }
 
 void InputArchive::load_from(
     std::istream& stream,
-    std::optional<torch::Device> device /*= std::nullopt*/) {
-  module_ = torch::jit::load(stream, device);
+    std::optional<torch::Device> device /*= c10::nullopt*/) {
+  module_ = torch::jit::load(stream, std::move(device));
 }
 
 void InputArchive::load_from(
     const char* data,
     size_t size,
-    std::optional<torch::Device> device /*= std::nullopt*/) {
+    std::optional<torch::Device> device /*= c10::nullopt*/) {
   using caffe2::serialize::ReadAdapterInterface;
   class OurAdapter : public ReadAdapterInterface {
    public:
@@ -128,13 +129,14 @@ void InputArchive::load_from(
     const char* data_;
     size_t size_;
   };
-  module_ = torch::jit::load(std::make_unique<OurAdapter>(data, size), device);
+  module_ = torch::jit::load(
+      std::make_unique<OurAdapter>(data, size), std::move(device));
 }
 
 void InputArchive::load_from(
     const std::function<size_t(uint64_t, void*, size_t)>& read_func,
     const std::function<size_t(void)>& size_func,
-    std::optional<torch::Device> device /*= std::nullopt*/) {
+    std::optional<torch::Device> device /*= c10::nullopt*/) {
   using caffe2::serialize::ReadAdapterInterface;
   class OurAdapter : public ReadAdapterInterface {
    public:
@@ -152,13 +154,11 @@ void InputArchive::load_from(
     }
 
    private:
-    // NOLINTNEXTLINE(cppcoreguidelines-avoid-const-or-ref-data-members)
     const std::function<size_t(uint64_t, void*, size_t)>& read_func_;
-    // NOLINTNEXTLINE(cppcoreguidelines-avoid-const-or-ref-data-members)
     const std::function<size_t(void)>& size_func_;
   };
   module_ = torch::jit::load(
-      std::make_unique<OurAdapter>(read_func, size_func), device);
+      std::make_unique<OurAdapter>(read_func, size_func), std::move(device));
 }
 
 std::vector<std::string> InputArchive::keys() {
@@ -173,4 +173,5 @@ std::vector<std::string> InputArchive::keys() {
   return all_keys;
 }
 
-} // namespace torch::serialize
+} // namespace serialize
+} // namespace torch

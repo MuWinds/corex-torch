@@ -5,7 +5,9 @@
 #include <string>
 #include <vector>
 
-namespace torch::jit::mobile {
+namespace torch {
+namespace jit {
+namespace mobile {
 
 thread_local KinetoEdgeCPUProfiler* tls_edge_profiler{nullptr};
 
@@ -22,7 +24,7 @@ KinetoEdgeCPUProfiler::KinetoEdgeCPUProfiler(
     : m_(m), trace_file_name_(fname) {
   torch::profiler::impl::ExperimentalConfig experimental_config;
   // Enable hardware counters
-  if (!events.empty()) {
+  if (events.size()) {
     experimental_config.performance_events = std::move(events);
   }
 
@@ -136,4 +138,6 @@ KinetoEdgeCPUProfiler* getCurrentEdgeProfiler() {
   return tls_edge_profiler;
 }
 
-} // namespace torch::jit::mobile
+} // namespace mobile
+} // namespace jit
+} // namespace torch

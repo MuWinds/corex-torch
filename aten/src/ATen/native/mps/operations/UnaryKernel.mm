@@ -1,54 +1,86 @@
 #define TORCH_ASSERT_ONLY_METHOD_OPERATORS
-#include <ATen/TensorIterator.h>
 #include <ATen/mps/MPSProfiler.h>
-// #include <ATen/native/Activation.h>
 #include <ATen/native/UnaryOps.h>
 #include <ATen/native/mps/OperationUtils.h>
+#include <ATen/native/mps/UnaryConstants.h>
+#ifndef AT_PER_OPERATOR_HEADERS
+#include <ATen/Functions.h>
+#include <ATen/NativeFunctions.h>
+#else
+#include <ATen/ops/erfinv_native.h>
+#endif
+
 #include <fmt/format.h>
 
 namespace at::native {
+static const std::string& getMetalType(const c10::ScalarType& t) {
+  // Mapping from c10::ScalarType to integral type that can be used for unary ops
+  static std::unordered_map<c10::ScalarType, std::string> scalar_to_metal_type = {
+      {c10::ScalarType::Half, "half"},
+      {c10::ScalarType::Float, "float"},
+      {c10::ScalarType::Long, "long"},
+      {c10::ScalarType::Int, "int"},
+      {c10::ScalarType::Short, "short"},
+      {c10::ScalarType::Bool, "bool"},
+      {c10::ScalarType::Char, "int8_t"},
+      {c10::ScalarType::Byte, "uint8_t"},
+  };
 
-#ifndef PYTORCH_JIT_COMPILE_SHADERS
-static auto& lib = mps::MetalShaderLibrary::getBundledLibrary();
-#else
-#include <ATen/native/mps/UnaryKernel_metallib.h>
-#endif
-
-#define REGISTER_UNARY_TI_DISPATCH(NAME)                    \
-  static void NAME##_kernel_mps(TensorIteratorBase& iter) { \
-    lib.exec_unary_kernel(iter, #NAME);                     \
-  }                                                         \
-  REGISTER_DISPATCH(NAME##_stub, NAME##_kernel_mps)
-
-static void round_decimals_kernel(TensorIteratorBase& iter, int64_t decimals) {
-  lib.exec_unary_kernel(iter, "round_decimals", Scalar(decimals), ScalarType::Long);
+  auto it = scalar_to_metal_type.find(t);
+  TORCH_CHECK(it != scalar_to_metal_type.end(), "Unsupported type ", t);
+  return it->second;
 }
 
-REGISTER_UNARY_TI_DISPATCH(exp);
-REGISTER_UNARY_TI_DISPATCH(expm1);
-REGISTER_UNARY_TI_DISPATCH(erf);
-REGISTER_UNARY_TI_DISPATCH(erfc);
-REGISTER_UNARY_TI_DISPATCH(erfinv);
-REGISTER_UNARY_TI_DISPATCH(sinc);
-REGISTER_UNARY_TI_DISPATCH(sinh);
-REGISTER_UNARY_TI_DISPATCH(cosh);
-REGISTER_UNARY_TI_DISPATCH(tanh);
-REGISTER_UNARY_TI_DISPATCH(abs);
-REGISTER_UNARY_TI_DISPATCH(sin);
-REGISTER_UNARY_TI_DISPATCH(cos);
-REGISTER_UNARY_TI_DISPATCH(tan);
-REGISTER_UNARY_TI_DISPATCH(asin);
-REGISTER_UNARY_TI_DISPATCH(acos);
-REGISTER_UNARY_TI_DISPATCH(atan);
-REGISTER_UNARY_TI_DISPATCH(sqrt);
-REGISTER_UNARY_TI_DISPATCH(rsqrt);
-REGISTER_UNARY_TI_DISPATCH(neg);
-REGISTER_UNARY_TI_DISPATCH(exp2);
-REGISTER_UNARY_TI_DISPATCH(log10);
-REGISTER_UNARY_TI_DISPATCH(log2);
-REGISTER_UNARY_TI_DISPATCH(log);
-REGISTER_UNARY_TI_DISPATCH(log1p);
-REGISTER_UNARY_TI_DISPATCH(bitwise_not);
-REGISTER_UNARY_TI_DISPATCH(sigmoid);
-REGISTER_DISPATCH(round_decimals_stub, round_decimals_kernel);
+static const std::string& getMetalType(const c10::Scalar& s) {
+  return getMetalType(s.type());
+}
+
+static const std::string& getMetalType(const Tensor& t) {
+  return getMetalType(t.scalar_type());
+}
+
+static mps::MetalShaderLibrary lib(UNARY_KERNEL_TEMPLATE, 2);
+
+TORCH_IMPL_FUNC(erfinv_out_mps)(const Tensor& self, const Tensor& output_) {
+  // handle erfinv ops using metal kernel
+  // erfinv algorithm ported from aten/src/ATen/native/Math.h
+  // https://github.com/pytorch/pytorch/blob/4154c8ea159fdaecc71ee9af820ac956193c875b/aten/src/ATen/native/Math.h#L152
+
+  TORCH_CHECK(self.scalar_type() != ScalarType::Double, "MPS does not support erfinv op with scalar type: Double");
+
+  Tensor inputTensor = self;
+  Tensor outputTensor = output_;
+  bool needs_output_copy = false;
+  uint32_t length = output_.numel();
+  if (length == 0) {
+    return;
+  }
+  using namespace mps;
+  @autoreleasepool {
+    auto cplState = lib.getPipelineStateForFunc("erfinv_mps_kernel", {getMetalType(outputTensor), getMetalType(self)});
+
+    if (!self.is_contiguous()) {
+      inputTensor = inputTensor.contiguous();
+      outputTensor = outputTensor.contiguous();
+      needs_output_copy = true;
+    }
+
+    MPSStream* mpsStream = getCurrentMPSStream();
+    dispatch_sync(mpsStream->queue(), ^() {
+      id<MTLComputeCommandEncoder> computeEncoder = mpsStream->commandEncoder();
+
+      getMPSProfiler().beginProfileKernel(cplState, "erf_inv", {inputTensor});
+
+      [computeEncoder setComputePipelineState:cplState];
+      mtl_setBuffer(computeEncoder, outputTensor, 0);
+      mtl_setBuffer(computeEncoder, inputTensor, 1);
+      mtl_dispatch1DJob(computeEncoder, cplState, length);
+
+      getMPSProfiler().endProfileKernel(cplState);
+    });
+  }
+  if (needs_output_copy) {
+    output_.copy_(outputTensor);
+  }
+}
 } // namespace at::native

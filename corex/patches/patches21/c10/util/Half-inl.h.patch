@@ -1,0 +1,29 @@
+--- /data/home/2024240384035/build/pytorch-2.1.0/c10/util/Half-inl.h	2023-09-22 06:25:09.000000000 +0800
++++ /data/software/Anaconda3/2024.10-1/envs/py310/lib/python3.10/site-packages/torch/include/c10/util/Half-inl.h	2025-03-13 11:53:06.624025343 +0800
+@@ -45,7 +45,14 @@
+ 
+ inline C10_HOST_DEVICE Half::operator float() const {
+ #if defined(__CUDA_ARCH__) || defined(__HIP_DEVICE_COMPILE__)
++#ifndef __ILUVATAR__
+   return __half2float(*reinterpret_cast<const __half*>(&x));
++#else
++  __half tmp = *reinterpret_cast<const __half*>(&x);
++  float ret;
++  asm volatile("{ml_cvt_f32_f16 %0, %1;}" : "=r"(ret) : "r"(tmp));
++  return ret;
++#endif
+ #elif defined(__SYCL_DEVICE_ONLY__)
+   return float(c10::bit_cast<sycl::half>(x));
+ #else
+@@ -269,7 +276,11 @@
+ template <>
+ class numeric_limits<c10::Half> {
+  public:
++#ifdef __ILUVATAR__
++  static constexpr bool is_specialized = false;
++#else
+   static constexpr bool is_specialized = true;
++#endif
+   static constexpr bool is_signed = true;
+   static constexpr bool is_integer = false;
+   static constexpr bool is_exact = false;

@@ -1,5 +1,5 @@
 # @lint-ignore-every FBCODEBZLADDLOADS
-load("@fbsource//tools/build_defs:glob_defs.bzl", "subdir_glob")
+load("//tools/build_defs:glob_defs.bzl", "subdir_glob")
 
 # shared by internal and OSS BUCK
 def define_tools_targets(
@@ -26,6 +26,7 @@ def define_tools_targets(
 
     python_library(
         name = "jit",
+        # @lint-ignore BUCKRESTRICTEDSYNTAX
         srcs = glob([
             "jit/*.py",
             "jit/templates/*",
@@ -109,7 +110,10 @@ def define_tools_targets(
 
     python_library(
         name = "autograd",
-        srcs = glob(["autograd/*.py"]),
+        # @lint-ignore BUCKRESTRICTEDSYNTAX
+        srcs = glob(
+            ["autograd/*.py"],
+        ),
         base_module = "tools",
         resources = [
             "autograd/deprecated.yaml",
@@ -285,5 +289,20 @@ def define_tools_targets(
         deps = [
             torchgen_deps,
             ":autograd",
+        ],
+    )
+
+    python_test(
+        name = "test_torchgen_executorch",
+        srcs = [
+            "test/test_executorch_gen.py",
+            "test/test_executorch_signatures.py",
+            "test/test_executorch_types.py",
+            "test/test_executorch_unboxing.py",
+        ],
+        contacts = contacts,
+        visibility = ["PUBLIC"],
+        deps = [
+            torchgen_deps,
         ],
     )

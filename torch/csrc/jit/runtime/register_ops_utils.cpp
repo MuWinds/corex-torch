@@ -34,7 +34,7 @@ void listIndex<at::Tensor>(Stack& stack) {
   if (pos != list.end()) {
     push(stack, static_cast<int64_t>(std::distance(list.begin(), pos)));
   } else {
-    TORCH_CHECK(false, "'", elem, "' is not in list");
+    AT_ERROR("'", elem, "' is not in list");
   }
 }
 
@@ -107,7 +107,7 @@ void listRemove<at::Tensor>(Stack& stack) {
   if (pos != list.end()) {
     list.erase(pos);
   } else {
-    TORCH_CHECK(false, "list.remove(x): x not in list");
+    AT_ERROR("list.remove(x): x not in list");
   }
 }
 
@@ -133,7 +133,7 @@ void checkDoubleInRange(double a) {
       a > double(std::numeric_limits<int64_t>::max()) ||
       a < double(std::numeric_limits<int64_t>::min())) {
     throw c10::Error(
-        "Cannot convert float " + std::to_string(a) + " to integer");
+        "Cannot convert float " + c10::to_string(a) + " to integer");
     return;
   }
 }
@@ -205,7 +205,7 @@ void listPopImpl(Stack& stack, const char* empty_message) {
   const int64_t normalized_idx = normalizeIndex(idx, list_size);
 
   if (list_size == 0) {
-    TORCH_CHECK(false, empty_message);
+    AT_ERROR(empty_message);
   }
 
   push(stack, getItem(list, idx));
@@ -287,12 +287,12 @@ void listAdd(Stack& stack) {
   c10::List<IValue> ret = make_result_list<IValue>(a.elementType());
 
   if (a.use_count() == 1) {
-    ret = a;
+    ret = std::move(a);
   } else {
     ret = a.copy();
   }
 
-  ret.append(b);
+  ret.append(std::move(b));
 
   push(stack, std::move(ret));
 }
@@ -300,7 +300,7 @@ void listAdd(Stack& stack) {
 void listInplaceAdd(Stack& stack) {
   c10::List<IValue> b = pop(stack).to<c10::List<IValue>>();
   c10::List<IValue> a = pop(stack).to<c10::List<IValue>>();
-  a.append(b);
+  a.append(std::move(b));
   push(stack, std::move(a));
 }
 
@@ -311,7 +311,8 @@ void listMulIntLeftInPlace(Stack& stack) {
     list.clear();
   } else if (n > 1) {
     size_t list_size = list.size();
-    for ([[maybe_unused]] const auto i : c10::irange(1, n)) {
+    for (const auto i : c10::irange(1, n)) {
+      (void)i; // Suppress unused variable warning
       for (const auto j : c10::irange(list_size)) {
         list.push_back(list.get(j));
       }
@@ -329,7 +330,8 @@ void listMulIntLeft(Stack& stack) {
   const auto size = list.size() * n;
   ret.reserve(size);
 
-  for ([[maybe_unused]] const auto i : c10::irange(n)) {
+  for (const auto i : c10::irange(n)) {
+    (void)i; // Suppress unused variable warning
     for (IValue e : list) {
       ret.push_back(std::move(e));
     }
@@ -346,7 +348,8 @@ void listMulIntRight(Stack& stack) {
   const auto size = list.size() * n;
   ret.reserve(size);
 
-  for ([[maybe_unused]] const auto i : c10::irange(n)) {
+  for (const auto i : c10::irange(n)) {
+    (void)i; // Suppress unused variable warning
     for (IValue e : list) {
       ret.push_back(std::move(e));
     }
@@ -379,7 +382,8 @@ void listSlice(Stack& stack) {
   sliced_list.reserve(num_values);
 
   int i = start;
-  for ([[maybe_unused]] const auto j : c10::irange(num_values)) {
+  for (const auto j : c10::irange(num_values)) {
+    (void)j; // Suppress unused variable warning
     sliced_list.push_back(list.get(i));
     i += step;
   }
@@ -425,8 +429,7 @@ at::Generator make_generator_for_device(
     }
 #endif
   } else {
-    TORCH_CHECK(
-        false,
+    AT_ERROR(
         "Unsupported device for at::make_generator_for_device found: ",
         device.str());
   }

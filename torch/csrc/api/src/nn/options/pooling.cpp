@@ -1,6 +1,7 @@
 #include <torch/nn/options/pooling.h>
 
-namespace torch::nn {
+namespace torch {
+namespace nn {
 
 template struct AvgPoolOptions<1>;
 template struct AvgPoolOptions<2>;
@@ -26,4 +27,5 @@ template struct LPPoolOptions<1>;
 template struct LPPoolOptions<2>;
 template struct LPPoolOptions<3>;
 
-} // namespace torch::nn
+} // namespace nn
+} // namespace torch

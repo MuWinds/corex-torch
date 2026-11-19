@@ -1,6 +1,5 @@
 #include <torch/csrc/profiler/combined_traceback.h>
 
-#include <nlohmann/json.hpp>
 #include <pybind11/pybind11.h>
 #include <torch/csrc/utils/pybind.h>
 
@@ -15,13 +14,9 @@ namespace torch {
 TORCH_API std::vector<pybind11::object> py_symbolize(
     std::vector<CapturedTraceback*>& to_symbolize);
 
-// Return the callback in json format so that it can be used within cpp
-TORCH_API std::vector<nlohmann::json> json_symbolize(
-    std::vector<CapturedTraceback*>& to_symbolize);
-
 // requires GIL to be held, frees any pending free frames
-TORCH_PYTHON_API void freeDeadCapturedTracebackFrames();
+void freeDeadCapturedTracebackFrames();
 
-TORCH_PYTHON_API void installCapturedTracebackPython();
+void installCapturedTracebackPython();
 
 } // namespace torch

@@ -15,8 +15,11 @@
 #include <string>
 #include <vector>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 namespace mobile {
+
+char const* toString(OpCode op);
 
 namespace {
 
@@ -58,7 +61,7 @@ class IValuePickler final {
     std::string prefix = archive_name + "/";
     for (const auto& td : data_pickle.tensorData()) {
       WriteableTensorData writable_td = getWriteableTensorData(td);
-      std::string fname = prefix + std::to_string(i++);
+      std::string fname = prefix + c10::to_string(i++);
       writer_.writeRecord(fname, writable_td.data(), writable_td.sizeInBytes());
     }
     std::string fname = archive_name + ".pkl";
@@ -147,4 +150,5 @@ void _save_parameters(
   _save_parameters(map, ifile, use_flatbuffer);
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

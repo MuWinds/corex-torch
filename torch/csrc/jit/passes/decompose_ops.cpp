@@ -10,7 +10,8 @@
 
 #include <ATen/core/symbol.h>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 namespace {
 c10::AliasAnalysisKind aliasAnalysisFromSchema() {
@@ -57,7 +58,7 @@ static bool isDecomposableNorm(Node* normalize_op) {
   return false;
 }
 
-static RegisterOperators reg_ops(
+RegisterOperators reg_ops(
     {Operator(
          "aten::_ncf_unsqueeze(Tensor(a) self, int ndim) -> Tensor(a)",
          [](Stack& stack) {
@@ -230,4 +231,5 @@ void DecomposeOps(std::shared_ptr<Graph>& graph) {
   }
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

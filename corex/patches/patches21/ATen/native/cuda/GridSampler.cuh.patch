@@ -1,0 +1,15 @@
+--- /data/home/2024240384035/build/pytorch-2.1.0/aten/src/ATen/native/cuda/GridSampler.cuh	2023-09-22 06:25:09.000000000 +0800
++++ /data/software/Anaconda3/2024.10-1/envs/py310/lib/python3.10/site-packages/torch/include/ATen/native/cuda/GridSampler.cuh	2025-03-13 11:53:02.369028412 +0800
+@@ -140,7 +140,11 @@
+   // -100.0 does not have special meaning. This is just to make sure
+   // it's not within_bounds_2d or within_bounds_3d, and does not cause
+   // undefined behavior. See #35506.
+-  if (x > INT_MAX-1 || x < INT_MIN || !::isfinite(static_cast<double>(x)))
++#ifdef __ILUVATAR__
++  if (x > INT_MAX-1 || x < INT_MIN || !::isfinite(static_cast<float>(x)))
++#else
++  if (x > INT_MAX-1 || x < INT_MIN || !::isfinite(static_cast<double>(x))) 
++#endif
+     return static_cast<scalar_t>(-100.0);
+   return x;
+ }

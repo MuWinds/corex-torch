@@ -8,26 +8,12 @@ permissions:
   contents: read
 
 jobs:
-  get-label-type:
-    name: get-label-type
-    # Don't run on forked repos
-    if: github.repository_owner == 'pytorch'
-    uses: pytorch/pytorch/.github/workflows/_runner-determinator.yml@release/2.8
-    with:
-      triggering_actor: ${{ github.triggering_actor }}
-      issue_owner: ${{ github.event.pull_request.user.login || github.event.issue.user.login }}
-      curr_branch: ${{ github.head_ref || github.ref_name }}
-      curr_ref_type: ${{ github.ref_type }}
-
   llm-retrieval:
-    # Don't run on forked repos
-    if: github.repository_owner == 'pytorch'
-    runs-on: "${{ needs.get-label-type.outputs.label-type }}linux.4xlarge"
+    runs-on: linux.4xlarge
     continue-on-error: true
-    needs: get-label-type
     steps:
       - name: Clone PyTorch
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@v3
         with:
           repository: pytorch/pytorch
           fetch-depth: 0
@@ -37,37 +23,51 @@ jobs:
         uses: ./pytorch/.github/actions/setup-linux
 
       - name: Clone CodeLlama
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@v3
         with:
           repository: osalpekar/codellama
           ref: main
           path: codellama
 
       - name: Clone Target Determination Code
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        uses: actions/checkout@v3
         with:
           repository: osalpekar/llm-target-determinator
           ref: v0.0.2
           path: llm-target-determinator
 
-      - name: Install requirements
-        shell: bash
+      - name: Setup Conda
+        uses: conda-incubator/setup-miniconda@v2.1.1
+        with:
+          miniconda-version: "py39_4.12.0"
+          python-version: 3.9
+
+      - name: Install Requirements
+        shell: bash -l {0}
         run: |
           set -euxo pipefail
-          python3 -m pip install -r llm-target-determinator/requirements.txt
-          cd "${GITHUB_WORKSPACE}/codellama"
-          python3 -m pip install -e .
+          conda create \
+            --yes \
+            --quiet \
+            --name "tdenv" \
+            "python=3.9"
+          conda activate tdenv
+          cd "${GITHUB_WORKSPACE}/llm-target-determinator"
+          pip install -r requirements.txt
+          cd ../codellama
+          pip install -e .
 
       - name: Fetch CodeLlama Checkpoint
-        shell: bash
+        shell: bash -l {0}
         run: |
           set -euxo pipefail
-          cd "${GITHUB_WORKSPACE}/codellama"
+          conda activate tdenv
+          cd codellama/
           mkdir "CodeLlama-7b-Python"
           aws s3 cp "s3://target-determinator-assets/CodeLlama-7b-Python" "CodeLlama-7b-Python" --recursive --no-progress
 
       - name: Fetch indexes
-        uses: nick-fields/retry@7152eba30c6575329ac0576536151aca5a72780e # v3.0.0
+        uses: nick-fields/retry@v2.8.2
         with:
           max_attempts: 3
           retry_wait_seconds: 10
@@ -85,11 +85,11 @@ jobs:
       - name: Run Retriever
         id: run_retriever
         continue-on-error: true  # ghstack not currently supported due to problems getting git diff
-        shell: bash
+        shell: bash -l {0}
         run: |
           set -euxo pipefail
+          conda activate tdenv
           cd "${GITHUB_WORKSPACE}"/llm-target-determinator
-          export PATH="$HOME/.local/bin:$PATH"
           torchrun \
             --standalone \
             --nnodes=1 \
@@ -101,7 +101,7 @@ jobs:
           zip -r mappings.zip mappings
 
       - name: Upload results to s3
-        uses: seemethere/upload-artifact-s3@baba72d0712b404f646cebe0730933554ebce96a # v5.1.0
+        uses: seemethere/upload-artifact-s3@v5
         if: ${{ steps.run_retriever.outcome == 'success' }}
         with:
           name: llm_results
@@ -116,5 +116,5 @@ jobs:
           AWS_REGION: ""
 
       - name: Teardown Linux
-        uses: pytorch/test-infra/.github/actions/teardown-linux@release/2.8
+        uses: pytorch/test-infra/.github/actions/teardown-linux@release/2.4
         if: always()

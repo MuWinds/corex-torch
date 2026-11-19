@@ -15,7 +15,7 @@
 #include <structmember.h>
 #include <string>
 
-PyTypeObject* THPEventClass = nullptr;
+PyObject* THPEventClass = nullptr;
 
 static PyObject* THPEvent_pynew(
     PyTypeObject* type,
@@ -28,7 +28,7 @@ static PyObject* THPEvent_pynew(
   unsigned char interprocess = 0;
 
   static torch::PythonArgParser parser({
-      "Event(Device device=None, *, bool enable_timing=False, bool blocking=False, bool interprocess=False)",
+      "Event(Device device=None, *, bool enable_timing=True, bool blocking=False, bool interprocess=False)",
   });
 
   torch::ParsedArgs<4> parsed_args;
@@ -39,7 +39,7 @@ static PyObject* THPEvent_pynew(
   if (!device.has_value()) {
     device = at::Device(at::getAccelerator(false).value_or(at::kCPU));
   }
-  enable_timing = r.toBoolWithDefault(1, false);
+  enable_timing = r.toBoolWithDefault(1, true);
   blocking = r.toBoolWithDefault(2, false);
   interprocess = r.toBoolWithDefault(3, false);
 
@@ -87,7 +87,11 @@ static void THPEvent_dealloc(THPEvent* self) {
 
 static PyObject* THPEvent_get_device(THPEvent* self, void* unused) {
   HANDLE_TH_ERRORS
-  return THPDevice_New(self->event.device());
+  at::optional<at::Device> device = self->event.device();
+  if (!device) {
+    Py_RETURN_NONE;
+  }
+  return THPDevice_New(device.value());
   END_HANDLE_TH_ERRORS
 }
 
@@ -114,7 +118,7 @@ static PyObject* THPEvent_record(
     auto stream = (THPStream*)_stream;
     self->event.record(c10::Stream::unpack3(
         stream->stream_id,
-        static_cast<c10::DeviceIndex>(stream->device_index),
+        stream->device_index,
         static_cast<c10::DeviceType>(stream->device_type)));
   } else {
     c10::impl::VirtualGuardImpl impl{
@@ -139,6 +143,7 @@ static PyObject* THPEvent_from_ipc_handle(
   auto r = parser.parse(args, kwargs, parsed_args);
 
   at::Device device = r.device(0);
+  std::string handle_string = r.string(1);
   TORCH_CHECK_NOT_IMPLEMENTED(
       false,
       "torch.Event ipc is not supported yet, please open an issue if you need this!");
@@ -156,16 +161,15 @@ static PyObject* THPEvent_from_ipc_handle(
   END_HANDLE_TH_ERRORS
 }
 
-static PyObject* THPEvent_ipc_handle(
-    PyObject* _self [[maybe_unused]],
-    PyObject* noargs) {
+static PyObject* THPEvent_ipc_handle(PyObject* _self, PyObject* noargs) {
   HANDLE_TH_ERRORS
+  auto self = (THPEvent*)_self;
+  (void)self;
   TORCH_CHECK_NOT_IMPLEMENTED(
       false,
       "torch.Event ipc is not supported yet, please open an issue if you need this!");
-  constexpr const char* handle = "0";
-  return PyBytes_FromStringAndSize(
-      handle, std::char_traits<char>::length(handle));
+  std::string handle = "0";
+  return PyBytes_FromStringAndSize((const char*)&handle, sizeof(handle));
   END_HANDLE_TH_ERRORS
 }
 
@@ -192,7 +196,7 @@ static PyObject* THPEvent_wait(
       auto stream = (THPStream*)_stream;
       self->event.block(c10::Stream::unpack3(
           stream->stream_id,
-          static_cast<c10::DeviceIndex>(stream->device_index),
+          stream->device_index,
           static_cast<c10::DeviceType>(stream->device_type)));
     } else {
       c10::impl::VirtualGuardImpl impl{
@@ -257,27 +261,26 @@ static struct PyGetSetDef THPEvent_properties[] = {
 
 // NOLINTNEXTLINE(*c-arrays*, *global-variables)
 static PyMethodDef THPEvent_methods[] = {
-    {"from_ipc_handle",
+    {(char*)"from_ipc_handle",
      castPyCFunctionWithKeywords(THPEvent_from_ipc_handle),
      METH_CLASS | METH_VARARGS | METH_KEYWORDS,
      nullptr},
-    {"record",
+    {(char*)"record",
      castPyCFunctionWithKeywords(THPEvent_record),
      METH_VARARGS | METH_KEYWORDS,
      nullptr},
-    {"wait",
+    {(char*)"wait",
      castPyCFunctionWithKeywords(THPEvent_wait),
      METH_VARARGS | METH_KEYWORDS,
      nullptr},
-    {"query", THPEvent_query, METH_NOARGS, nullptr},
-    {"elapsed_time", THPEvent_elapsed_time, METH_O, nullptr},
-    {"synchronize", THPEvent_synchronize, METH_NOARGS, nullptr},
-    {"ipc_handle", THPEvent_ipc_handle, METH_NOARGS, nullptr},
+    {(char*)"query", THPEvent_query, METH_NOARGS, nullptr},
+    {(char*)"elapsed_time", THPEvent_elapsed_time, METH_O, nullptr},
+    {(char*)"synchronize", THPEvent_synchronize, METH_NOARGS, nullptr},
+    {(char*)"ipc_handle", THPEvent_ipc_handle, METH_NOARGS, nullptr},
     {nullptr}};
 
 PyTypeObject THPEventType = {
-    PyVarObject_HEAD_INIT(nullptr, 0)
-    "torch.Event", /* tp_name */
+    PyVarObject_HEAD_INIT(nullptr, 0) "torch.Event", /* tp_name */
     sizeof(THPEvent), /* tp_basicsize */
     0, /* tp_itemsize */
     (destructor)THPEvent_dealloc, /* tp_dealloc */
@@ -317,7 +320,7 @@ PyTypeObject THPEventType = {
 };
 
 void THPEvent_init(PyObject* module) {
-  THPEventClass = &THPEventType;
+  THPEventClass = (PyObject*)&THPEventType;
   if (PyType_Ready(&THPEventType) < 0) {
     throw python_error();
   }

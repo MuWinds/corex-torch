@@ -19,6 +19,7 @@
 #include <c10/core/CPUAllocator.h>
 #include <c10/core/impl/alloc_cpu.h>
 #include <c10/util/Exception.h>
+#include <c10/util/Optional.h>
 #include <c10/util/ScopeExit.h>
 #include <caffe2/serialize/inline_container.h>
 #include <torch/csrc/jit/mobile/file_format.h>
@@ -34,7 +35,6 @@
 #include <torch/csrc/jit/serialization/import_export_constants.h>
 #include <torch/csrc/jit/serialization/import_read.h>
 #include <torch/custom_class.h>
-#include <optional>
 
 #ifndef DISABLE_UPGRADER
 #include <torch/csrc/jit/mobile/parse_bytecode.h>
@@ -55,7 +55,8 @@ namespace flatbuffers = flatbuffers_fbsource;
 #include <torch/csrc/jit/serialization/mobile_bytecode_generated.h> // NOLINT
 #endif
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 // Our own alignment requirement does not need to be exactly the same as what
 // flatbuffers supports, but what flatbuffers supports needs to satisfy our
@@ -70,10 +71,10 @@ static_assert(
 
 namespace {
 
-static constexpr std::string_view kCustomClassPrefix =
+static constexpr c10::string_view kCustomClassPrefix =
     "__torch__.torch.classes";
-static constexpr std::string_view kTorchPrefix = "__torch__";
-static constexpr std::string_view kJitPrefix = "torch.jit";
+static constexpr c10::string_view kTorchPrefix = "__torch__";
+static constexpr c10::string_view kJitPrefix = "torch.jit";
 
 class FlatbufferLoader final {
  public:
@@ -90,9 +91,9 @@ class FlatbufferLoader final {
       ExtraFilesMap* jit_sources,
       std::vector<IValue>* constants);
 
-  using TypeResolver = TypePtr (*)(
+  typedef TypePtr (*TypeResolver)(
       const std::string& type_str,
-      const std::shared_ptr<CompilationUnit>& cu);
+      std::shared_ptr<CompilationUnit> cu);
 
   void internal_registerTypeResolver(TypeResolver type_resolver);
 
@@ -186,16 +187,15 @@ IValue parseEnum(
 
 TypePtr resolveType(
     const std::string& type_string,
-    const std::shared_ptr<CompilationUnit>& cu) {
+    std::shared_ptr<CompilationUnit> cu) {
   TypePtr type;
-  std::string_view type_str(type_string);
-  if (c10::starts_with(type_str, kCustomClassPrefix)) {
+  c10::string_view type_str(type_string);
+  if (type_str.starts_with(kCustomClassPrefix)) {
     type = getCustomClass(type_string);
     TORCH_CHECK(
         type, "The implementation of class ", type_string, " cannot be found.");
   } else if (
-      c10::starts_with(type_str, kTorchPrefix) ||
-      c10::starts_with(type_str, kJitPrefix)) {
+      type_str.starts_with(kTorchPrefix) || type_str.starts_with(kJitPrefix)) {
     c10::QualifiedName qn(type_string);
     if (cu->get_class(qn) == nullptr) {
       auto classtype = ClassType::create(qn, cu, true);
@@ -364,7 +364,7 @@ std::unique_ptr<mobile::Function> FlatbufferLoader::parseFunction(
       (operator_version < caffe2::serialize::kProducedFileFormatVersion);
 
   for (const auto* op : *method->operators()) {
-    std::optional<int> num_args = std::nullopt;
+    std::optional<int> num_args = c10::nullopt;
     if (op->num_args_serialized() > -1) {
       num_args = op->num_args_serialized();
     }
@@ -399,7 +399,7 @@ std::unique_ptr<mobile::Function> FlatbufferLoader::parseFunction(
           auto arg = c10::Argument(
               arg_tb->name()->str(),
               std::move(type_ptr),
-              std::nullopt /*N*/,
+              c10::nullopt /*N*/,
               std::move(default_value));
           args.emplace_back(std::move(arg));
         }
@@ -470,8 +470,8 @@ IValue parseBasic(
 at::Tensor parseTensorFromMetadata(
     FlatbufferLoader* loader,
     const mobile::serialization::TensorMetadata* tensor_md) {
-  auto type = static_cast<at::ScalarType>(tensor_md->scalar_type());
-  auto options = at::device(at::kCPU).dtype(type);
+  at::ScalarType type = static_cast<at::ScalarType>(tensor_md->scalar_type());
+  auto options = at::CPU(type).options();
   at::Tensor tensor;
   if (tensor_md->quantized_schema() != nullptr) {
     // is quantized
@@ -531,7 +531,7 @@ IValue parseList(
     const mobile::serialization::IValue& ivalue) {
   const mobile::serialization::List* list = ivalue.val_as_List();
   auto res = c10::impl::GenericList(AnyType::get());
-  for (auto i : *list->items()) {
+  for (int i : *list->items()) {
     res.emplace_back(loader.getIValue(i));
   }
   auto type = loader.getOrCreateTypeAnnotations(list->annotation_str());
@@ -575,13 +575,11 @@ IValue parseTuple(
     FlatbufferLoader& loader,
     const mobile::serialization::IValue& ivalue) {
   const auto& tuple = ivalue.val_as_Tuple();
-  const auto items = tuple->items();
   std::vector<IValue> res;
-  res.reserve(items->size());
-  for (auto i : *items) {
+  for (int i : *tuple->items()) {
     res.emplace_back(loader.getIValue(i));
   }
-  return c10::ivalue::Tuple::create(std::move(res));
+  return c10::ivalue::Tuple::create(res);
 }
 
 IValue parseDict(
@@ -608,10 +606,9 @@ ClassTypePtr FlatbufferLoader::getOrCreateClassTypeForObject(
   const mobile::serialization::ObjectType* obj_type =
       module_->object_types()->Get(object->type_index());
   if (cls == nullptr) {
-    std::string_view qn_str(
+    c10::string_view qn_str(
         obj_type->type_name()->c_str(), obj_type->type_name()->size());
-    if (c10::starts_with(qn_str, kTorchPrefix) ||
-        c10::starts_with(qn_str, kJitPrefix)) {
+    if (qn_str.starts_with(kTorchPrefix) || qn_str.starts_with(kJitPrefix)) {
       c10::QualifiedName qn(obj_type->type_name()->str());
       cls = cu_->get_class(qn);
       if (cls == nullptr) {
@@ -942,4 +939,5 @@ bool register_flatbuffer_loader() {
   return true;
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

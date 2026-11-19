@@ -1,6 +1,7 @@
 #include <torch/csrc/utils/out_types.h>
 
-namespace torch::utils {
+namespace torch {
+namespace utils {
 
 // Used by python binding codegen to ensure any TensorOptions arguments are
 // consistent with the out tensor's options
@@ -14,18 +15,18 @@ void check_out_type_matches(
   if (scalarType_is_none && !layout && device_is_none) { // common case
     return;
   }
-  if (!scalarType_is_none && result.scalar_type() != scalarType) {
-    TORCH_CHECK(
-        false,
+  // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+  if (!scalarType_is_none && result.scalar_type() != scalarType.value()) {
+    AT_ERROR(
         "dtype ",
-        scalarType,
+        // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
+        *scalarType,
         " does not match dtype of out parameter (",
         result.scalar_type(),
         ")");
   }
   if (layout && result.layout() != *layout) {
-    TORCH_CHECK(
-        false,
+    AT_ERROR(
         "layout ",
         *layout,
         " does not match layout of out parameter (",
@@ -34,8 +35,7 @@ void check_out_type_matches(
   }
   // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
   if (!device_is_none && result.device().type() != device.value().type()) {
-    TORCH_CHECK(
-        false,
+    AT_ERROR(
         "device type ",
         // NOLINTNEXTLINE(bugprone-unchecked-optional-access)
         device->type(),
@@ -45,4 +45,5 @@ void check_out_type_matches(
   }
 }
 
-} // namespace torch::utils
+} // namespace utils
+} // namespace torch

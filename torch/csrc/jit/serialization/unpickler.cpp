@@ -199,8 +199,7 @@ static void restoreContainerTypeTags(
   } else if (is<ListType>(*type)) {
     ivalue.toList().unsafeSetElementType(type->containedType(0));
   } else {
-    TORCH_CHECK(
-        false, "Unknown type for tag restoration: " + type->annotation_str());
+    AT_ERROR("Unknown type for tag restoration: " + type->annotation_str());
   }
 }
 
@@ -221,7 +220,8 @@ double Unpickler::readFloat() {
   AT_ASSERT(sizeof(double) == 8);
   double big_endian = read<double>();
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-  double little_endian = 0;
+  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+  double little_endian;
 
   // Pickle floats are big endian, so reverse the bytes
   auto big_endian_ptr = reinterpret_cast<const char*>(&big_endian);
@@ -268,6 +268,17 @@ void Unpickler::setInput(size_t memo_id) {
   } else {
     memo_table_[memo_id] = stack_.back();
   }
+}
+
+// emplace_back on bool vectors does not exist on some systems
+// avoid it by calling push_back for bool
+template <typename T>
+inline void append(std::vector<T>& a, T&& e) {
+  a.emplace_back(std::forward<T>(e));
+}
+template <>
+inline void append<bool>(std::vector<bool>& a, bool&& e) {
+  a.push_back(e);
 }
 
 static std::vector<int64_t> tupleToIntList(const IValue& v) {
@@ -384,7 +395,7 @@ PickleOpCode Unpickler::readInstruction() {
           break;
         default: {
           elements.reserve(stack_.size() - start);
-          auto start_it = stack_.begin() + static_cast<std::ptrdiff_t>(start);
+          auto start_it = stack_.begin() + start;
           for (auto it = start_it; it != stack_.end(); ++it) {
             elements.emplace_back(std::move(*it));
           }
@@ -473,8 +484,7 @@ PickleOpCode Unpickler::readInstruction() {
       for (size_t i = start; i < stack_.size(); i += 2) {
         dict.insert_or_assign(stack_[i], stack_[i + 1]);
       }
-      stack_.erase(
-          stack_.begin() + static_cast<std::ptrdiff_t>(start), stack_.end());
+      stack_.erase(stack_.begin() + start, stack_.end());
       stack_.emplace_back(std::move(dict));
     } break;
     case PickleOpCode::SETITEMS: {
@@ -495,8 +505,7 @@ PickleOpCode Unpickler::readInstruction() {
       for (size_t i = start; i < stack_.size(); i += 2) {
         dict.insert_or_assign(stack_[i], stack_[i + 1]);
       }
-      stack_.erase(
-          stack_.begin() + static_cast<std::ptrdiff_t>(start), stack_.end());
+      stack_.erase(stack_.begin() + start, stack_.end());
     } break;
     case PickleOpCode::BINGET: {
       auto pos = read<uint8_t>();
@@ -574,7 +583,7 @@ PickleOpCode Unpickler::readInstruction() {
         storage = storage_context_->getStorage(key);
       } else {
         int64_t numel = args.at(4).toInt();
-        auto dtype = scalarTypeToTypeMeta(type);
+        caffe2::TypeMeta dtype = at::CPU(type).typeMeta();
 
         at::DataPtr storage_ptr;
         if (numel > 0) {
@@ -596,7 +605,7 @@ PickleOpCode Unpickler::readInstruction() {
         }
       }
 
-      auto options = at::device(at::kCPU).dtype(type);
+      auto options = at::CPU(type).options();
       if (use_storage_device_) {
         options = options.device(storage.device());
         device = storage.device();
@@ -611,12 +620,10 @@ PickleOpCode Unpickler::readInstruction() {
       }
 
       if (device.is_cuda() || device.is_xpu() || device.is_meta() ||
-          device.is_mtia() || device.is_hpu() || device.is_mps() ||
-          device.is_privateuseone()) {
+          device.is_hpu() || device.is_mps() || device.is_privateuseone()) {
         tensor = tensor.to(device, tensor.scalar_type());
       } else if (device.type() != DeviceType::CPU) {
-        TORCH_CHECK(
-            false,
+        AT_ERROR(
             "supported devices include CPU, CUDA, HPU and ",
             c10::get_privateuse1_backend(),
             " however got ",
@@ -647,14 +654,11 @@ PickleOpCode Unpickler::readInstruction() {
 
       auto dict = stack_.at(dict_pos).toGenericDict();
       dict.insert_or_assign(stack_.at(key_pos), stack_.at(val_pos));
-      stack_.erase(
-          stack_.begin() + static_cast<std::ptrdiff_t>(key_pos), stack_.end());
+      stack_.erase(stack_.begin() + (key_pos), stack_.end());
     } break;
     default: {
-      TORCH_CHECK(
-          false,
+      AT_ERROR(
           "Unknown opcode for unpickling at ",
-          // NOLINTNEXTLINE(performance-no-int-to-ptr)
           reinterpret_cast<void*>(opcode),
           ": ",
           int(static_cast<uint8_t>(opcode)));
@@ -700,7 +704,7 @@ void Unpickler::readGlobal(
         stack_.back().toList().unsafeSetElementType(IntType::get());
       });
     } else {
-      TORCH_CHECK(false, "Unknown pickler class id", class_name);
+      AT_ERROR("Unknown pickler class id", class_name);
     }
   } else if (module_name == "torch.jit._pickle") {
     if (class_name == "build_tensor_from_id") {
@@ -750,7 +754,7 @@ void Unpickler::readGlobal(
       } else if (class_name == "build_boollist") {
         elem_type = BoolType::get();
       } else {
-        TORCH_CHECK(false, "Unknown pickler class id ", class_name);
+        AT_ERROR("Unknown pickler class id ", class_name);
       }
       // Unpickle a list specialization (e.g. List[Tensor], List[int], ...)
       globals_.emplace_back([this, elem_type] {
@@ -1082,7 +1086,7 @@ void Unpickler::readSlowWithBuffer(char* dest, size_t sz) {
   AT_ASSERT(sz <= buffer_.size());
   buffer_remaining_ = reader_(buffer_.data(), buffer_.size());
   if (buffer_remaining_ < needed) {
-    TORCH_CHECK(false, "Unexpected end of pickler archive.");
+    AT_ERROR("Unexpected end of pickler archive.");
   }
   memcpy(dest + from_old_buf, buffer_.data(), needed);
   buffer_pos_ = needed; // assignment (0'ed from read)
@@ -1120,7 +1124,7 @@ std::string Unpickler::readBytes(size_t length) {
     const size_t needed = length - from_old_buf;
     size_t nread = reader_(&data[from_old_buf], needed);
     if (nread != needed) {
-      TORCH_CHECK(false, "Unexpected end of pickler archive.");
+      AT_ERROR("Unexpected end of pickler archive.");
     }
     buffer_remaining_ = 0;
     // buffer_pos_ has no meaning with buffer_remaining_ == 0.
@@ -1162,10 +1166,9 @@ void Unpickler::readListElements(IValue list_ivalue, size_t start) {
       list.emplace_back(elem);
     }
   } else {
-    TORCH_CHECK(false, "Unknown IValue list kind: ", list_ivalue.tagKind());
+    AT_ERROR("Unknown IValue list kind: ", list_ivalue.tagKind());
   }
-  stack_.erase(
-      stack_.begin() + static_cast<std::ptrdiff_t>(start), stack_.end());
+  stack_.erase(stack_.begin() + start, stack_.end());
 }
 
 // Pop all the list items off of the stack and append them to the list at
@@ -1177,7 +1180,7 @@ void Unpickler::readList(IValue list_ivalue) {
   readListElements(std::move(list_ivalue), start);
 }
 
-static inline bool is_valid_python_id_char(char c) {
+inline bool is_valid_python_id_char(char c) {
   return c == '_' || c == '.' || (c >= '0' && c <= '9') ||
       (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
 }

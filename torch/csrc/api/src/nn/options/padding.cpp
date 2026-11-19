@@ -1,6 +1,7 @@
 #include <torch/nn/options/padding.h>
 
-namespace torch::nn {
+namespace torch {
+namespace nn {
 
 template struct ReflectionPadOptions<1>;
 template struct ReflectionPadOptions<2>;
@@ -20,4 +21,5 @@ PadFuncOptions::PadFuncOptions(std::vector<int64_t> pad)
 
 } // namespace functional
 
-} // namespace torch::nn
+} // namespace nn
+} // namespace torch

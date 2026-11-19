@@ -3,9 +3,11 @@
 import inspect
 import io
 from tempfile import TemporaryFileName
+from typing import Dict, List
 
 import torch
 import torch.utils.bundled_inputs
+
 from torch.jit.mobile import _export_operator_list, _load_for_lite_interpreter
 from torch.testing import FileCheck
 from torch.testing._internal.common_quantization import (
@@ -71,7 +73,7 @@ class TestLiteScriptModule(TestCase):
                 return x * y
 
         class B(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.A0 = A()
                 self.A1 = A()
@@ -176,7 +178,7 @@ class TestLiteScriptModule(TestCase):
 
     def test_method_calls_with_optional_arg(self):
         class A(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
 
             # opt arg in script-to-script invocation
@@ -184,7 +186,7 @@ class TestLiteScriptModule(TestCase):
                 return x + two
 
         class B(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.A0 = A()
 
@@ -217,7 +219,7 @@ class TestLiteScriptModule(TestCase):
 
     def test_unsupported_classtype(self):
         class Foo:
-            def __init__(self) -> None:
+            def __init__(self):
                 return
 
             def func(self, x: int, y: int):
@@ -242,12 +244,12 @@ class TestLiteScriptModule(TestCase):
             pass
 
         class MyTestModuleForListWithModuleClass(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.foo = Foo()
 
             def forward(self):
-                my_list: list[Foo] = [self.foo]
+                my_list: List[Foo] = [self.foo]
                 return my_list
 
         script_module = torch.jit.script(MyTestModuleForListWithModuleClass())
@@ -266,12 +268,12 @@ class TestLiteScriptModule(TestCase):
             pass
 
         class MyTestModuleForDictWithModuleClass(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.foo = Foo()
 
             def forward(self):
-                my_dict: dict[int, Foo] = {1: self.foo}
+                my_dict: Dict[int, Foo] = {1: self.foo}
                 return my_dict
 
         script_module = torch.jit.script(MyTestModuleForDictWithModuleClass())
@@ -287,7 +289,7 @@ class TestLiteScriptModule(TestCase):
 
     def test_module_export_operator_list(self):
         class Foo(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.weight = torch.ones((20, 1, 5, 5))
                 self.bias = torch.ones(20)
@@ -348,14 +350,14 @@ class TestLiteScriptModule(TestCase):
             def forward(self):
                 raise RuntimeError("foo")
 
-        _, _ = inspect.getsourcelines(FooTest2)
+        _, lineno = inspect.getsourcelines(FooTest2)
 
         # In C++ code, the type of exception thrown is torch::jit::JITException
         # which does not extend c10::Error, and hence it isn't possible to add
         # additional context to the exception message and preserve the correct
         #  C++ stack trace for symbolication. i.e. it isn't possible to add
         # the debug handle string to show where in the Python code the exception
-        # occurred w/o first changing
+        # occured w/o first changing
         # torch::jit::JITException to extend c10::Error.
         with self.assertRaisesRegex(torch.jit.Error, "foo"):
             ft = FooTest2()
@@ -425,7 +427,7 @@ class TestLiteScriptModule(TestCase):
 
         ft = FooTest5(42)
         loaded = self.getScriptExportImportCopy(ft)
-        _, _ = inspect.getsourcelines(FooTest5)
+        _, lineno = inspect.getsourcelines(FooTest5)
 
         try:
             loaded(42, torch.rand(3, 4), torch.rand(3, 4), torch.rand(30, 40))
@@ -463,7 +465,7 @@ class TestLiteScriptModule(TestCase):
         class A(torch.nn.Module):
             b: Forward
 
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.b = B()
 
@@ -522,7 +524,7 @@ class TestLiteScriptQuantizedModule(QuantizationLiteTestCase):
     def test_quantization_example(self):
         # From the example in Static Quantization section of https://pytorch.org/docs/stable/quantization.html
         class M(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.quant = torch.ao.quantization.QuantStub()
                 self.conv = torch.nn.Conv2d(1, 1, 1)
@@ -555,9 +557,9 @@ class TestLiteScriptQuantizedModule(QuantizationLiteTestCase):
         class Model(torch.nn.Module):
             def forward(
                 self,
-                x: dict[int, torch.Tensor],
-                y: dict[int, torch.Tensor],
-                z: dict[int, torch.Tensor],
+                x: Dict[int, torch.Tensor],
+                y: Dict[int, torch.Tensor],
+                z: Dict[int, torch.Tensor],
             ):
                 return x
 

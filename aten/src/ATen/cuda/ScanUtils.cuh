@@ -14,7 +14,7 @@ namespace at::cuda {
 template <typename T, bool KillWARDependency, class BinaryFunction>
 __device__ void inclusiveBinaryPrefixScan(T* smem, bool in, T* out, BinaryFunction binop) {
   // Within-warp, we use warp voting.
-#if defined (USE_ROCM)
+#if defined (USE_ROCM) || defined(__ILUVATAR__)
   unsigned long long int vote = WARP_BALLOT(in);
   T index = __popcll(getLaneMaskLe() & vote);
   T carry = __popcll(vote);

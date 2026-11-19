@@ -14,7 +14,7 @@ struct InternedStringsTable {
   InternedStringsTable(InternedStringsTable&&) = delete;
   InternedStringsTable& operator=(InternedStringsTable&&) = delete;
 
-  std::optional<at::Dimname> lookup(PyObject* obj);
+  at::optional<at::Dimname> lookup(PyObject* obj);
   // Precondition: obj is an interned python string.
   void addMapping(PyObject* obj, at::Dimname dimname);
 
@@ -22,7 +22,7 @@ struct InternedStringsTable {
   ska::flat_hash_map<PyObject*, at::Dimname> py_interned_string_to_dimname_;
 };
 
-static InternedStringsTable kPyInternedStringToDimname;
+InternedStringsTable kPyInternedStringToDimname;
 
 // NOLINTNEXTLINE(bugprone-exception-escape)
 InternedStringsTable::~InternedStringsTable() {
@@ -38,10 +38,10 @@ InternedStringsTable::~InternedStringsTable() {
   }
 }
 
-std::optional<at::Dimname> InternedStringsTable::lookup(PyObject* obj) {
+at::optional<at::Dimname> InternedStringsTable::lookup(PyObject* obj) {
   auto it = py_interned_string_to_dimname_.find(obj);
   if (it == py_interned_string_to_dimname_.end()) {
-    return std::nullopt;
+    return at::nullopt;
   }
   return it->second;
 }

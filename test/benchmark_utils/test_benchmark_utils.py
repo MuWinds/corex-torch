@@ -7,7 +7,7 @@ import re
 import textwrap
 import timeit
 import unittest
-from typing import Any
+from typing import Any, List, Tuple
 
 import expecttest
 import numpy as np
@@ -66,10 +66,9 @@ def generate_callgrind_artifacts() -> None:
         json.dump(artifacts, f, indent=4)
 
 
-def load_callgrind_artifacts() -> tuple[
-    benchmark_utils.CallgrindStats,
-    benchmark_utils.CallgrindStats,
-]:
+def load_callgrind_artifacts() -> (
+    Tuple[benchmark_utils.CallgrindStats, benchmark_utils.CallgrindStats]
+):
     """Hermetic artifact to unit test Callgrind wrapper.
 
     In addition to collecting counts, this wrapper provides some facilities for
@@ -86,9 +85,9 @@ def load_callgrind_artifacts() -> tuple[
     pattern = re.compile(r"^\s*([0-9]+)\s(.+)$")
 
     def to_function_counts(
-        count_strings: list[str], inclusive: bool
+        count_strings: List[str], inclusive: bool
     ) -> benchmark_utils.FunctionCounts:
-        data: list[benchmark_utils.FunctionCount] = []
+        data: List[benchmark_utils.FunctionCount] = []
         for cs in count_strings:
             # Storing entries as f"{c} {fn}" rather than [c, fn] adds some work
             # reviving the artifact, but it makes the json much easier to read.
@@ -704,7 +703,7 @@ class TestBenchmarkUtils(TestCase):
                 90090  ???:pthread_mutex_lock [/usr/lib64/libpthread-2.28.so]
                 90000  build/../c10/core/TensorImpl.h:c ... ch/torch/lib/libtorch_python.so]
                 90000  build/../aten/src/ATen/record_fu ... torch/torch/lib/libtorch_cpu.so]
-                90000  /data/users/test_user/repos/pyto ... uard(std::optional<c10::Device>)
+                90000  /data/users/test_user/repos/pyto ... uard(c10::optional<c10::Device>)
                 90000  /data/users/test_user/repos/pyto ... ersionCounter::~VersionCounter()
                 88000  /data/users/test_user/repos/pyto ... ratorKernel*, at::Tensor const&)""",
         )

@@ -19,7 +19,6 @@ and /cudnn/ConvUnpackImpl.cpp, for cudnn.
 #include <ATen/native/quantized/cpu/OnednnUtils.h>
 #include <ATen/native/quantized/cpu/QuantUtils.h>
 #include <ATen/native/quantized/PackedParams.h>
-#include <ATen/native/quantized/library.h>
 
 #ifndef AT_PER_OPERATOR_HEADERS
 #include <ATen/Functions.h>
@@ -29,8 +28,15 @@ and /cudnn/ConvUnpackImpl.cpp, for cudnn.
 #include <ATen/ops/from_blob.h>
 #endif
 
+template <int kSpatialDim = 2>
+int register_conv_params();
 
-namespace at::native {
+extern template int register_conv_params<2>();
+extern template int register_conv_params<3>();
+
+
+namespace at {
+namespace native {
 namespace {
 
 /*
@@ -176,7 +182,7 @@ IValue
 unpack_quantized_prepacked_sizes_conv2d(const IValue& ivalue) {
   auto params = ivalue.toCustomClass<ConvPackedParamsBase<2>>();
   auto [weight, bias] = params->unpack();
-  at::OptionalIntArrayRef bias_sizes = std::nullopt;
+  at::OptionalIntArrayRef bias_sizes = c10::nullopt;
   if (bias && bias->defined()) {
     bias_sizes = bias->sizes();
   }
@@ -234,4 +240,5 @@ TORCH_LIBRARY_IMPL(quantized, CatchAll, m) {
 }
 
 } // namespace
-} // namespace at::native
+} // namespace native
+} // namespace at

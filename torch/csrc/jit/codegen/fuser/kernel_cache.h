@@ -1,14 +1,16 @@
 #pragma once
 
+#include <c10/util/Optional.h>
 #include <torch/csrc/Export.h>
 #include <torch/csrc/jit/codegen/fuser/kernel_spec.h>
 #include <torch/csrc/jit/ir/ir.h>
 
 #include <cstdint>
 #include <functional>
-#include <optional>
 
-namespace torch::jit::fuser {
+namespace torch {
+namespace jit {
+namespace fuser {
 
 // A thread-safe cache interface.
 
@@ -20,14 +22,15 @@ TORCH_API std::shared_ptr<Graph> normalizeGraphForCache(
 TORCH_API int64_t store(std::shared_ptr<Graph> graph);
 
 // Given a graph, find a KernelSpec based on it
-TORCH_API std::optional<KernelSpec*> lookupGraph(
-    const std::shared_ptr<Graph>& graph);
+TORCH_API at::optional<KernelSpec*> lookupGraph(std::shared_ptr<Graph> graph);
 
 // Returns the graph corresponding to the given key (if it exists)
-TORCH_API std::optional<KernelSpec*> retrieve(const int64_t key);
+TORCH_API at::optional<KernelSpec*> retrieve(const int64_t key);
 
 // Returns the size of the fusion key -> KernelSpec cache.
 // Only used for testing.
 TORCH_API int64_t debugNumCachedKernelSpecs();
 
-} // namespace torch::jit::fuser
+} // namespace fuser
+} // namespace jit
+} // namespace torch

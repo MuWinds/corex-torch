@@ -2,12 +2,13 @@
 
 #include <c10/core/Device.h>
 #include <c10/util/Exception.h>
+#include <c10/util/Optional.h>
 #include <c10/util/StringUtil.h>
 #include <torch/csrc/lazy/backend/backend_interface.h>
 #include <torch/csrc/lazy/core/tensor.h>
-#include <optional>
 
-namespace torch::lazy {
+namespace torch {
+namespace lazy {
 
 BackendDevice::BackendDevice()
     : type_(getBackend()->GetDefaultDeviceType()),
@@ -50,8 +51,7 @@ BackendDevice atenDeviceToBackendDevice(const c10::Device& device) {
 
 // TODO(whc) refactor this: we need to support non 1 on 1 mapping for torch/XLA.
 c10::Device backendDeviceToAtenDevice(const BackendDevice& device) {
-  return c10::Device(
-      at::kLazy, static_cast<c10::DeviceIndex>(device.ordinal()));
+  return c10::Device(at::kLazy, device.ordinal());
 }
 
 std::optional<BackendDevice> GetBackendDevice(at::ITensorListRef tensors) {
@@ -60,7 +60,7 @@ std::optional<BackendDevice> GetBackendDevice(at::ITensorListRef tensors) {
       return lt->GetDevice();
     }
   }
-  return std::nullopt;
+  return c10::nullopt;
 }
 
 std::optional<BackendDevice> GetBackendDevice(at::TensorList tensors) {
@@ -71,19 +71,20 @@ std::optional<BackendDevice> GetBackendDevice(const at::Tensor& tensor) {
   if (auto lt = TryGetLtcTensor(tensor)) {
     return lt->GetDevice();
   }
-  return std::nullopt;
+  return c10::nullopt;
 }
 
 std::optional<BackendDevice> GetBackendDevice(
     const std::optional<c10::Device>& device) {
   if (device) {
-    return atenDeviceToBackendDevice(*device);
+    return c10::make_optional(atenDeviceToBackendDevice(*device));
   }
-  return std::nullopt;
+  return c10::nullopt;
 }
 
 std::optional<BackendDevice> GetBackendDevice() {
-  return std::nullopt;
+  return c10::nullopt;
 }
 
-} // namespace torch::lazy
+} // namespace lazy
+} // namespace torch

@@ -13,7 +13,8 @@
 #include <torch/csrc/jit/passes/vulkan_rewrite.h>
 #include <torch/csrc/jit/runtime/graph_executor_impl.h>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 namespace {
 
@@ -531,4 +532,5 @@ script::Module vulkanOptimizeForMobile(
   return cloned_module;
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

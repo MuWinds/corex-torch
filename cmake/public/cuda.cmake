@@ -26,11 +26,27 @@ if(NOT MSVC)
 endif()
 
 # Find CUDA.
-find_package(CUDA)
+# CoreX: no real nvcc; old FindCUDA cannot work. Use CUDAToolkit discovery.
+set(CUDAToolkit_ROOT "/usr/local/corex" CACHE PATH "CoreX toolkit root")
+list(APPEND CMAKE_PREFIX_PATH "/usr/local/corex")
+find_package(CUDAToolkit)
+set(CUDA_FOUND ${CUDAToolkit_FOUND})
+# CoreX: arch selection handled by launcher (ivcore10), old FindCUDA module is gone.
+if(NOT COMMAND cuda_select_nvcc_arch_flags)
+  function(cuda_select_nvcc_arch_flags out_var)
+    set(${out_var} "" PARENT_SCOPE)
+  endfunction()
+endif()
+if(CUDAToolkit_FOUND)
+  set(CUDA_TOOLKIT_ROOT_DIR "${CUDAToolkit_ROOT}")
+  set(CUDA_INCLUDE_DIRS "${CUDAToolkit_INCLUDE_DIRS}")
+  set(CUDA_LIBRARIES "${CUDAToolkit_LIBRARIES}")
+  set(CUDA_VERSION "${CUDAToolkit_VERSION}")
+endif()
 if(NOT CUDA_FOUND)
   message(WARNING
-    "PyTorch: CUDA cannot be found. Depending on whether you are building "
-    "PyTorch or a PyTorch dependent library, the next warning / error will "
+    "Caffe2: CUDA cannot be found. Depending on whether you are building "
+    "Caffe2 or a Caffe2 dependent library, the next warning / error will "
     "give you more info.")
   set(CAFFE2_USE_CUDA OFF)
   return()
@@ -42,9 +58,24 @@ set(CUDAToolkit_ROOT "${CUDA_TOOLKIT_ROOT_DIR}")
 # Must be done before CUDA language is enabled, see
 # https://cmake.org/cmake/help/v3.15/variable/CMAKE_CUDA_HOST_COMPILER.html
 if("${CMAKE_CXX_COMPILER_ID}" MATCHES "Clang")
-  set(CMAKE_CUDA_HOST_COMPILER "${CMAKE_CXX_COMPILER}")
+  set(CMAKE_CUDA_HOST_COMPILER "${CMAKE_C_COMPILER}")
 endif()
-enable_language(CUDA)
+if(DEFINED ENV{CUDACXX})
+  set(CMAKE_CUDA_COMPILER "$ENV{CUDACXX}" CACHE FILEPATH "" FORCE)
+endif()
+# CoreX: 不启用 CUDA 语言（nvcc 是假的，CUDA 语言探针必然失败）。
+# .cu 已在顶层注册为 CXX 扩展名，实际编译由 corex-cxx-launcher.sh 改写成
+#   clang++ -x cuda --cuda-gpu-arch=ivcore10
+set(CMAKE_CUDA_COMPILER "/usr/local/corex/bin/clang++" CACHE FILEPATH "CoreX clang++")
+set(CMAKE_CXX_COMPILER_LAUNCHER "${CMAKE_CURRENT_LIST_DIR}/corex-cxx-launcher.sh" CACHE STRING "" FORCE)
+
+# CoreX: 打开厂商补丁用的宏
+add_compile_options(-fsized-deallocation)
+add_definitions(-D__ILUVATAR__)
+add_compile_options(-Wno-error=format)
+add_definitions(-D__ILUVATAR_WORKAROUND__)
+add_definitions(-D__CUDA_NO_HALF_OPERATORS__ -D__CUDA_NO_HALF_CONVERSIONS__ -D__CUDA_NO_HALF2_OPERATORS__ -D__CUDA_NO_BFLOAT16_CONVERSIONS__)
+
 if("X${CMAKE_CUDA_STANDARD}" STREQUAL "X" )
   set(CMAKE_CUDA_STANDARD ${CMAKE_CXX_STANDARD})
 endif()
@@ -60,16 +91,20 @@ find_package(CUDAToolkit REQUIRED)
 
 cmake_policy(POP)
 
-if(NOT CMAKE_CUDA_COMPILER_VERSION VERSION_EQUAL CUDAToolkit_VERSION)
-  message(FATAL_ERROR "Found two conflicting CUDA versions:\n"
-                      "V${CMAKE_CUDA_COMPILER_VERSION} in '${CUDA_INCLUDE_DIRS}' and\n"
-                      "V${CUDAToolkit_VERSION} in '${CUDAToolkit_INCLUDE_DIRS}'")
+# CoreX: 没有 CUDA 语言编译器，版本统一以 CUDAToolkit（读 cuda.h）为准
+set(CMAKE_CUDA_COMPILER_VERSION "${CUDAToolkit_VERSION}")
+set(CUDA_VERSION "${CUDAToolkit_VERSION}" CACHE STRING "" FORCE)
+set(CUDA_VERSION_STRING "${CUDAToolkit_VERSION}")
+
+
+if(NOT TARGET CUDA::nvToolsExt)
+  message(FATAL_ERROR "Failed to find nvToolsExt")
 endif()
 
-message(STATUS "PyTorch: CUDA detected: " ${CUDA_VERSION})
-message(STATUS "PyTorch: CUDA nvcc is: " ${CUDA_NVCC_EXECUTABLE})
-message(STATUS "PyTorch: CUDA toolkit directory: " ${CUDA_TOOLKIT_ROOT_DIR})
-if(CUDA_VERSION VERSION_LESS 11.0)
+message(STATUS "Caffe2: CUDA detected: " ${CUDA_VERSION})
+message(STATUS "Caffe2: CUDA nvcc is: " ${CUDA_NVCC_EXECUTABLE})
+message(STATUS "Caffe2: CUDA toolkit directory: " ${CUDA_TOOLKIT_ROOT_DIR})
+if(CUDA_VERSION VERSION_LESS 10.2)
   message(FATAL_ERROR "PyTorch requires CUDA 11.0 or above.")
 endif()
 
@@ -103,36 +138,31 @@ if(CUDA_FOUND)
       COMPILE_OUTPUT_VARIABLE output_var
       )
     if(NOT compile_result)
-      message(FATAL_ERROR "PyTorch: Couldn't determine version from header: " ${output_var})
+      message(FATAL_ERROR "Caffe2: Couldn't determine version from header: " ${output_var})
     endif()
-    message(STATUS "PyTorch: Header version is: " ${cuda_version_from_header})
-    if(NOT cuda_version_from_header STREQUAL ${CUDA_VERSION_STRING})
-      # Force CUDA to be processed for again next time
-      # TODO: I'm not sure if this counts as an implementation detail of
-      # FindCUDA
-      set(${cuda_version_from_findcuda} ${CUDA_VERSION_STRING})
-      unset(CUDA_TOOLKIT_ROOT_DIR_INTERNAL CACHE)
-      # Not strictly necessary, but for good luck.
-      unset(CUDA_VERSION CACHE)
-      # Error out
-      message(FATAL_ERROR "FindCUDA says CUDA version is ${cuda_version_from_findcuda} (usually determined by nvcc), "
-        "but the CUDA headers say the version is ${cuda_version_from_header}.  This often occurs "
-        "when you set both CUDA_HOME and CUDA_NVCC_EXECUTABLE to "
-        "non-standard locations, without also setting PATH to point to the correct nvcc.  "
-        "Perhaps, try re-running this command again with PATH=${CUDA_TOOLKIT_ROOT_DIR}/bin:$PATH.  "
-        "See above log messages for more diagnostics, and see https://github.com/pytorch/pytorch/issues/8092 for more details.")
-    endif()
+    message(STATUS "Caffe2: Header version is: " ${cuda_version_from_header})
+    # CoreX: 不再比对 FindCUDA（假 nvcc）与头文件版本
+
   endif()
 endif()
 
 # ---[ CUDA libraries wrapper
 
-# find lbnvrtc.so
+# find libcuda.so and lbnvrtc.so
+# For libcuda.so, we will find it under lib, lib64, and then the
+# stubs folder, in case we are building on a system that does not
+# have cuda driver installed. On windows, we also search under the
+# folder lib/x64.
+set(CUDA_CUDA_LIB "${CUDA_cuda_driver_LIBRARY}" CACHE FILEPATH "")
 set(CUDA_NVRTC_LIB "${CUDA_nvrtc_LIBRARY}" CACHE FILEPATH "")
 if(CUDA_NVRTC_LIB AND NOT CUDA_NVRTC_SHORTHASH)
-  find_package(Python COMPONENTS Interpreter)
+  if("${Python_EXECUTABLE}" STREQUAL "")
+    set(_python_exe "python3")
+  else()
+    set(_python_exe "${Python_EXECUTABLE}")
+  endif()
   execute_process(
-    COMMAND Python::Interpreter -c
+    COMMAND "${_python_exe}" -c
     "import hashlib;hash=hashlib.sha256();hash.update(open('${CUDA_NVRTC_LIB}','rb').read());print(hash.hexdigest()[:8])"
     RESULT_VARIABLE _retval
     OUTPUT_VARIABLE CUDA_NVRTC_SHORTHASH)
@@ -169,6 +199,11 @@ else()
         CUDA::cudart)
 endif()
 
+# nvToolsExt
+add_library(torch::nvtoolsext INTERFACE IMPORTED)
+set_property(
+    TARGET torch::nvtoolsext PROPERTY INTERFACE_LINK_LIBRARIES
+    CUDA::nvToolsExt)
 
 # cublas
 add_library(caffe2::cublas INTERFACE IMPORTED)
@@ -235,38 +270,6 @@ else()
   message(STATUS "USE_CUSPARSELT is set to 0. Compiling without cuSPARSELt support")
 endif()
 
-if(USE_CUDSS)
-  find_package(CUDSS)
-
-  if(NOT CUDSS_FOUND)
-    message(WARNING
-      "Cannot find CUDSS library. Turning the option off")
-    set(USE_CUDSS OFF)
-  else()
-    add_library(torch::cudss INTERFACE IMPORTED)
-    target_include_directories(torch::cudss INTERFACE ${CUDSS_INCLUDE_PATH})
-    target_link_libraries(torch::cudss INTERFACE ${CUDSS_LIBRARY_PATH})
-  endif()
-else()
-  message(STATUS "USE_CUDSS is set to 0. Compiling without cuDSS support")
-endif()
-
-# cufile
-if(CAFFE2_USE_CUFILE)
-  add_library(torch::cufile INTERFACE IMPORTED)
-  if(CAFFE2_STATIC_LINK_CUDA AND NOT WIN32)
-      set_property(
-          TARGET torch::cufile PROPERTY INTERFACE_LINK_LIBRARIES
-          CUDA::cuFile_static)
-  else()
-      set_property(
-          TARGET torch::cufile PROPERTY INTERFACE_LINK_LIBRARIES
-          CUDA::cuFile)
-  endif()
-else()
-  message(STATUS "USE_CUFILE is set to 0. Compiling without cuFile support")
-endif()
-
 # curand
 add_library(caffe2::curand INTERFACE IMPORTED)
 if(CAFFE2_STATIC_LINK_CUDA AND NOT WIN32)
@@ -295,9 +298,9 @@ endif()
 add_library(caffe2::nvrtc INTERFACE IMPORTED)
 set_property(
     TARGET caffe2::nvrtc PROPERTY INTERFACE_LINK_LIBRARIES
-    CUDA::nvrtc caffe2::cuda)
+    CUDA::nvrtc)
 
-# Add onnx namespace definition to nvcc
+# Add onnx namepsace definition to nvcc
 if(ONNX_NAMESPACE)
   list(APPEND CUDA_NVCC_FLAGS "-DONNX_NAMESPACE=${ONNX_NAMESPACE}")
 else()

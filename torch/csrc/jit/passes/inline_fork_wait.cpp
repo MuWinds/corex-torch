@@ -1,7 +1,8 @@
 #include <torch/csrc/jit/jit_log.h>
 #include <torch/csrc/jit/passes/inline_fork_wait.h>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 static void InlineForkWait(
     Block* b,
@@ -60,4 +61,5 @@ void InlineForkWait(const std::shared_ptr<Graph>& graph) {
   GRAPH_DUMP("After InlineForkWait: ", graph);
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

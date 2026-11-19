@@ -8,7 +8,8 @@
 #include <torch/csrc/jit/runtime/graph_executor.h>
 #include <unordered_set>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 // This pass only does optimizations which requires Alias Analysis
 // It is separated out from Peephole Pass so that Peephole does not have
@@ -26,7 +27,7 @@ struct PeepholeOptimizeAliasSensitiveImpl {
   }
 
  private:
-  void replaceWithIValue(Value* v, const IValue& val) {
+  void replaceWithIValue(Value* v, IValue val) {
     WithInsertPoint guard(v->node());
     v->replaceAllUsesWith(v->owningGraph()->insertConstant(val));
   }
@@ -169,4 +170,5 @@ bool PeepholeOptimizeAliasSensitive(
   return opt.run();
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

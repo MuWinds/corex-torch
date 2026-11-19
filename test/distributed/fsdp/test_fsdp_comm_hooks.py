@@ -25,7 +25,6 @@ from torch.testing._internal.common_utils import (
     run_tests,
 )
 
-
 if not dist.is_available():
     print("Distributed not available, skipping tests", file=sys.stderr)
     sys.exit(0)
@@ -94,6 +93,7 @@ class DummyHook:
         of a flattened tensor to all processes in a group.
         Currently a no-op.
         """
+        pass
 
     def dummy_hook_for_sharded_fsdp(
         self, state: DummyState, grad: torch.Tensor, output: torch.Tensor

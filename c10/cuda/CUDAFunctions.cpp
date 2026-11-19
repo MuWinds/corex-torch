@@ -1,6 +1,5 @@
 #include <c10/cuda/CUDAFunctions.h>
 #include <c10/macros/Macros.h>
-#include <c10/util/WaitCounter.h>
 
 #include <limits>
 
@@ -23,7 +22,7 @@ int device_count_impl(bool fail_if_no_driver) {
   // Clear out the error state, so we don't spuriously trigger someone else.
   // (This shouldn't really matter, since we won't be running very much CUDA
   // code in this regime.)
-  [[maybe_unused]] cudaError_t last_err = cudaGetLastError();
+  cudaError_t last_err C10_UNUSED = cudaGetLastError();
   switch (err) {
     case cudaErrorNoDevice:
       // Zero devices is ok here
@@ -130,8 +129,8 @@ DeviceIndex current_device() {
   return cur_device;
 }
 
-void set_device(DeviceIndex device, const bool force) {
-  C10_CUDA_CHECK(c10::cuda::SetDevice(device, force));
+void set_device(DeviceIndex device) {
+  C10_CUDA_CHECK(c10::cuda::SetDevice(device));
 }
 
 void device_synchronize() {
@@ -139,7 +138,6 @@ void device_synchronize() {
   if (C10_UNLIKELY(interp)) {
     (*interp)->trace_gpu_device_synchronization(c10::kCUDA);
   }
-  STATIC_SCOPED_WAIT_COUNTER(pytorch.wait_counter.cuda_device_synchronize);
   C10_CUDA_CHECK(cudaDeviceSynchronize());
 }
 
@@ -168,17 +166,16 @@ std::optional<DeviceIndex> getDeviceIndexWithPrimaryContext() {
       return device_index;
     }
   }
-  return std::nullopt;
+  return c10::nullopt;
 }
 
 namespace _internal {
-static bool dummyHasPrimaryContext([[maybe_unused]] DeviceIndex device_index) {
+bool dummyHasPrimaryContext(C10_UNUSED DeviceIndex device_index) {
   TORCH_CHECK(false, "Should never been called");
 }
-static bool (*hasPrimaryContext)(DeviceIndex) = dummyHasPrimaryContext;
+bool (*hasPrimaryContext)(DeviceIndex) = dummyHasPrimaryContext;
 
 // Private api to be called from CUDAHooks.cpp
-// NOLINTNEXTLINE(misc-use-internal-linkage)
 C10_CUDA_API void setHasPrimaryContext(bool (*func)(DeviceIndex)) {
   hasPrimaryContext = func ? func : dummyHasPrimaryContext;
 }
@@ -211,7 +208,7 @@ cudaError_t GetDeviceCount(int* dev_count) {
 // call y = torch.empty(1, device=“cuda”) # CUDA context is created on cuda:0
 // ```
 #if CUDA_VERSION >= 12000
-thread_local static DeviceIndex targetDeviceIndex = -1;
+thread_local DeviceIndex targetDeviceIndex = -1;
 
 cudaError_t GetDevice(DeviceIndex* device) {
   if (targetDeviceIndex >= 0) {
@@ -231,12 +228,9 @@ cudaError_t GetDevice(DeviceIndex* device) {
   return err;
 }
 
-cudaError_t SetDevice(DeviceIndex device, const bool force) {
-  TORCH_CHECK(device >= 0, "device id must be non-negative!", device);
+cudaError_t SetDevice(DeviceIndex device) {
+  TORCH_CHECK(device >= 0, "device id must be positive!", device);
   targetDeviceIndex = -1;
-  if (force) {
-    return cudaSetDevice(device);
-  }
   int cur_device = -1;
   C10_CUDA_CHECK(cudaGetDevice(&cur_device));
   if (device == cur_device) {
@@ -312,11 +306,8 @@ cudaError_t GetDevice(DeviceIndex* device) {
   return err;
 }
 
-cudaError_t SetDevice(DeviceIndex device, const bool force) {
-  TORCH_CHECK(device >= 0, "device id must be non-negative!", device);
-  if (force) {
-    return cudaSetDevice(device);
-  }
+cudaError_t SetDevice(DeviceIndex device) {
+  TORCH_CHECK(device >= 0, "device id must be positive!", device);
   int cur_device = -1;
   C10_CUDA_CHECK(cudaGetDevice(&cur_device));
   if (device == cur_device) {

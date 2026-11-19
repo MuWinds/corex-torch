@@ -1,13 +1,14 @@
 #include <ATen/core/dispatch/Dispatcher.h>
 #include <torch/csrc/utils/schema_info.h>
 
-namespace torch::utils {
+namespace torch {
+namespace utils {
 void SchemaInfo::addArgumentValue(
     const std::string& name,
     const at::IValue& value) {
   std::optional<int> index = schema_.argumentIndexWithName(name);
   TORCH_INTERNAL_ASSERT(
-      index != std::nullopt, "Schema has no argument named ", name);
+      index != c10::nullopt, "Schema has no argument named ", name);
   value_map_[name] = value;
   alias_maps_current_ = false;
 }
@@ -100,11 +101,11 @@ bool SchemaInfo::is_mutable(const c10::SchemaArgument& argument) {
       });
 }
 
-bool SchemaInfo::has_argument(std::string_view name) {
-  return schema_.argumentIndexWithName(name) != std::nullopt;
+bool SchemaInfo::has_argument(c10::string_view name) {
+  return schema_.argumentIndexWithName(name) != c10::nullopt;
 }
 
-bool SchemaInfo::is_mutable(std::string_view name) {
+bool SchemaInfo::is_mutable(c10::string_view name) {
   std::optional<int> index = schema_.argumentIndexWithName(name);
   TORCH_INTERNAL_ASSERT(
       index.has_value(), "Schema has no argument named ", name);
@@ -432,4 +433,5 @@ void SchemaInfo::generateAliasMaps() {
   }
 }
 
-} // namespace torch::utils
+} // namespace utils
+} // namespace torch

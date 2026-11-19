@@ -15,7 +15,8 @@
 #include <torch/csrc/jit/passes/subgraph_rewrite.h>
 #include <torch/csrc/jit/runtime/graph_executor_impl.h>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 namespace {
 
@@ -268,4 +269,5 @@ script::Module metalOptimizeForMobile(
   return cloned_module;
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

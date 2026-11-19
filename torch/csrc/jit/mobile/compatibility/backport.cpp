@@ -7,7 +7,8 @@
 
 #include <string>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 using caffe2::serialize::IStreamAdapter;
 using caffe2::serialize::PyTorchStreamWriter;
@@ -16,7 +17,7 @@ const static BackportManager backportManager;
 
 // Forward declare so that _backport_for_mobile() overloads can
 // call this method directly.
-static bool _backport_for_mobile_impl(
+bool _backport_for_mobile_impl(
     std::istream& oss,
     PyTorchStreamWriter& writer,
     const int64_t to_version);
@@ -49,7 +50,7 @@ bool _backport_for_mobile(
   std::unique_ptr<IStreamAdapter> istream_adapter;
   file_stream.open(input_filename, std::ifstream::in | std::ifstream::binary);
   if (!file_stream) {
-    TORCH_CHECK(false, "open file failed, file path: ", input_filename);
+    AT_ERROR("open file failed, file path: ", input_filename);
   }
   auto writer_func = [&](const void* buf, size_t nbytes) -> size_t {
     out.write(static_cast<const char*>(buf), nbytes);
@@ -67,7 +68,7 @@ bool _backport_for_mobile(
   std::ifstream file_stream;
   file_stream.open(input_filename, std::ifstream::in | std::ifstream::binary);
   if (!file_stream) {
-    TORCH_CHECK(false, "open file failed, file path: ", input_filename);
+    AT_ERROR("open file failed, file path: ", input_filename);
   }
 
   PyTorchStreamWriter writer(output_filename);
@@ -86,4 +87,5 @@ bool _backport_for_mobile_impl(
   return backportManager.backport(oss, writer, from_version, to_version);
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

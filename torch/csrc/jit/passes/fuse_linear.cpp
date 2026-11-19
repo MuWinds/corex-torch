@@ -3,7 +3,8 @@
 #include <torch/csrc/jit/passes/quantization/helper.h>
 #include <torch/csrc/jit/passes/subgraph_rewrite.h>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 void FuseLinear(std::shared_ptr<Graph>& graph) {
   std::string addmm_pattern = R"IR(
@@ -131,4 +132,5 @@ graph(%linear, %input, %weight, %bias):
   rewriter.runOnGraph(graph, filter);
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

@@ -1,5 +1,4 @@
 # Owner(s): ["oncall: jit"]
-# ruff: noqa: F841
 
 import os
 import sys
@@ -232,7 +231,7 @@ class TestSchemaCheck(JitTestCase):
             actual = x.relu().sin()
         self.assertEqual(expected, actual)
 
-    # Tests that SchemaCheckMode wraps torch.Tensor when an argument's default is overridden
+    # Tests that SchemaCheckMode wraps torch.Tensor when an argument's default is overriden
     def test_schema_check_mode_functionality_default_replaced(self):
         x = torch.rand((3, 3), requires_grad=True)
         expected = x.add(x, alpha=2)

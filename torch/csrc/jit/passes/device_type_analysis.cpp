@@ -2,15 +2,16 @@
 #include <ATen/core/jit_type.h>
 #include <c10/core/Device.h>
 #include <c10/util/ArrayRef.h>
+#include <c10/util/Optional.h>
 #include <torch/csrc/jit/ir/ir.h>
 #include <torch/csrc/jit/jit_log.h>
 #include <torch/csrc/jit/passes/device_type_analysis.h>
 #include <torch/csrc/jit/passes/shape_analysis.h>
 #include <memory>
-#include <optional>
 #include <utility>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 namespace {
 
@@ -66,7 +67,7 @@ bool returnSecondArgDeviceRule(Node* n) {
   return setReturnsToDevice(n, tensor_type->device());
 }
 
-bool isZerodimCPUTensor(const std::shared_ptr<TensorType>& tensor_type) {
+bool isZerodimCPUTensor(std::shared_ptr<TensorType> tensor_type) {
   // CPU devices on zerodim tensors are the only device that can be
   // overwritten by another device. Therefore, to be conservative
   // assume that it is not a zerodim cpu tensor if something is not known.
@@ -87,7 +88,7 @@ bool propWithNoDevice(Node* n) {
   }
   if (input_num == n->inputs().size()) {
     // No tensor found
-    return setReturnsToDevice(n, std::nullopt);
+    return setReturnsToDevice(n, c10::nullopt);
   }
 
   auto tensor_type = n->inputs()[input_num]->type()->expect<TensorType>();
@@ -107,7 +108,7 @@ bool propWithNoDevice(Node* n) {
         only_seen_cpu_zerodim = false;
       } else {
         // Bail on the type not match case
-        return setReturnsToDevice(n, std::nullopt);
+        return setReturnsToDevice(n, c10::nullopt);
       }
     }
   }
@@ -148,7 +149,7 @@ bool defaultDeviceProp(Node* n) {
 
 struct DeviceTypePropagationPass : public PropertyPropBase {
   explicit DeviceTypePropagationPass(std::shared_ptr<Graph> graph)
-      : PropertyPropBase(std::move(graph)) {
+      : PropertyPropBase(graph) {
     buildRuleRegistry();
   }
 
@@ -159,7 +160,7 @@ struct DeviceTypePropagationPass : public PropertyPropBase {
   }
 
  private:
-  void propagateNode(Node* n, bool _ = true) override {
+  void propagateNode(Node* n, bool _ = false) override {
     GRAPH_DEBUG("processNode");
     switch (n->kind()) {
       case prim::If:
@@ -260,4 +261,5 @@ bool DeviceTypePropagation(std::shared_ptr<Graph>& graph) {
   return changed;
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

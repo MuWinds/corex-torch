@@ -1,0 +1,14 @@
+--- /data/home/2024240384035/build/pytorch-2.1.0/aten/src/ATen/TensorIterator.h	2023-09-22 06:25:09.000000000 +0800
++++ /data/software/Anaconda3/2024.10-1/envs/py310/lib/python3.10/site-packages/torch/include/ATen/TensorIterator.h	2025-03-13 11:53:02.069028629 +0800
+@@ -597,7 +597,11 @@
+   void reorder_dimensions();
+   void permute_dimensions(IntArrayRef perm);
+   void compute_types(const TensorIteratorConfig&);
++#ifdef __ILUVATAR__
++  ScalarType compute_common_dtype(const Device& = kCPU);
++#else
+   ScalarType compute_common_dtype();
++#endif
+   void allocate_or_resize_outputs();
+   bool fast_set_up(const TensorIteratorConfig&);
+   FastSetupType compute_fast_setup_type(const TensorIteratorConfig&);

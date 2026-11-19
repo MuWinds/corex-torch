@@ -1,12 +1,10 @@
-from __future__ import annotations
-
 import argparse
 import json
 import os
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, TYPE_CHECKING
+from typing import Any, Dict, Generator, Tuple
 
 from tools.stats.upload_stats_lib import (
     download_s3_artifacts,
@@ -16,18 +14,13 @@ from tools.stats.upload_stats_lib import (
 )
 from tools.stats.upload_test_stats import process_xml_element
 
-
-if TYPE_CHECKING:
-    from collections.abc import Generator
-
-
 TESTCASE_TAG = "testcase"
 SEPARATOR = ";"
 
 
 def process_report(
     report: Path,
-) -> dict[str, dict[str, int]]:
+) -> Dict[str, Dict[str, int]]:
     """
     Return a list of disabled tests that should be re-enabled and those that are still
     flaky (failed or skipped)
@@ -43,11 +36,10 @@ def process_report(
     # * Skipped tests from unittest
     #
     # We want to keep track of how many times the test fails (num_red) or passes (num_green)
-    all_tests: dict[str, dict[str, int]] = {}
+    all_tests: Dict[str, Dict[str, int]] = {}
 
     for test_case in root.iter(TESTCASE_TAG):
-        # Parse the test case as string values only.
-        parsed_test_case = process_xml_element(test_case, output_numbers=False)
+        parsed_test_case = process_xml_element(test_case)
 
         # Under --rerun-disabled-tests mode, a test is skipped when:
         # * it's skipped explicitly inside PyTorch code
@@ -124,7 +116,7 @@ def get_test_reports(
         yield from Path(".").glob("**/*.xml")
 
 
-def get_disabled_test_name(test_id: str) -> tuple[str, str, str, str]:
+def get_disabled_test_name(test_id: str) -> Tuple[str, str, str, str]:
     """
     Follow flaky bot convention here, if that changes, this will also need to be updated
     """
@@ -141,7 +133,7 @@ def prepare_record(
     flaky: bool,
     num_red: int = 0,
     num_green: int = 0,
-) -> tuple[Any, dict[str, Any]]:
+) -> Tuple[Any, Dict[str, Any]]:
     """
     Prepare the record to save onto S3
     """
@@ -170,10 +162,10 @@ def prepare_record(
 def save_results(
     workflow_id: int,
     workflow_run_attempt: int,
-    all_tests: dict[str, dict[str, int]],
+    all_tests: Dict[str, Dict[str, int]],
 ) -> None:
     """
-    Save the result to S3, which then gets put into the HUD backend database
+    Save the result to S3, so it can go to Rockset
     """
     should_be_enabled_tests = {
         name: stats
@@ -236,7 +228,7 @@ def main(repo: str, workflow_run_id: int, workflow_run_attempt: int) -> None:
     Find the list of all disabled tests that should be re-enabled
     """
     # Aggregated across all jobs
-    all_tests: dict[str, dict[str, int]] = {}
+    all_tests: Dict[str, Dict[str, int]] = {}
 
     for report in get_test_reports(
         args.repo, args.workflow_run_id, args.workflow_run_attempt
@@ -245,9 +237,7 @@ def main(repo: str, workflow_run_id: int, workflow_run_attempt: int) -> None:
 
         # The scheduled workflow has both rerun disabled tests and memory leak check jobs.
         # We are only interested in the former here
-        if not is_rerun_disabled_tests(
-            report, workflow_run_id, workflow_run_attempt, tests
-        ):
+        if not is_rerun_disabled_tests(tests):
             continue
 
         for name, stats in tests.items():

@@ -1,0 +1,20 @@
+--- /data/home/2024240384035/build/pytorch-2.1.0/aten/src/ATen/cuda/cub_definitions.cuh	2023-09-22 06:25:09.000000000 +0800
++++ /data/software/Anaconda3/2024.10-1/envs/py310/lib/python3.10/site-packages/torch/include/ATen/cuda/cub_definitions.cuh	2025-03-13 11:53:02.246028501 +0800
+@@ -4,7 +4,7 @@
+ #include <cuda.h>  // for CUDA_VERSION
+ #endif
+ 
+-#if !defined(USE_ROCM)
++#if !defined(USE_ROCM) && !defined(__ILUVATAR__)
+ #include <cub/version.cuh>
+ #else
+ #define CUB_VERSION 0
+@@ -12,7 +12,7 @@
+ 
+ // cub sort support for __nv_bfloat16 is added to cub 1.13 in:
+ // https://github.com/NVIDIA/cub/pull/306
+-#if CUB_VERSION >= 101300
++#if CUB_VERSION >= 101300 || defined(__ILUVATAR__)
+ #define CUB_SUPPORTS_NV_BFLOAT16() true
+ #else
+ #define CUB_SUPPORTS_NV_BFLOAT16() false

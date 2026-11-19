@@ -3,7 +3,9 @@
 #include <torch/csrc/jit/serialization/pickle.h>
 #include <vector>
 
-namespace torch::distributed::autograd {
+namespace torch {
+namespace distributed {
+namespace autograd {
 
 constexpr auto kProfilingResponseElementExpectedSize = 3;
 
@@ -19,7 +21,7 @@ RpcWithProfilingReq::RpcWithProfilingReq(
     : messageType_(messageType),
       wrappedMessage_(std::move(wrappedMessage)),
       tensors_(wrappedMessage_->tensors()),
-      profilerConfig_(std::move(profilerConfig)),
+      profilerConfig_(profilerConfig),
       profilingKeyId_(profilingKeyId) {
   TORCH_INTERNAL_ASSERT(
       messageType_ == rpc::MessageType::RUN_WITH_PROFILING_REQ,
@@ -43,9 +45,9 @@ RpcWithProfilingReq::RpcWithProfilingReq(
       wrappedRpc_(std::move(wrappedRpc)),
       wrappedMessageType_(wrappedMessageType),
       tensors_(std::move(tensors)),
-      profilerConfig_(std::move(profilerConfig)),
+      profilerConfig_(profilerConfig),
       profilingKeyId_(profilingKeyId) {
-  TORCH_INTERNAL_ASSERT(wrappedRpc_ != nullptr, "wrappedRpc can't be null");
+  TORCH_INTERNAL_ASSERT(wrappedRpc_ != nullptr, "wrappedRpc cant be null");
 }
 
 rpc::MessageType RpcWithProfilingReq::wrappedMessageType() const {
@@ -142,4 +144,6 @@ std::unique_ptr<RpcWithProfilingReq> RpcWithProfilingReq::fromMessage(
       std::move(cfg),
       profilerId);
 }
-} // namespace torch::distributed::autograd
+} // namespace autograd
+} // namespace distributed
+} // namespace torch

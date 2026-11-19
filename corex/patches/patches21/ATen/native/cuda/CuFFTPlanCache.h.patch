@@ -1,0 +1,53 @@
+--- /data/home/2024240384035/build/pytorch-2.1.0/aten/src/ATen/native/cuda/CuFFTPlanCache.h	2023-09-22 06:25:09.000000000 +0800
++++ /data/software/Anaconda3/2024.10-1/envs/py310/lib/python3.10/site-packages/torch/include/ATen/native/cuda/CuFFTPlanCache.h	2025-03-13 11:53:02.364028416 +0800
+@@ -123,7 +123,7 @@
+   return (x & (x - 1)) == 0;
+ }
+ 
+-#if defined(USE_ROCM)
++#if defined USE_ROCM || defined __ILUVATAR__
+     using cufft_size_type = int;
+ #else
+     using cufft_size_type = long long int;
+@@ -317,6 +317,17 @@
+       }
+       TORCH_CHECK(false, "hipFFT doesn't support transforms of type: ", dtype);
+     }();
++#elif defined __ILUVATAR__
++    cufftType exec_type = [&]{
++      if (dtype == kFloat) {
++        switch (fft_type) {
++          case CuFFTTransformType::C2C: return CUFFT_C2C;
++          case CuFFTTransformType::R2C: return CUFFT_R2C;
++          case CuFFTTransformType::C2R: return CUFFT_C2R;
++        }
++      } 
++      TORCH_CHECK(false, "ixFFT doesn't support transforms of type: ", dtype);
++    }();
+ #else
+     cudaDataType itype, otype, exec_type;
+     const auto complex_input = cufft_complex_input(fft_type);
+@@ -355,6 +366,11 @@
+         /* inembed */ nullptr, /* base_istride */ 1, /* idist */ 1,
+         /* onembed */ nullptr, /* base_ostride */ 1, /* odist */ 1,
+         exec_type, batch, &ws_size_t));
++#elif defined __ILUVATAR__
++      CUFFT_CHECK(cufftMakePlanMany(plan(), signal_ndim, signal_sizes.data(),
++        /* inembed */ nullptr, /* base_istride */ 0, /* idist */ 0,
++        /* onembed */ nullptr, /* base_ostride */ 0, /* odist */ 0,
++        exec_type, batch, &ws_size_t));
+ #else
+       CUFFT_CHECK(cufftXtMakePlanMany(plan(), signal_ndim, signal_sizes.data(),
+         /* inembed */ nullptr, /* base_istride */ 1, /* idist */ 1, itype,
+@@ -367,6 +383,11 @@
+         in_layout.embed.data(), in_layout.stride, in_layout.dist,
+         out_layout.embed.data(), out_layout.stride, out_layout.dist,
+         exec_type, batch, &ws_size_t));
++#elif defined __ILUVATAR__
++      CUFFT_CHECK(cufftMakePlanMany(plan(), signal_ndim,signal_sizes.data(),
++        in_layout.embed.data(), in_layout.stride, in_layout.dist,
++        out_layout.embed.data(), out_layout.stride, out_layout.dist,
++        exec_type, batch, &ws_size_t));
+ #else
+       CUFFT_CHECK(cufftXtMakePlanMany(plan(), signal_ndim, signal_sizes.data(),
+             in_layout.embed.data(), in_layout.stride, in_layout.dist, itype,

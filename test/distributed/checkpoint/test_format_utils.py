@@ -4,14 +4,15 @@ import torch
 import torch.distributed as dist
 import torch.distributed.checkpoint as dcp
 import torch.nn as nn
+
 import torch.nn.functional as F
+from torch.distributed._tensor.device_mesh import init_device_mesh
 from torch.distributed.checkpoint.format_utils import (
     BroadcastingTorchSaveReader,
     dcp_to_torch_save,
     DynamicMetaLoadPlanner,
     torch_save_to_dcp,
 )
-from torch.distributed.device_mesh import init_device_mesh
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.testing._internal.common_distributed import skip_if_lt_x_gpu
 from torch.testing._internal.common_utils import run_tests
@@ -23,7 +24,7 @@ from torch.testing._internal.distributed.checkpoint_utils import with_temp_dir
 
 
 class SimpleModelUneven(nn.Module):
-    def __init__(self) -> None:
+    def __init__(self):
         super().__init__()
         torch.manual_seed(0)
         self.net1 = nn.Linear(5, 10)

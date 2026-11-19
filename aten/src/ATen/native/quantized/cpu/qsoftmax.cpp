@@ -10,7 +10,8 @@
 #include <utility>
 #endif // USE_PYTORCH_QNNPACK
 
-namespace at::native {
+namespace at {
+namespace native {
 
 namespace {
 
@@ -43,8 +44,8 @@ Tensor qsoftmax_qnnpack(const Tensor& qx, const int64_t dim) {
    */
 
   const int64_t last_dim = qx.dim() - 1;
-  std::optional<std::vector<int64_t>> permuted_dims = std::nullopt;
-  std::optional<at::Tensor> qx_contig = std::nullopt;
+  std::optional<std::vector<int64_t>> permuted_dims = c10::nullopt;
+  std::optional<at::Tensor> qx_contig = c10::nullopt;
   const at::Tensor* qx_contig_ptr = nullptr;
 
   if (qx.stride(dim) == 1) {
@@ -68,7 +69,7 @@ Tensor qsoftmax_qnnpack(const Tensor& qx, const int64_t dim) {
           .memory_format(qx_contig_ptr->suggest_memory_format()),
       qnnpack_softmax_output_scale,
       qnnpack_softmax_output_zero_point,
-      std::nullopt);
+      c10::nullopt);
 
   const size_t channels = qx.size(dim);
   const float input_scale = static_cast<float>(qx.q_scale());
@@ -146,4 +147,5 @@ TORCH_LIBRARY_IMPL(quantized, QuantizedCPU, m) {
 
 } // namespace
 
-} // namespace at::native
+} // namespace native
+} // namespace at

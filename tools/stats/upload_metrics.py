@@ -1,14 +1,12 @@
-from __future__ import annotations
-
 import datetime
 import inspect
 import os
 import time
 import uuid
-from datetime import timezone
-from typing import Any
-from warnings import warn
 
+from decimal import Decimal
+from typing import Any, Dict
+from warnings import warn
 
 # boto3 is an optional dependency. If it's not installed,
 # we'll just not emit the metrics.
@@ -16,11 +14,17 @@ from warnings import warn
 # worry about it.
 EMIT_METRICS = False
 try:
-    from tools.stats.upload_stats_lib import upload_to_s3
+    import boto3  # type: ignore[import]
 
     EMIT_METRICS = True
 except ImportError as e:
     print(f"Unable to import boto3. Will not be emitting metrics.... Reason: {e}")
+
+# Sometimes our runner machines are located in one AWS account while the metrics table may be in
+# another, so we need to specify the table's ARN explicitly.
+TORCHCI_METRICS_TABLE_ARN = (
+    "arn:aws:dynamodb:us-east-1:308535385114:table/torchci-metrics"
+)
 
 
 class EnvVarMetric:
@@ -61,7 +65,7 @@ class EnvVarMetric:
         return value
 
 
-global_metrics: dict[str, Any] = {}
+global_metrics: Dict[str, Any] = {}
 
 
 def add_global_metric(metric_name: str, metric_value: Any) -> None:
@@ -75,10 +79,10 @@ def add_global_metric(metric_name: str, metric_value: Any) -> None:
 
 def emit_metric(
     metric_name: str,
-    metrics: dict[str, Any],
+    metrics: Dict[str, Any],
 ) -> None:
     """
-    Upload a metric to DynamoDB (and from there, the HUD backend database).
+    Upload a metric to DynamoDB (and from there, Rockset).
 
     Even if EMIT_METRICS is set to False, this function will still run the code to
     validate and shape the metrics, skipping just the upload.
@@ -126,14 +130,12 @@ def emit_metric(
     calling_function = calling_frame_info.function
 
     try:
-        default_metrics = {
+        reserved_metrics = {
             "metric_name": metric_name,
             "calling_file": calling_file,
             "calling_module": calling_module,
             "calling_function": calling_function,
-            "timestamp": datetime.datetime.now(timezone.utc).strftime(
-                "%Y-%m-%d %H:%M:%S.%f"
-            ),
+            "timestamp": datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S.%f"),
             **{m.name: m.value() for m in env_var_metrics if m.value()},
         }
     except ValueError as e:
@@ -141,14 +143,27 @@ def emit_metric(
         return
 
     # Prefix key with metric name and timestamp to derisk chance of a uuid1 name collision
-    s3_key = f"{metric_name}_{int(time.time())}_{uuid.uuid1().hex}"
+    reserved_metrics[
+        "dynamo_key"
+    ] = f"{metric_name}_{int(time.time())}_{uuid.uuid1().hex}"
+
+    # Ensure the metrics dict doesn't contain any reserved keys
+    for key in reserved_metrics.keys():
+        used_reserved_keys = [k for k in metrics.keys() if k == key]
+        if used_reserved_keys:
+            raise ValueError(f"Metrics dict contains reserved keys: [{', '.join(key)}]")
+
+    # boto3 doesn't support uploading float values to DynamoDB, so convert them all to decimals.
+    metrics = _convert_float_values_to_decimals(metrics)
 
     if EMIT_METRICS:
         try:
-            upload_to_s3(
-                bucket_name="ossci-raw-job-status",
-                key=f"ossci_uploaded_metrics/{s3_key}",
-                docs=[{**default_metrics, "info": metrics}],
+            session = boto3.Session(region_name="us-east-1")
+            session.resource("dynamodb").Table(TORCHCI_METRICS_TABLE_ARN).put_item(
+                Item={
+                    **reserved_metrics,
+                    **metrics,
+                }
             )
         except Exception as e:
             # We don't want to fail the job if we can't upload the metric.
@@ -157,3 +172,19 @@ def emit_metric(
             return
     else:
         print(f"Not emitting metrics for {metric_name}. Boto wasn't imported.")
+
+
+def _convert_float_values_to_decimals(data: Dict[str, Any]) -> Dict[str, Any]:
+    # Attempt to recurse
+    def _helper(o: Any) -> Any:
+        if isinstance(o, float):
+            return Decimal(str(o))
+        if isinstance(o, list):
+            return [_helper(v) for v in o]
+        if isinstance(o, dict):
+            return {_helper(k): _helper(v) for k, v in o.items()}
+        if isinstance(o, tuple):
+            return tuple(_helper(v) for v in o)
+        return o
+
+    return {k: _helper(v) for k, v in data.items()}

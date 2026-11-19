@@ -1,23 +1,27 @@
-from __future__ import annotations
-
 import os
 import platform
 import struct
+import sys
 from itertools import chain
-from typing import cast, TYPE_CHECKING
-
-
-if TYPE_CHECKING:
-    from collections.abc import Iterable
+from typing import cast, Iterable, List, Optional
 
 
 IS_WINDOWS = platform.system() == "Windows"
 IS_DARWIN = platform.system() == "Darwin"
 IS_LINUX = platform.system() == "Linux"
 
+IS_CONDA = (
+    "conda" in sys.version
+    or "Continuum" in sys.version
+    or any(x.startswith("CONDA") for x in os.environ)
+)
+CONDA_DIR = os.path.join(os.path.dirname(sys.executable), "..")
+
 IS_64BIT = struct.calcsize("P") == 8
 
 BUILD_DIR = "build"
+
+LIBTORCH_PKG_NAME = "libtorchsplit"
 
 
 def check_env_flag(name: str, default: str = "") -> bool:
@@ -28,11 +32,11 @@ def check_negative_env_flag(name: str, default: str = "") -> bool:
     return os.getenv(name, default).upper() in ["OFF", "0", "NO", "FALSE", "N"]
 
 
-def gather_paths(env_vars: Iterable[str]) -> list[str]:
+def gather_paths(env_vars: Iterable[str]) -> List[str]:
     return list(chain(*(os.getenv(v, "").split(os.pathsep) for v in env_vars)))
 
 
-def lib_paths_from_base(base_path: str) -> list[str]:
+def lib_paths_from_base(base_path: str) -> List[str]:
     return [os.path.join(base_path, s) for s in ["lib/x64", "lib", "lib64"]]
 
 
@@ -52,7 +56,7 @@ class BuildType:
 
     """
 
-    def __init__(self, cmake_build_type_env: str | None = None) -> None:
+    def __init__(self, cmake_build_type_env: Optional[str] = None) -> None:
         if cmake_build_type_env is not None:
             self.build_type_string = cmake_build_type_env
             return
@@ -62,7 +66,7 @@ class BuildType:
             # Found CMakeCache.txt. Use the build type specified in it.
             from .cmake_utils import get_cmake_cache_variables_from_file
 
-            with open(cmake_cache_txt) as f:
+            with open(cmake_cache_txt, encoding="utf-8", errors="replace") as f:
                 cmake_cache_vars = get_cmake_cache_variables_from_file(f)
             # Normally it is anti-pattern to determine build type from CMAKE_BUILD_TYPE because it is not used for
             # multi-configuration build tools, such as Visual Studio and XCode. But since we always communicate with

@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-
 import importlib
 import logging
 import os
@@ -8,16 +7,15 @@ import subprocess
 import sys
 import warnings
 
-
 try:
-    from .common import BenchmarkRunner, download_retry_decorator, load_yaml_file, main
+    from .common import BenchmarkRunner, download_retry_decorator, main
 except ImportError:
-    from common import BenchmarkRunner, download_retry_decorator, load_yaml_file, main
+    from common import BenchmarkRunner, download_retry_decorator, main
 
 import torch
+
 from torch._dynamo.testing import collect_results, reduce_to_scalar_loss
 from torch._dynamo.utils import clone_inputs
-
 
 # Enable FX graph caching
 if "TORCHINDUCTOR_FX_GRAPH_CACHE" not in os.environ:
@@ -38,7 +36,7 @@ finally:
     from timm.data import resolve_data_config
     from timm.models import create_model
 
-TIMM_MODELS = {}
+TIMM_MODELS = dict()
 filename = os.path.join(os.path.dirname(__file__), "timm_models_list.txt")
 
 with open(filename) as fh:
@@ -71,7 +69,6 @@ BATCH_SIZE_DIVISORS = {
 }
 
 REQUIRE_HIGHER_TOLERANCE = {
-    "crossvit_9_240",
     "fbnetv3_b",
     "gmixer_24_224",
     "hrnet_w18",
@@ -80,24 +77,7 @@ REQUIRE_HIGHER_TOLERANCE = {
     "mobilenetv3_large_100",
     "sebotnet33ts_256",
     "selecsls42b",
-    "convnext_base",
-    "cait_m36_384",
-}
-
-REQUIRE_HIGHER_TOLERANCE_AMP = {
-    "poolformer_m36",
-}
-
-REQUIRE_EVEN_HIGHER_TOLERANCE = {
-    "levit_128",
-    "sebotnet33ts_256",
-    "beit_base_patch16_224",
     "cspdarknet53",
-}
-
-# These models need higher tolerance in MaxAutotune mode
-REQUIRE_EVEN_HIGHER_TOLERANCE_MAX_AUTOTUNE = {
-    "gluon_inception_v3",
 }
 
 REQUIRE_HIGHER_TOLERANCE_FOR_FREEZING = {
@@ -123,14 +103,6 @@ FORCE_AMP_FOR_FP16_BF16_MODELS = {
 
 SKIP_ACCURACY_CHECK_AS_EAGER_NON_DETERMINISTIC_MODELS = {
     "xcit_large_24_p8_224",
-}
-
-REQUIRE_LARGER_MULTIPLIER_FOR_SMALLER_TENSOR = {
-    "inception_v3",
-    "mobilenetv3_large_100",
-    "cspdarknet53",
-    "gluon_inception_v3",
-    "cait_m36_384",
 }
 
 
@@ -187,7 +159,7 @@ def refresh_model_names():
         return name.split("_")[0]
 
     def populate_family(models):
-        family = {}
+        family = dict()
         for model_name in models:
             family_name = get_family_name(model_name)
             if family_name not in family:
@@ -223,18 +195,6 @@ class TimmRunner(BenchmarkRunner):
         self.suite_name = "timm_models"
 
     @property
-    def _config(self):
-        return load_yaml_file("timm_models.yaml")
-
-    @property
-    def _skip(self):
-        return self._config["skip"]
-
-    @property
-    def skip_models(self):
-        return self._skip["all"]
-
-    @property
     def force_amp_for_fp16_bf16_models(self):
         return FORCE_AMP_FOR_FP16_BF16_MODELS
 
@@ -256,12 +216,6 @@ class TimmRunner(BenchmarkRunner):
     def guard_on_nn_module_models(self):
         return {
             "convit_base",
-        }
-
-    @property
-    def inline_inbuilt_nn_modules_models(self):
-        return {
-            "lcnet_050",
         }
 
     @download_retry_decorator
@@ -358,8 +312,8 @@ class TimmRunner(BenchmarkRunner):
             if index < start or index >= end:
                 continue
             if (
-                not re.search("|".join(args.filter), model_name, re.IGNORECASE)
-                or re.search("|".join(args.exclude), model_name, re.IGNORECASE)
+                not re.search("|".join(args.filter), model_name, re.I)
+                or re.search("|".join(args.exclude), model_name, re.I)
                 or model_name in args.exclude_exact
                 or model_name in self.skip_models
             ):
@@ -373,9 +327,6 @@ class TimmRunner(BenchmarkRunner):
         else:
             return torch.no_grad()
 
-    def use_larger_multiplier_for_smaller_tensor(self, name):
-        return name in REQUIRE_LARGER_MULTIPLIER_FOR_SMALLER_TENSOR
-
     def get_tolerance_and_cosine_flag(self, is_training, current_device, name):
         cosine = self.args.cosine
         tolerance = 1e-3
@@ -387,16 +338,9 @@ class TimmRunner(BenchmarkRunner):
             tolerance = 8 * 1e-2
 
         if is_training:
-            from torch._inductor import config as inductor_config
-
-            if name in REQUIRE_EVEN_HIGHER_TOLERANCE or (
-                inductor_config.max_autotune
-                and name in REQUIRE_EVEN_HIGHER_TOLERANCE_MAX_AUTOTUNE
-            ):
+            if name in ["levit_128"]:
                 tolerance = 8 * 1e-2
-            elif name in REQUIRE_HIGHER_TOLERANCE or (
-                self.args.amp and name in REQUIRE_HIGHER_TOLERANCE_AMP
-            ):
+            elif name in REQUIRE_HIGHER_TOLERANCE:
                 tolerance = 4 * 1e-2
             else:
                 tolerance = 1e-2
@@ -431,7 +375,7 @@ class TimmRunner(BenchmarkRunner):
         self.grad_scaler.scale(loss).backward()
         self.optimizer_step()
         if collect_outputs:
-            return collect_results(mod, None, loss, cloned_inputs)
+            return collect_results(mod, pred, loss, cloned_inputs)
         return None
 
 

@@ -16,25 +16,26 @@
 #include <ATen/ops/ones_like_native.h>
 #endif
 
-#include <optional>
+#include <c10/util/Optional.h>
 
 #if defined(_MSC_VER)
 #include <BaseTsd.h>
 typedef SSIZE_T ssize_t;
 #endif
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 namespace onnx {
 using namespace ::c10::onnx;
 }
 
-static bool isRNN(const Node* node) {
+bool isRNN(const Node* node) {
   auto k = node->kind();
   return k == onnx::RNN || k == onnx::LSTM || k == onnx::GRU;
 }
 
-static bool isNopTranspose(const std::vector<int64_t>& perm) {
+bool isNopTranspose(const std::vector<int64_t>& perm) {
   for (int64_t i = 0, perm_size = perm.size(); i < perm_size; i++) {
     if (perm[i] != i) {
       return false;
@@ -52,7 +53,7 @@ static bool isNopTranspose(const std::vector<int64_t>& perm) {
 // iteration would have folded all the transposes up to that point. Thus,
 // `ret[i] = t1[t2[i]]` says "the output of t2 at position i takes the value of
 // the input tensor index contained in t1 at position `t2[i]``".
-static std::vector<int64_t> composeTransposes(
+std::vector<int64_t> composeTransposes(
     const std::vector<int64_t>& t1,
     const std::vector<int64_t>& t2) {
   TORCH_INTERNAL_ASSERT(t1.size() == t2.size());
@@ -65,7 +66,7 @@ static std::vector<int64_t> composeTransposes(
   return ret;
 }
 
-static std::vector<size_t> getBroadcastPositions(Node* node) {
+std::vector<size_t> getBroadcastPositions(Node* node) {
   // Most of the element-wise ops in ONNX supports numpy broadcasting.
   // Only GEMM supports one-directional broadcasting, which broadcasts the bias
   // to the product.
@@ -100,18 +101,18 @@ static std::vector<size_t> getBroadcastPositions(Node* node) {
 // Determine whether `from` can broadcast to `to`, and if so at which
 // position. `from` must be a suffix of `to`, except that any
 // occurrences of 1 in `from` are treated as wildcards.
-static std::optional<size_t> fusibleExpandTo(
+std::optional<size_t> fusibleExpandTo(
     at::IntArrayRef from,
     at::IntArrayRef to) {
   if (from.size() > to.size()) {
-    return std::nullopt;
+    return c10::nullopt;
   }
 
   for (const auto i : c10::irange(from.size())) {
     auto fdim = from[from.size() - 1 - i];
     auto tdim = to[to.size() - 1 - i];
     if (fdim != 1 && fdim != tdim) {
-      return std::nullopt;
+      return c10::nullopt;
     }
   }
 
@@ -122,7 +123,7 @@ static std::optional<size_t> fusibleExpandTo(
 // easier for non-strided backends to more efficiently do broadcasts if this
 // is local information. This optimization is not useful for PyTorch as
 // 'expand' is free.
-static void fuseBroadcast(Block* b) {
+void fuseBroadcast(Block* b) {
   for (auto n : b->nodes()) {
     for (auto* child_block : n->blocks()) {
       fuseBroadcast(child_block);
@@ -167,7 +168,7 @@ static void fuseBroadcast(Block* b) {
               .sizes()
               .concrete_sizes()
               .value()); // to
-      if (axis == std::nullopt) {
+      if (axis == c10::nullopt) {
         continue;
       }
 
@@ -179,7 +180,7 @@ static void fuseBroadcast(Block* b) {
   }
 }
 
-static void fuseConsecutiveTransposes(Block* b) {
+void fuseConsecutiveTransposes(Block* b) {
   for (auto n : b->nodes()) {
     for (auto* child_block : n->blocks()) {
       fuseConsecutiveTransposes(child_block);
@@ -201,7 +202,7 @@ static void fuseConsecutiveTransposes(Block* b) {
   }
 }
 
-static void eliminateNopTranspose(Block* b) {
+void eliminateNopTranspose(Block* b) {
   for (auto it = b->nodes().begin(), end = b->nodes().end(); it != end; ++it) {
     auto n = *it;
     for (auto* child_block : n->blocks()) {
@@ -217,7 +218,7 @@ static void eliminateNopTranspose(Block* b) {
   }
 }
 
-static void fuseTransposeIntoGemm(Block* b) {
+void fuseTransposeIntoGemm(Block* b) {
   static const std::vector<int64_t> simpleTransPerm({1, 0});
 
   for (auto n : b->nodes()) {
@@ -257,7 +258,7 @@ static void fuseTransposeIntoGemm(Block* b) {
 //   the removeNopPacking pass removes the packing operations
 //   entirely by pairing them with their inverse PadPacked. If the
 //   input graph does not pair the operations, export will fail.
-static void pushPackingPastRnn(Block* b) {
+void pushPackingPastRnn(Block* b) {
   for (auto it = b->nodes().begin(); it != b->nodes().end(); ++it) {
     auto* n = *it;
     for (auto* child_block : n->blocks()) {
@@ -396,7 +397,7 @@ static void pushPackingPastRnn(Block* b) {
 // Despite the name, this actually removes the PadPacked node and leaves
 // the PackPadded node. The PackPadded should become dead code which will
 // be eliminated later.
-static void removeNopPacking(Block* graph) {
+void removeNopPacking(Block* graph) {
   for (auto it = graph->nodes().begin(); it != graph->nodes().end(); ++it) {
     auto* n = *it;
     for (auto* child_block : n->blocks()) {
@@ -424,7 +425,7 @@ static void removeNopPacking(Block* graph) {
   }
 }
 
-static void hackFixupPadPackedShapes(Block* graph) {
+void hackFixupPadPackedShapes(Block* graph) {
   // FIXME: the shape of the input to the fictional PadPacked node has
   // incorrect shape. For now, just copy the shape of PadPacked to the shape
   // of its input.
@@ -442,7 +443,7 @@ static void hackFixupPadPackedShapes(Block* graph) {
   }
 }
 
-static void fixDefaultRNNState(
+void fixDefaultRNNState(
     Graph* graph,
     Node* n,
     int input_index,
@@ -535,7 +536,7 @@ static void fixDefaultRNNState(
   }
 }
 
-static void fixDefaultRnnHiddenState(Block* b, int opset_version) {
+void fixDefaultRnnHiddenState(Block* b, int opset_version) {
   for (auto it = b->nodes().begin(); it != b->nodes().end(); ++it) {
     auto* n = *it;
     for (auto* child_block : n->blocks()) {
@@ -554,7 +555,7 @@ static void fixDefaultRnnHiddenState(Block* b, int opset_version) {
   }
 }
 
-static void fixDefaultLstmCellState(Block* b, int opset_version) {
+void fixDefaultLstmCellState(Block* b, int opset_version) {
   for (auto it = b->nodes().begin(); it != b->nodes().end(); ++it) {
     auto* n = *it;
     for (auto* child_block : n->blocks()) {
@@ -709,7 +710,7 @@ static void eraseListUnpack(Node* n, int opset_version) {
       // onnx::SequenceAt was introduced in onnx opset version 11
       throw std::runtime_error(
           "Unsupported: ONNX export of prim::ListUnpack in opset " +
-          std::to_string(opset_version) + ". Please try opset version 11.");
+          c10::to_string(opset_version) + ". Please try opset version 11.");
     }
 
     auto g = n->owningGraph();
@@ -791,7 +792,7 @@ static void eraseTupleConstruct(Block* block) {
   }
 }
 
-static void removeMaxPoolUnusedOutput(Block* b) {
+void removeMaxPoolUnusedOutput(Block* b) {
   for (auto it = b->nodes().begin(), end = b->nodes().end(); it != end; ++it) {
     auto n = *it;
     for (auto* child_block : n->blocks()) {
@@ -817,7 +818,8 @@ static void fuseLogSoftmaxNllLoss(Block* b) {
     if (it->kind() == onnx::NegativeLogLikelihoodLoss) {
       auto prev = it->input(0)->node();
       Node* origNllLossNode = *it;
-      Node* origLogSoftmaxNode = nullptr;
+      // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+      Node* origLogSoftmaxNode;
 
       // Check for patterns especially in cases with autocasting enabled
       // in which a cast node is inserted before the NegativeLogLikelihoodLoss
@@ -1067,4 +1069,5 @@ void PeepholeOptimizeONNX(
   GRAPH_DUMP("After PeepholeOptimizeONNX", graph);
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

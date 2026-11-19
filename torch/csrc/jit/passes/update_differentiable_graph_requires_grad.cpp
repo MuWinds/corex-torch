@@ -3,7 +3,8 @@
 #include <torch/csrc/jit/ir/ir.h>
 #include <torch/csrc/jit/passes/utils/subgraph_utils.h>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 static void UpdateDifferentiableGraphRequiresGrad(
     Block* block,
@@ -35,4 +36,5 @@ void UpdateDifferentiableGraphRequiresGrad(
       diff_forward_graph->block(), new_requires_grad);
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

@@ -6,7 +6,8 @@
 #include <torch/csrc/jit/frontend/error_report.h>
 #include <torch/csrc/jit/jit_log.h>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 namespace prim {
 using namespace ::c10::prim;
@@ -61,7 +62,7 @@ static void inlineCalls(Block* block) {
               // optimized_graph() calls Inline, so we only need to explicitly
               // invoke inlining on the jit optimized graph with recursive
               // fallback function calls
-              Inline(*g);
+              Inline(*g.get());
             }
           }
           if (g == nullptr) {
@@ -94,4 +95,5 @@ void Inline(Graph& graph) {
   GRAPH_DUMP("After Inlining: ", &graph);
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

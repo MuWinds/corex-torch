@@ -3,17 +3,23 @@
 import os
 import sys
 from collections import OrderedDict
+
 from typing import Any, List, Tuple
 
 import torch
 import torch.nn as nn
-from torch.testing._internal.common_utils import raise_on_run_directly
 from torch.testing._internal.jit_utils import JitTestCase
-
 
 # Make the helper files in test/ importable
 pytorch_test_dir = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.append(pytorch_test_dir)
+
+if __name__ == "__main__":
+    raise RuntimeError(
+        "This test file is not meant to be run directly, use:\n\n"
+        "\tpython test/test_jit.py TESTNAME\n\n"
+        "instead."
+    )
 
 
 class TestModuleContainers(JitTestCase):
@@ -27,7 +33,7 @@ class TestModuleContainers(JitTestCase):
                 return {"1": x}
 
         class C(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.foo = torch.nn.Sequential(A(), B())
 
@@ -50,7 +56,7 @@ class TestModuleContainers(JitTestCase):
                 return (x - 4) * 3
 
         class M(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 modules = OrderedDict(
                     [
@@ -126,7 +132,7 @@ class TestModuleContainers(JitTestCase):
                 return x + 10
 
         class CustomSequential(nn.Sequential):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__(nn.ReLU(), Inner())
 
             def forward(self, x):
@@ -138,7 +144,7 @@ class TestModuleContainers(JitTestCase):
         self.checkModule(CustomSequential(), (torch.tensor(0.5),))
 
         class CustomModuleList(nn.ModuleList):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__([nn.ReLU(), Inner()])
 
             def forward(self, x):
@@ -150,7 +156,7 @@ class TestModuleContainers(JitTestCase):
         self.checkModule(CustomModuleList(), (torch.tensor(0.5),))
 
         class CustomModuleDict(nn.ModuleDict):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__(
                     OrderedDict(
                         [
@@ -197,7 +203,7 @@ class TestModuleContainers(JitTestCase):
                 return thing - self.i
 
         class M(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.mods = nn.ModuleList([Sub(i) for i in range(10)])
 
@@ -211,7 +217,7 @@ class TestModuleContainers(JitTestCase):
         self.checkModule(M(), (x,))
 
         class MForward(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.mods = nn.ModuleList([Sub(i) for i in range(10)])
 
@@ -270,7 +276,7 @@ class TestModuleContainers(JitTestCase):
                 torch.nn.ModuleDict.__init__(self, modules)
 
         class MyModule(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 # work around aliasing issue for 'is' operator by scripting ReLU up front
                 self.submod = torch.jit.script(torch.nn.ReLU())
@@ -337,7 +343,7 @@ class TestModuleContainers(JitTestCase):
                 return 2
 
         class MyModule(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 # work around aliasing issue for 'is' operator by scripting ReLU up front
                 self.submod = torch.jit.script(torch.nn.ReLU())
@@ -349,11 +355,11 @@ class TestModuleContainers(JitTestCase):
 
         m = MyModule()
         self.checkModule(m, [torch.randn(2, 2)])
-        torch.jit.script(m)
+        mm = torch.jit.script(m)
 
     def test_moduledict_getitem(self):
         class MyModule(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.relu = torch.jit.script(torch.nn.ReLU())
                 self.tanh = torch.jit.script(torch.nn.Tanh())
@@ -371,7 +377,7 @@ class TestModuleContainers(JitTestCase):
 
     def test_moduledict_keyerror(self):
         class BadModule(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.moduledict = torch.nn.ModuleDict({"foo": None, "bar": None})
 
@@ -385,7 +391,7 @@ class TestModuleContainers(JitTestCase):
             torch.jit.script(b)
 
         class AnotherBadModule(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.moduledict = torch.nn.ModuleDict({"foo": None, "bar": None})
 
@@ -411,7 +417,7 @@ class TestModuleContainers(JitTestCase):
         """
 
         class Mod(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.a = [torch.nn.ReLU(), torch.nn.ReLU()]
 
@@ -432,7 +438,7 @@ class TestModuleContainers(JitTestCase):
                 torch.nn.ModuleDict.__init__(self, modules)
 
         class MyModule(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 # work around aliasing issue for 'is' operator by scripting ReLU up front
                 self.submod = torch.jit.script(torch.nn.ReLU())
@@ -471,7 +477,7 @@ class TestModuleContainers(JitTestCase):
 
         # Test annotation of submodule.
         class Mod(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.d = torch.nn.ModuleDict({"module": ImplementsInterface()})
 
@@ -484,7 +490,7 @@ class TestModuleContainers(JitTestCase):
 
         # Test annotation of self.
         class ModDict(torch.nn.ModuleDict):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__({"module": ImplementsInterface()})
 
             def forward(self, x: torch.Tensor, key: str) -> Any:
@@ -497,7 +503,7 @@ class TestModuleContainers(JitTestCase):
         # Test error message thrown when annotated attribute does not comply with the
         # annotation.
         class ModWithWrongAnnotation(torch.nn.ModuleDict):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.d = torch.nn.ModuleDict({"module": DoesNotImplementInterface()})
 
@@ -534,7 +540,7 @@ class TestModuleContainers(JitTestCase):
 
         # Test annotation of submodule.
         class Mod(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.l = torch.nn.ModuleList([ImplementsInterface()])
 
@@ -547,7 +553,7 @@ class TestModuleContainers(JitTestCase):
 
         # Test annotation of self.
         class ModList(torch.nn.ModuleList):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__([ImplementsInterface()])
 
             def forward(self, x: torch.Tensor, idx: int) -> Any:
@@ -560,7 +566,7 @@ class TestModuleContainers(JitTestCase):
         # Test error message thrown when annotated attribute does not comply with the
         # annotation.
         class ModWithWrongAnnotation(torch.nn.ModuleList):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.l = torch.nn.ModuleList([DoesNotImplementInterface()])
 
@@ -675,7 +681,7 @@ class TestModuleContainers(JitTestCase):
                 return self.linear(self.linear(x))
 
         class N(nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.linear = nn.Linear(4, 4)
 
@@ -704,7 +710,7 @@ class TestModuleContainers(JitTestCase):
 
     def test_parameterlist_script_getitem(self):
         class MyModule(nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.module_list = nn.ModuleList([nn.Linear(1, 1) for _ in range(10)])
                 self.parameter_list = nn.ParameterList(
@@ -720,7 +726,7 @@ class TestModuleContainers(JitTestCase):
 
     def test_parameterlist_script_iter(self):
         class MyModule(nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.module_list = nn.ModuleList([nn.Linear(1, 1) for _ in range(10)])
                 self.parameter_list = nn.ParameterList(
@@ -737,7 +743,7 @@ class TestModuleContainers(JitTestCase):
 
     def test_parameterdict_script_getitem(self):
         class MyModule(nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.parameter_dict = nn.ParameterDict(
                     {k: nn.Parameter(torch.zeros(1)) for k in ["a", "b", "c"]}
@@ -750,7 +756,3 @@ class TestModuleContainers(JitTestCase):
                 )
 
         self.checkModule(MyModule(), (torch.ones(1),))
-
-
-if __name__ == "__main__":
-    raise_on_run_directly("test/test_jit.py")

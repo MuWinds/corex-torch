@@ -5,16 +5,18 @@
 
 #include <c10/util/Exception.h>
 
+#include <cstddef>
 #include <ostream>
-#include <utility>
+#include <vector>
 
 namespace F = torch::nn::functional;
 
-namespace torch::nn {
+namespace torch {
+namespace nn {
 
 Tensor DropoutImpl::forward(Tensor input) {
   return F::detail::dropout(
-      std::move(input), options.p(), is_training(), options.inplace());
+      input, options.p(), is_training(), options.inplace());
 }
 
 void DropoutImpl::pretty_print(std::ostream& stream) const {
@@ -26,7 +28,7 @@ void DropoutImpl::pretty_print(std::ostream& stream) const {
 
 Tensor Dropout2dImpl::forward(Tensor input) {
   return F::detail::dropout2d(
-      std::move(input), options.p(), is_training(), options.inplace());
+      input, options.p(), is_training(), options.inplace());
 }
 
 void Dropout2dImpl::pretty_print(std::ostream& stream) const {
@@ -38,7 +40,7 @@ void Dropout2dImpl::pretty_print(std::ostream& stream) const {
 
 Tensor Dropout3dImpl::forward(Tensor input) {
   return F::detail::dropout3d(
-      std::move(input), options.p(), is_training(), options.inplace());
+      input, options.p(), is_training(), options.inplace());
 }
 
 void Dropout3dImpl::pretty_print(std::ostream& stream) const {
@@ -70,4 +72,5 @@ void FeatureAlphaDropoutImpl::pretty_print(std::ostream& stream) const {
          << ", inplace=" << options.inplace() << ")";
 }
 
-} // namespace torch::nn
+} // namespace nn
+} // namespace torch

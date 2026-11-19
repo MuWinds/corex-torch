@@ -1,12 +1,13 @@
 #ifndef NNAPI_MODEL_LOADER_H_
 #define NNAPI_MODEL_LOADER_H_
 
-#include <cstdint>
+#include <stdint.h>
 
 #include <ATen/nnapi/NeuralNetworks.h>
 #include <ATen/nnapi/nnapi_wrapper.h>
 
-namespace caffe2::nnapi {
+namespace caffe2 {
+namespace nnapi {
 
 int load_nnapi_model(
     struct nnapi_wrapper* nnapi,
@@ -23,6 +24,6 @@ int load_nnapi_model(
     int32_t* out_output_count,
     size_t* out_bytes_consumed);
 
-} // namespace caffe2::nnapi
+}} // namespace caffe2::nnapi
 
 #endif // NNAPI_MODEL_LOADER_H_

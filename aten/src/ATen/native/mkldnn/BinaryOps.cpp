@@ -13,8 +13,8 @@
 
 #if !AT_MKLDNN_ENABLED()
 
-
-namespace at::native {
+namespace at {
+namespace native {
 
 Tensor& mkldnn_add_out(
     const Tensor& self,
@@ -45,14 +45,15 @@ Tensor& mkldnn_mul_(Tensor& self, const Tensor& other) {
   TORCH_CHECK(false, "mkldnn_mul_: ATen not compiled with MKLDNN support");
 }
 
-} // namespace at::native
-
+} // namespace native
+} // namespace at
 
 #else // AT_MKLDNN_ENABLED
 
 #include <ATen/native/mkldnn/MKLDNNCommon.h>
 
-namespace at::native {
+namespace at {
+namespace native {
 
 static Tensor emptyBinaryOp(const Tensor& self, const Tensor& other) {
   if (!self.requires_grad() && !other.requires_grad()) {
@@ -154,6 +155,7 @@ Tensor& mkldnn_mul_(Tensor& self, const Tensor& other) {
   return native::mkldnn_mul_out(self, other, self);
 }
 
+} // namespace native
 } // namespace at
 
 #endif // AT_MKLDNN_ENABLED

@@ -12,11 +12,12 @@
 #include <torch/csrc/jit/mobile/function.h>
 #include <torch/csrc/jit/mobile/observer.h>
 #include <torch/csrc/jit/mobile/promoted_prim_ops.h>
-#include <torch/csrc/jit/runtime/instruction.h>
 #include <torch/csrc/jit/runtime/jit_exception.h>
 #include <torch/csrc/jit/runtime/vararg_functions.h>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
+char const* toString(OpCode op);
 std::ostream& operator<<(std::ostream& out, Instruction inst);
 namespace mobile {
 InterpreterState::InterpreterState(const Code& code) {
@@ -357,12 +358,13 @@ bool InterpreterState::run(Stack& stack) {
           // when STRIP_ERROR_MESSAGES is defined (which happens for production
           // mobile builds). This will cause the stack to be in an inconsistent
           // state. It has previously resulted in a SEV (S22350).
-          TORCH_WARN(stack.back().toStringRef());
+          const auto& sref = stack.back().toStringRef();
+          TORCH_WARN(sref);
           stack.pop_back();
           frame.step();
         } break;
         default:
-          TORCH_CHECK(false, toString(inst.op), " is invalid.");
+          AT_ERROR(toString(inst.op), " is invalid.");
       }
 
       if (!prev_value) {
@@ -399,4 +401,5 @@ IValue& InterpreterState::reg(size_t reg) {
 }
 
 } // namespace mobile
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

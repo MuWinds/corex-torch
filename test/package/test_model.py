@@ -8,7 +8,6 @@ import torch
 from torch.package import PackageExporter, PackageImporter, sys_importer
 from torch.testing._internal.common_utils import IS_FBCODE, IS_SANDCASTLE, run_tests
 
-
 try:
     from torchvision.models import resnet18
 
@@ -59,7 +58,7 @@ class ModelTest(PackageTestCase):
         self.assertEqual(r2(input), ref)
 
         # functions exist also to get at the private modules in each package
-        torchvision = i.import_module("torchvision")  # noqa: F841
+        torchvision = i.import_module("torchvision")
 
         f2 = BytesIO()
         # if we are doing transfer learning we might want to re-save

@@ -46,8 +46,16 @@ inline Tensor wrapped_scalar_tensor(
     const Scalar& scalar,
     const Device device = at::kCPU) {
   auto tensor = scalar_to_tensor(scalar, device);
+#ifdef __ILUVATAR__
+#define kComplexDouble kComplexFloat
+#define kDouble kFloat
+#endif
   tensor.unsafeGetTensorImpl()->set_wrapped_number(true);
   return tensor;
 }
 
 } // namespace at::native
+#ifdef __ILUVATAR__
+#undef kComplexDouble
+#undef kDouble
+#endif

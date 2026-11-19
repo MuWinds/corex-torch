@@ -38,6 +38,7 @@
 #include <iterator>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
 
 #ifdef FBCODE_CAFFE2
 #include <common/logging/logging.h>
@@ -46,22 +47,20 @@
 #endif
 
 // used in test only
-// clang-format off
 C10_DEFINE_bool(
     static_runtime_disable_debug_memory_overlap_check,
     false,
-    "If true, disable the memory overlap check in debug mode in ProcessedNode::run()")
+    "If true, disable the memory overlap check in debug mode in ProcessedNode::run()");
 
 namespace torch::jit {
 
 namespace {
-#ifndef STRIP_ERROR_MESSAGES
+
 std::string iValueToString(const c10::IValue& val) {
   std::ostringstream oss;
   oss << val;
   return oss.str();
 }
-#endif
 
 bool allArgsAreTensors(const Node* node) {
   const auto& inputs = node->inputs();
@@ -317,11 +316,11 @@ std::pair<std::shared_ptr<Graph>, std::optional<Module>> PrepareForStaticModule(
 }
 
 std::pair<std::shared_ptr<Graph>, std::optional<Module>> PrepareForStaticModule(
-    const std::shared_ptr<torch::jit::Graph>& graph,
+    std::shared_ptr<torch::jit::Graph> graph,
     const StaticModuleOptions& opts,
     std::vector<IValue> sample_inputs) {
   PrepareGraphForStaticModule(graph, opts, std::move(sample_inputs));
-  return std::make_pair(graph, std::nullopt);
+  return std::make_pair(graph, c10::nullopt);
 }
 
 } // namespace
@@ -394,35 +393,25 @@ bool isPureFunction(const Node* node) {
 
 } // namespace
 
-void ManagedTensorRanges::extendLifetime(Value* input, size_t new_end) {
-  auto* lifetime = getLifetime(input);
-  if (lifetime) {
-    TORCH_DCHECK_LE(lifetime->end, new_end);
-    lifetime->end = new_end;
-  }
-}
-
-void ManagedTensorRanges::extendInputLifetime(Node* node, size_t new_end) {
-  for (auto* input : node->inputs()) {
-    extendLifetime(input, new_end);
-  }
-  for (auto* subblock : node->blocks()) {
-    for (auto* subnode : subblock->nodes()) {
-      extendInputLifetime(subnode, new_end);
-    }
-  }
-}
-
 ManagedTensorRanges::ManagedTensorRanges(
     Block& block,
     const AliasDb& alias_db,
     const c10::FastSet<const Value*>& managed_tensor_values) {
   const std::vector<Node*> nodes(block.nodes().begin(), block.nodes().end());
+  const c10::FastSet<const Value*> graph_inputs(
+      block.inputs().begin(), block.inputs().end());
 
   const auto num_nodes = static_cast<uint32_t>(nodes.size());
   for (const auto i : c10::irange(num_nodes)) {
     auto* node = nodes[i];
-    extendInputLifetime(node, i);
+    for (auto* input : node->inputs()) {
+      auto* lifetime = getLifetime(input);
+      if (!lifetime) {
+        continue;
+      }
+      DCHECK(lifetime->end <= i);
+      lifetime->end = i;
+    }
     for (auto* output : node->outputs()) {
       if (!alias_db.isMutableType(output)) {
         continue;
@@ -467,7 +456,8 @@ ManagedTensorRanges::ManagedTensorRanges(
   for (auto* managed_tensor : managed_tensor_values) {
     auto* lifetime = getLifetime(managed_tensor);
     DCHECK(lifetime && lifetime->end <= num_nodes);
-    Node* freeing_node = nullptr;
+    // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+    Node* freeing_node;
     if (lifetime->end == num_nodes) {
       freeing_node = block.return_node();
     } else {
@@ -536,7 +526,7 @@ std::vector<const Value*> ManagedTensorRanges::
 }
 
 StaticModule::StaticModule(
-    const std::shared_ptr<torch::jit::Graph>& g,
+    std::shared_ptr<torch::jit::Graph> g,
     const StaticModuleOptions& opts,
     std::vector<IValue> sample_inputs)
     : StaticModule(
@@ -583,7 +573,7 @@ StaticModule::StaticModule(
     const auto num_schema_args = schema_->arguments().size();
     DCHECK(num_schema_args > 0);
     if (removeSelfFromGraphInput(graph_)) {
-      module_ = std::nullopt;
+      module_ = c10::nullopt;
       num_inputs_ = num_schema_args - 1;
     }
   }
@@ -952,11 +942,11 @@ BlockRunner::BlockRunner(
   }
 }
 
+// NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
 BlockRunner::BlockRunner(BlockRunner&&) noexcept = default;
 
 BlockRunner::~BlockRunner() = default;
 
-// NOLINTNEXTLINE(cppcoreguidelines-rvalue-reference-param-not-moved)
 void BlockRunner::set_arg(const size_t idx, std::vector<IValue>&& args) {
   DCHECK(idx < args.size());
   Input(idx + first_input_is_self_) = std::move(args[idx]);
@@ -978,12 +968,8 @@ void check_type(const Argument& schema_arg, const IValue& arg) {
       schema_arg.type()->kind() == c10::TypeKind::TensorType) {
     return;
   }
-  if (arg.isGenericDict() && arg.toGenericDict().empty()) {
-    return;
-  }
   TORCH_CHECK(
-      arg.type()->isSubtypeOf(schema_arg.type()) ||
-      arg.type()->isSubtypeOfExt(schema_arg.type(), /*why_not=*/nullptr),
+      arg.type()->isSubtypeOf(schema_arg.type()),
       arg.type()->annotation_str(),
       " is not a subtype of ",
       schema_arg.type()->annotation_str(),
@@ -1265,7 +1251,7 @@ bool BlockRunner::fast_check_and_correct_overlap_with(
   auto& tensor = tensor_ival.toTensor();
   if (planner_->overlapWithInternalBuffer(tensor.data_ptr())) {
     DLOG(INFO) << "Detected alias for node: " << PrintNode(n.node());
-    tensor_ival = at::native::clone(tensor, std::nullopt);
+    tensor_ival = at::native::clone(tensor, c10::nullopt);
     n.set_outputs_memory_overlap_detected();
     return true;
   }
@@ -1474,11 +1460,11 @@ void BlockRunner::benchmark(
     bool print_per_node_time,
     bool generate_ai_pep_output) {
   TORCH_CHECK(kwargs_list.empty() || args_list.size() == kwargs_list.size());
-  std::cout << "Input size: " << args_list.size() << '\n';
+  std::cout << "Input size: " << args_list.size() << std::endl;
   float time_per_iter =
       benchmark_model(args_list, kwargs_list, warmup_runs, main_runs);
   std::cout << "Static runtime ms per iter: " << time_per_iter
-            << ". Iters per second: " << 1000.0 / time_per_iter << '\n';
+            << ". Iters per second: " << 1000.0 / time_per_iter << std::endl;
 
   IndividualMetrics results =
       benchmark_individual_ops(args_list, kwargs_list, warmup_runs, main_runs);
@@ -1509,7 +1495,7 @@ void BlockRunner::benchmark(
         time_per_node_type_vec.end(),
         [](auto& left, auto& right) { return left.second > right.second; });
   }
-  std::cout << "Time per node type:" << '\n';
+  std::cout << "Time per node type:" << std::endl;
   for (const auto& p : time_per_node_type_vec) {
     const std::string& kind = p.first;
     const double ms = p.second;
@@ -1517,11 +1503,11 @@ void BlockRunner::benchmark(
               << results.percent_per_node_type[kind] << "%. " << kind << " ("
               << results.instances_per_node_type[kind] << " nodes";
     if (results.out_nodes.count(kind)) {
-      std::cout << ", out variant)" << '\n';
+      std::cout << ", out variant)" << std::endl;
     } else if (results.native_nodes.count(kind)) {
-      std::cout << ", native)" << '\n';
+      std::cout << ", native)" << std::endl;
     } else {
-      std::cout << ")" << '\n';
+      std::cout << ")" << std::endl;
     }
 
     if (generate_ai_pep_output) {
@@ -1532,34 +1518,36 @@ void BlockRunner::benchmark(
     LOG(INFO) << generate_latency_json(
         "static_runtime_first_iter", results.first_iter_time);
   }
-  std::cout << std::setw(15) << results.total_time << " ms. in Total" << '\n';
+  std::cout << std::setw(15) << results.total_time << " ms. in Total"
+            << std::endl;
   std::cout << "BlockRunner setup time: " << results.setup_time << " ms"
-            << '\n';
+            << std::endl;
   std::cout << "Memory allocation time: " << results.memory_alloc_time
             << " ms\n";
   std::cout << "Memory deallocation time: " << results.memory_dealloc_time
-            << " ms" << '\n';
+            << " ms" << std::endl;
   std::cout << "Outputs deallocation time: " << results.output_dealloc_time
-            << " ms" << '\n';
-  std::cout << "First iter time: " << results.first_iter_time << " ms" << '\n';
-  std::cout << "Number of operators: " << nodes_.size() << '\n';
+            << " ms" << std::endl;
+  std::cout << "First iter time: " << results.first_iter_time << " ms"
+            << std::endl;
+  std::cout << "Number of operators: " << nodes_.size() << std::endl;
 
   if (planner_) {
     std::cout << "Total number of managed tensors: "
-              << planner_->total_num_managed_tensors() << '\n';
+              << planner_->total_num_managed_tensors() << std::endl;
     std::cout << "Total number of managed output tensors: "
-              << planner_->total_num_managed_output_tensors() << '\n';
+              << planner_->total_num_managed_output_tensors() << std::endl;
     std::cout << "Total number of unmanaged values: "
-              << planner_->total_num_unmanaged() << '\n';
+              << planner_->total_num_unmanaged() << std::endl;
     std::cout << "Number of unmanaged values requiring cleanup: "
-              << planner_->num_unmanaged_non_scalars() << '\n';
+              << planner_->num_unmanaged_non_scalars() << std::endl;
     std::cout << "Number of unmanaged values not requiring cleanup: "
-              << planner_->num_unmanaged_scalars() << '\n';
+              << planner_->num_unmanaged_scalars() << std::endl;
     std::cout << "Total memory managed: " << planner_->total_managed()
-              << " bytes" << '\n';
+              << " bytes" << std::endl;
     if (static_module_.opts().optimize_memory) {
       std::cout << "Total number of reused tensors: "
-                << planner_->total_reused_tensors() << '\n';
+                << planner_->total_reused_tensors() << std::endl;
     }
   }
 
@@ -1570,13 +1558,13 @@ void BlockRunner::benchmark(
             << " ("
             << 100.0 * static_cast<float>(results.out_nodes_count) /
           static_cast<float>(results.total_nodes_count)
-            << "%)" << '\n';
+            << "%)" << std::endl;
   std::cout << "Total number of nodes not covered by SR/total number of nodes: "
             << unsupported_nodes_count << "/" << results.total_nodes_count
             << " ("
             << 100.0 * static_cast<float>(unsupported_nodes_count) /
           static_cast<float>(results.total_nodes_count)
-            << "%)" << '\n';
+            << "%)" << std::endl;
 
   check_for_memory_leak();
 
@@ -1597,7 +1585,8 @@ float BlockRunner::benchmark_model(
 
   const bool is_kwargs_empty = kwargs_list.empty();
   const KeywordArgs empty_kwargs;
-  for ([[maybe_unused]] const auto _n_run : c10::irange(warmup_runs)) {
+  for (const auto _n_run : c10::irange(warmup_runs)) {
+    (void)_n_run; // Suppress unused variable warning
     const auto num_args = static_cast<uint32_t>(args_list.size());
     for (const auto j : c10::irange(num_args)) {
       operator()(args_list[j], is_kwargs_empty ? empty_kwargs : kwargs_list[j]);
@@ -1607,7 +1596,8 @@ float BlockRunner::benchmark_model(
     }
   }
   caffe2::Timer timer;
-  for ([[maybe_unused]] const auto _n_run : c10::irange(main_runs)) {
+  for (const auto _n_run : c10::irange(main_runs)) {
+    (void)_n_run; // Suppress unused variable warning
     const auto num_args = static_cast<uint32_t>(args_list.size());
     for (const auto j : c10::irange(num_args)) {
       operator()(args_list[j], is_kwargs_empty ? empty_kwargs : kwargs_list[j]);
@@ -1759,7 +1749,8 @@ BlockRunner::IndividualMetrics BlockRunner::benchmark_individual_ops(
   results.first_iter_time = timer.MilliSeconds();
 
   // warmup runs
-  for ([[maybe_unused]] const auto _n_run : c10::irange(warmup_runs)) {
+  for (const auto _n_run : c10::irange(warmup_runs)) {
+    (void)_n_run; // Suppress unused variable warning
     const auto num_args = static_cast<uint32_t>(args_list.size());
     for (const auto j : c10::irange(num_args)) {
       operator()(args_list[j], is_kwargs_empty ? empty_kwargs : kwargs_list[j]);
@@ -1770,7 +1761,8 @@ BlockRunner::IndividualMetrics BlockRunner::benchmark_individual_ops(
   }
 
   // main runs
-  for ([[maybe_unused]] const auto i : c10::irange(main_runs)) {
+  for (const auto i : c10::irange(main_runs)) {
+    (void)i; // Suppress unused variable warning
     const auto num_args = static_cast<uint32_t>(args_list.size());
     for (const auto j : c10::irange(num_args)) {
       set_inputs(args_list[j], is_kwargs_empty ? empty_kwargs : kwargs_list[j]);
@@ -1878,8 +1870,8 @@ bool BlockRunner::check_for_memory_leak(
         // `BlockRunner::deallocateOutputTensors`.
         continue;
       }
-      const std::string error_msg = "Output " + std::to_string(i) + ", %" +
-          val->debugName() + " of node " + std::to_string(n) +
+      const std::string error_msg = "Output " + c10::to_string(i) + ", %" +
+          val->debugName() + " of node " + c10::to_string(n) +
           " which has kind " + pnode.node()->kind().toQualString() +
           " was not cleaned up";
       if (output_ivalues.count(ival) == 0) {
@@ -1955,8 +1947,8 @@ bool BlockRunner::checkOutputTensorMemoryLeaks() {
       const auto& t = ival->toTensor();
       if (t.defined()) {
         auto* storage_impl = t.storage().unsafeGetStorageImpl();
-        const std::string error_msg = "Output " + std::to_string(i) + ", %" +
-            val->debugName() + " of node " + std::to_string(n) +
+        const std::string error_msg = "Output " + c10::to_string(i) + ", %" +
+            val->debugName() + " of node " + c10::to_string(n) +
             " was not cleaned up";
         TORCH_CHECK(storage_impl->data() == nullptr, error_msg);
       }
@@ -2226,7 +2218,7 @@ bool ProcessedNode::check_and_correct_overlap_with(
   auto& tensor = output_ival.toTensor();
   if (!checkNoMemoryOverlap(input, tensor)) {
     DLOG(INFO) << "Detected alias for node: " << PrintNode(node());
-    output_ival = at::native::clone(tensor, std::nullopt);
+    output_ival = at::native::clone(tensor, c10::nullopt);
     set_outputs_memory_overlap_detected();
     return true;
   }
@@ -2264,10 +2256,10 @@ void ProcessedNode::verify_and_correct_memory_overlap() {
 }
 
 StaticRuntime::StaticRuntime(const StaticModule& sm)
-    : async_task_launcher_(at::launch), values_(sm.value_buffer_size()) {
+    : values_(sm.value_buffer_size()) {
   std::copy(sm.constants().begin(), sm.constants().end(), values_.data());
   // default task launcher set to inter-op thread pool
-
+  async_task_launcher_ = at::launch;
   block_ = std::make_unique<BlockRunner>(
       sm,
       values_.data(),

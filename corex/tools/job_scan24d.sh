@@ -1,0 +1,1 @@
+cd ~/build/torch24/build && cmake -DUSE_ONNX=1 -DINTERN_DISABLE_ONNX=0 -DUSE_ITT=0 . > ~/build/reconf24.log 2>&1 && ninja -k 50 > ~/build/scan24.log 2>&1; echo RC=$?; echo FAIL=$(grep -c 'FAILED:' ~/build/scan24.log); tail -4 ~/build/reconf24.log

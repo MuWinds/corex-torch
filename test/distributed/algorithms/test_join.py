@@ -8,7 +8,6 @@ from typing import Any, Optional
 import torch
 import torch.distributed as dist
 
-
 if not dist.is_available():
     print("Distributed not available, skipping tests", file=sys.stderr)
     sys.exit(0)
@@ -19,7 +18,6 @@ from torch.testing._internal.common_distributed import (
     require_n_gpus_for_nccl_backend,
 )
 from torch.testing._internal.common_utils import run_tests, TEST_WITH_DEV_DBG_ASAN
-
 
 if TEST_WITH_DEV_DBG_ASAN:
     print(
@@ -250,11 +248,9 @@ class TestJoin(MultiProcessTestCase):
             else "Detected at least one rank that exhausted inputs. "
             "Throwing across all ranks."
         )
-        with (
-            self.assertRaisesRegex(RuntimeError, expected_msg)
-            if throw_on_early_termination
-            else contextlib.nullcontext()
-        ):
+        with self.assertRaisesRegex(
+            RuntimeError, expected_msg
+        ) if throw_on_early_termination else contextlib.nullcontext():
             with Join(
                 allreducers,
                 enable=enable,

@@ -9,7 +9,9 @@ C10_DIAGNOSTIC_PUSH_AND_IGNORED_IF_DEFINED("-Wdeprecated")
 #include <tensorpipe/tensorpipe.h>
 C10_DIAGNOSTIC_POP()
 
-namespace torch::distributed::rpc {
+namespace torch {
+namespace distributed {
+namespace rpc {
 namespace {
 
 // The TensorPipe agent splits the RPC message's information across multiple
@@ -57,7 +59,7 @@ class TensorpipeCpuConverter : public TensorpipeDeviceTypeConverter {
 
       message.tensors.push_back(std::move(tensor));
 
-      return storageData;
+      return c10::make_optional(std::move(storageData));
     } else {
       tensorpipe::CpuBuffer buffer;
       buffer.ptr = static_cast<char*>(storage.mutable_data());
@@ -68,7 +70,7 @@ class TensorpipeCpuConverter : public TensorpipeDeviceTypeConverter {
 
       message.tensors.push_back(std::move(tensor));
 
-      return std::nullopt;
+      return c10::nullopt;
     }
   }
 
@@ -91,7 +93,7 @@ class TensorpipeCpuConverter : public TensorpipeDeviceTypeConverter {
   }
 };
 
-C10_REGISTER_TENSORPIPE_DEVICE_TYPE_CONVERTER(CPU, TensorpipeCpuConverter)
+C10_REGISTER_TENSORPIPE_DEVICE_TYPE_CONVERTER(CPU, TensorpipeCpuConverter);
 
 c10::DeviceType convertDeviceType(const std::string& tpDeviceType) {
   if (tpDeviceType == tensorpipe::kCpuDeviceType) {
@@ -130,7 +132,7 @@ TensorpipeDeviceTypeConverterRegistrar::TensorpipeDeviceTypeConverterRegistrar(
 }
 
 std::tuple<tensorpipe::Message, TensorpipeWriteBuffers> tensorpipeSerialize(
-    const c10::intrusive_ptr<Message>& rpcMessage,
+    c10::intrusive_ptr<Message> rpcMessage,
     std::vector<c10::Device> devices,
     const std::vector<c10::Stream>& streams) {
   tensorpipe::Message tpMessage;
@@ -140,11 +142,9 @@ std::tuple<tensorpipe::Message, TensorpipeWriteBuffers> tensorpipeSerialize(
   buffers.type = std::make_unique<MessageType>(rpcMessage->type());
   buffers.id = std::make_unique<int64_t>(rpcMessage->id());
   // kTpMessageTypeIdx = 0
-  // NOLINTNEXTLINE(modernize-use-emplace)
   tpMessage.payloads.push_back(
       tensorpipe::Message::Payload{buffers.type.get(), sizeof(MessageType)});
   // kTpMessageIdIdx = 1
-  // NOLINTNEXTLINE(modernize-use-emplace)
   tpMessage.payloads.push_back(
       tensorpipe::Message::Payload{buffers.id.get(), sizeof(int64_t)});
 
@@ -154,7 +154,6 @@ std::tuple<tensorpipe::Message, TensorpipeWriteBuffers> tensorpipeSerialize(
   // it uses non-const pointers even though it doesn't modify them when writing.
   char* payloadPtr = buffers.payload.data();
   // kTpMessagePayloadIdx = 2
-  // NOLINTNEXTLINE(modernize-use-emplace)
   tpMessage.payloads.push_back(
       tensorpipe::Message::Payload{payloadPtr, buffers.payload.size()});
 
@@ -178,7 +177,6 @@ std::tuple<tensorpipe::Message, TensorpipeWriteBuffers> tensorpipeSerialize(
   pickler.pushIValue(buffers.tensors);
   pickler.stop();
   // kTpMessagePickleIdx = 3
-  // NOLINTNEXTLINE(modernize-use-emplace)
   tpMessage.payloads.push_back(tensorpipe::Message::Payload{
       buffers.pickle.data(), buffers.pickle.size()});
   const std::vector<torch::Tensor>& tensorDataVec = pickler.tensorData();
@@ -286,8 +284,7 @@ std::pair<tensorpipe::Allocation, TensorpipeReadBuffers> tensorpipeAllocate(
 }
 
 c10::intrusive_ptr<Message> tensorpipeDeserialize(
-    const tensorpipe::Descriptor& tpDescriptor,
-    // NOLINTNEXTLINE(cppcoreguidelines-rvalue-reference-param-not-moved)
+    tensorpipe::Descriptor&& tpDescriptor,
     TensorpipeReadBuffers&& buffers) {
   // Tensors
   std::vector<at::Tensor> tensors;
@@ -324,7 +321,7 @@ c10::intrusive_ptr<Message> tensorpipeDeserialize(
   }
 
   for (const auto i : c10::irange(tpDescriptor.tensors.size())) {
-    const auto& tensor = tpDescriptor.tensors[i];
+    auto& tensor = tpDescriptor.tensors[i];
     if (tensor.targetDevice.has_value() &&
         tensor.targetDevice->type == tensorpipe::kCudaDeviceType) {
       TORCH_INTERNAL_ASSERT(
@@ -346,6 +343,8 @@ c10::intrusive_ptr<Message> tensorpipeDeserialize(
       *buffers.type,
       *buffers.id);
 }
-} // namespace torch::distributed::rpc
+} // namespace rpc
+} // namespace distributed
+} // namespace torch
 
 #endif // USE_TENSORPIPE

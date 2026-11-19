@@ -1,6 +1,7 @@
 #include <torch/csrc/jit/passes/remove_expands.h>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 static void RemoveExpands(Block* block) {
   for (auto it = block->nodes().begin(), end = block->nodes().end(); it != end;
@@ -19,4 +20,5 @@ void RemoveExpands(const std::shared_ptr<Graph>& graph) {
   RemoveExpands(graph->block());
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

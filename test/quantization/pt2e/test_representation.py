@@ -1,8 +1,9 @@
 # Owner(s): ["oncall: quantization"]
 import copy
-from typing import Any, Optional
+from typing import Any, Dict, Tuple
 
 import torch
+from torch._export import capture_pre_autograd_graph
 from torch._higher_order_ops.out_dtype import out_dtype  # noqa: F401
 from torch.ao.quantization.quantize_pt2e import convert_pt2e, prepare_pt2e
 from torch.ao.quantization.quantizer import Quantizer
@@ -10,14 +11,12 @@ from torch.ao.quantization.quantizer.xnnpack_quantizer import (
     get_symmetric_quantization_config,
     XNNPACKQuantizer,
 )
-from torch.export import export_for_training
 from torch.testing._internal.common_quantization import (
     NodeSpec as ns,
     QuantizationTestCase,
     skipIfNoQNNPACK,
     TestHelperModules,
 )
-from torch.testing._internal.common_utils import raise_on_run_directly
 
 
 @skipIfNoQNNPACK
@@ -25,16 +24,19 @@ class TestPT2ERepresentation(QuantizationTestCase):
     def _test_representation(
         self,
         model: torch.nn.Module,
-        example_inputs: tuple[Any, ...],
+        example_inputs: Tuple[Any, ...],
         quantizer: Quantizer,
-        ref_node_occurrence: dict[ns, int],
-        non_ref_node_occurrence: dict[ns, int],
-        fixed_output_tol: Optional[float] = None,
+        ref_node_occurrence: Dict[ns, int],
+        non_ref_node_occurrence: Dict[ns, int],
+        fixed_output_tol: float = None,
         output_scale_idx: int = 2,
     ) -> torch.nn.Module:
         # resetting dynamo cache
         torch._dynamo.reset()
-        model = export_for_training(model, example_inputs, strict=True).module()
+        model = capture_pre_autograd_graph(
+            model,
+            example_inputs,
+        )
         model_copy = copy.deepcopy(model)
 
         model = prepare_pt2e(model, quantizer)
@@ -79,7 +81,7 @@ class TestPT2ERepresentation(QuantizationTestCase):
 
     def test_static_linear(self):
         class M(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.linear = torch.nn.Linear(5, 5)
 
@@ -101,7 +103,7 @@ class TestPT2ERepresentation(QuantizationTestCase):
 
     def test_dynamic_linear(self):
         class M(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.linear = torch.nn.Linear(5, 5)
 
@@ -126,7 +128,7 @@ class TestPT2ERepresentation(QuantizationTestCase):
 
     def test_conv2d(self):
         class M(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.conv2d = torch.nn.Conv2d(3, 3, 3)
 
@@ -148,7 +150,7 @@ class TestPT2ERepresentation(QuantizationTestCase):
 
     def test_add(self):
         class M(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
 
             def forward(self, x, y):
@@ -157,7 +159,7 @@ class TestPT2ERepresentation(QuantizationTestCase):
         quantizer = XNNPACKQuantizer()
         quantization_config = get_symmetric_quantization_config(is_per_channel=True)
         quantizer.set_global(quantization_config)
-        M().eval()
+        m_eager = M().eval()
 
         example_inputs = (
             torch.randn(1, 3, 3, 3),
@@ -174,7 +176,7 @@ class TestPT2ERepresentation(QuantizationTestCase):
 
     def test_add_relu(self):
         class M(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
 
             def forward(self, x, y):
@@ -222,7 +224,7 @@ class TestPT2ERepresentation(QuantizationTestCase):
         """Test representation for quantize_per_channel and dequantize_per_channel op"""
 
         class M(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.linear = torch.nn.Linear(5, 5)
 
@@ -233,7 +235,7 @@ class TestPT2ERepresentation(QuantizationTestCase):
         # use per channel quantization for weight
         operator_config = get_symmetric_quantization_config(is_per_channel=True)
         quantizer.set_global(operator_config)
-        M().eval()
+        m_eager = M().eval()
 
         inputs = [
             (torch.randn(1, 5),),
@@ -273,7 +275,7 @@ class TestPT2ERepresentation(QuantizationTestCase):
         """Test representation for quantize and dequantize op"""
 
         class M(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
 
             def forward(self, x, y):
@@ -282,7 +284,7 @@ class TestPT2ERepresentation(QuantizationTestCase):
         quantizer = XNNPACKQuantizer()
         quantization_config = get_symmetric_quantization_config(is_per_channel=True)
         quantizer.set_global(quantization_config)
-        M().eval()
+        m_eager = M().eval()
 
         example_inputs = (
             torch.randn(1, 3, 3, 3),
@@ -307,7 +309,3 @@ class TestPT2ERepresentation(QuantizationTestCase):
             ref_node_occurrence,
             non_ref_node_occurrence,
         )
-
-
-if __name__ == "__main__":
-    raise_on_run_directly("test/test_quantization.py")

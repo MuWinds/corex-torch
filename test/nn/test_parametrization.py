@@ -4,13 +4,14 @@ from copy import deepcopy
 from itertools import product
 
 import torch
+
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.nn.init as init
 import torch.nn.utils.parametrize as parametrize
 from torch import Tensor
 from torch.__future__ import get_swap_module_params_on_conversion
-from torch.nn import Buffer, Parameter
+from torch.nn import Parameter
 from torch.testing._internal.common_cuda import TEST_MULTIGPU
 from torch.testing._internal.common_device_type import instantiate_device_type_tests
 from torch.testing._internal.common_nn import NNTestCase
@@ -360,7 +361,7 @@ class TestNNParametrization(NNTestCase):
 
         # Instantiate parametrizations on buffers. It should work as expected
         delattr(model, "bias")
-        model.bias = Buffer(torch.ones(8))
+        model.register_buffer("bias", torch.ones(8))
         parametrize.register_parametrization(model, "bias", FirstZero())
         parametrize.register_parametrization(model, "bias", LastZero())
         self.assertTrue(parametrize.is_parametrized(model))
@@ -382,9 +383,6 @@ class TestNNParametrization(NNTestCase):
     # FIXME: Rewrite this test using functions not depending on LAPACK
     #        and remove the `@skipIfNoLapack` (see #70995)
     @skipIfNoLapack
-    @skipIfTorchDynamo(
-        "Not applicable; see https://github.com/pytorch/pytorch/issues/127738"
-    )
     @swap([True, False])
     def test_serialization_parametrization(self):
         r"""Test that it is possible to serialize a parametrized model via state_dict"""
@@ -393,8 +391,8 @@ class TestNNParametrization(NNTestCase):
         class Orthogonal(nn.Module):
             def __init__(self, n):
                 super().__init__()
-                self.id = Buffer(torch.eye(n))
-                self.B = Buffer(torch.empty(n, n))
+                self.register_buffer("id", torch.eye(n))
+                self.register_buffer("B", torch.empty(n, n))
                 init.orthogonal_(self.B)
 
             def forward(self, X):
@@ -458,7 +456,7 @@ class TestNNParametrization(NNTestCase):
         class Orthogonal(nn.Module):
             def __init__(self, n):
                 super().__init__()
-                self.B = Buffer(torch.eye(n))
+                self.register_buffer("B", torch.eye(n))
 
             def forward(self, X):
                 Id = torch.eye(X.size(0))
@@ -935,9 +933,6 @@ class TestNNParametrization(NNTestCase):
             parametrize.type_before_parametrizations(model) == original_type
         )
 
-    @skipIfTorchDynamo(
-        "Not applicable; see https://github.com/pytorch/pytorch/issues/127738"
-    )
     @swap([True, False])
     def test_deepcopy_after_parametrization(self):
         r"""Test that we are able to create a deepcopy of the module when it's parametrized."""
@@ -947,7 +942,7 @@ class TestNNParametrization(NNTestCase):
                 return x + 1.0
 
         class ModelWithoutDeepcopy(nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.weight = nn.Parameter(
                     torch.tensor([1.0, 1.0, 1.0, 1.0]), requires_grad=True
@@ -1475,9 +1470,9 @@ class TestNNParametrization(NNTestCase):
             snm.load_state_dict(non_strict_state_dict, strict=False)
             del non_strict_state_dict["parametrizations.weight.0._v"]
             snm.load_state_dict(non_strict_state_dict, strict=False)
-            non_strict_state_dict["weight"] = (
-                snm.weight.detach().clone()
-            )  # set W as a buffer
+            non_strict_state_dict[
+                "weight"
+            ] = snm.weight.detach().clone()  # set W as a buffer
             snm.load_state_dict(non_strict_state_dict, strict=False)
             del non_strict_state_dict._metadata[
                 "parametrizations.weight.0"
@@ -1526,7 +1521,7 @@ class TestNNParametrization(NNTestCase):
         m = torch.nn.utils.parametrizations.spectral_norm(m)
         snm = m.parametrizations.weight[0]
         # this should not run into incompatible shapes
-        m(inp)
+        x = m(inp)
         # check that u refers to the same dimension
         self.assertEqual(
             snm._u.shape, m.parametrizations.weight.original[0, :, 0, 0].shape
@@ -1628,7 +1623,7 @@ class TestNNParametrization(NNTestCase):
                 # When using the swap_tensors path, this is needed so that the autograd
                 # graph is not alive anymore.
                 if get_swap_module_params_on_conversion():
-                    w_init = m.weight.detach().clone()
+                    w_init = m.weight.clone().detach()
                 else:
                     w_init = m.weight.clone()
                 if parametrization == "householder" and m.weight.is_complex():
@@ -1771,15 +1766,15 @@ class TestNNParametrization(NNTestCase):
         ):
             model = nn.Linear(2, 2)
             buf = torch.randn(2, 2)
-            model.buf = torch.nn.Buffer(buf)
+            model.register_buffer("buf", buf)
             if (
                 type_before_registration == TwoTensor
                 and type_after_registration == Tensor
             ):
                 model._apply(lambda t: TwoTensor(t, t))
-            initial_weight = model.weight.detach().clone()
+            initial_weight = model.weight.clone().detach()
             initial_weight_id = id(model.weight)
-            initial_buf = model.buf.detach().clone()
+            initial_buf = model.buf.clone().detach()
             initial_buf_id = id(model.buf)
             type_original_weight = (
                 type_before_registration

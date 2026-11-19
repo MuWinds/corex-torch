@@ -4,13 +4,14 @@
 
 #include <c10/util/irange.h>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 namespace onnx {
 using namespace ::c10::onnx;
 }
 
-static void DeduplicateInitializers(
+void DeduplicateInitializers(
     std::shared_ptr<Graph>& g,
     ValueToParamPairMap& valsToParamsMap,
     bool (*comp)(at::Tensor&, at::Tensor&)) {
@@ -62,12 +63,12 @@ static void DeduplicateInitializers(
   }
 }
 
-static bool DeduplicateInitializersByDataPtr(at::Tensor& t1, at::Tensor& t2) {
+bool DeduplicateInitializersByDataPtr(at::Tensor& t1, at::Tensor& t2) {
   return t1.sizes().equals(t2.sizes()) && t1.strides().equals(t2.strides()) &&
       (t1.has_storage() && t2.has_storage() && t1.data_ptr() == t2.data_ptr());
 }
 
-static bool DeduplicateInitializersByValue(at::Tensor& t1, at::Tensor& t2) {
+bool DeduplicateInitializersByValue(at::Tensor& t1, at::Tensor& t2) {
   if (t1.dtype() != t2.dtype() || !t1.sizes().equals(t2.sizes()) ||
       !t1.strides().equals(t2.strides())) {
     return false;
@@ -98,4 +99,5 @@ void DeduplicateInitializers(
   buildParamsMapFromValueToParamsMap(valsToParamsMap, paramsDict);
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

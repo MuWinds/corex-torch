@@ -29,7 +29,9 @@ inline C10_HOST_DEVICE bool _isnan(T /*val*/) {
 
 template <typename T, std::enable_if_t<std::is_floating_point_v<T>, int> = 0>
 inline C10_HOST_DEVICE bool _isnan(T val) {
-#if defined(__CUDACC__) || defined(__HIPCC__)
+#if defined(__ILUVATAR__)
+  return val != val;
+#elif defined(__CUDACC__) || defined(__HIPCC__)
   return ::isnan(val);
 #else
   return std::isnan(val);
@@ -96,7 +98,9 @@ inline C10_HOST_DEVICE bool _isinf(T /*val*/) {
 
 template <typename T, std::enable_if_t<std::is_floating_point_v<T>, int> = 0>
 inline C10_HOST_DEVICE bool _isinf(T val) {
-#if defined(__CUDACC__) || defined(__HIPCC__)
+#if defined(__ILUVATAR__)
+  return val > std::numeric_limits<T>::max() || val < -std::numeric_limits<T>::max();
+#elif defined(__CUDACC__) || defined(__HIPCC__)
   return ::isinf(val);
 #else
   return std::isinf(val);
@@ -115,15 +119,15 @@ inline C10_HOST_DEVICE bool _isinf(at::Float8_e5m2 val) {
   return val.isinf();
 }
 
-inline C10_HOST_DEVICE bool _isinf(at::Float8_e4m3fn val [[maybe_unused]]) {
+inline C10_HOST_DEVICE bool _isinf(at::Float8_e4m3fn val) {
   return false;
 }
 
-inline C10_HOST_DEVICE bool _isinf(at::Float8_e5m2fnuz val [[maybe_unused]]) {
+inline C10_HOST_DEVICE bool _isinf(at::Float8_e5m2fnuz val) {
   return false;
 }
 
-inline C10_HOST_DEVICE bool _isinf(at::Float8_e4m3fnuz val [[maybe_unused]]) {
+inline C10_HOST_DEVICE bool _isinf(at::Float8_e4m3fnuz val) {
   return false;
 }
 

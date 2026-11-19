@@ -7,14 +7,17 @@
 
 namespace {
 float float_from_bytes(uint32_t sign, uint32_t exponent, uint32_t fraction) {
-  uint32_t bytes = 0;
+  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+  uint32_t bytes;
+  bytes = 0;
   bytes |= sign;
   bytes <<= 8;
   bytes |= exponent;
   bytes <<= 23;
   bytes |= fraction;
 
-  float res = 0;
+  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+  float res;
   std::memcpy(&res, &bytes, sizeof(res));
   return res;
 }
@@ -108,7 +111,8 @@ TEST(BFloat16Math, Addition) {
   // 0 | 10000001 | 10010000000000000000000 = 6.25
   float expected = float_from_bytes(0, 0, 0x40c80000);
 
-  c10::BFloat16 b{};
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
+  c10::BFloat16 b;
   b.x = c10::detail::bits_from_f32(input);
   b = b + b;
 
@@ -130,7 +134,8 @@ TEST(BFloat16Math, Subtraction) {
   // 0 | 10000000 | 01010000000000000000000 = 2.625
   float expected = float_from_bytes(0, 0, 0x40280000);
 
-  c10::BFloat16 b{};
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
+  c10::BFloat16 b;
   b.x = c10::detail::bits_from_f32(input);
   b = b - 5;
 
@@ -138,6 +143,7 @@ TEST(BFloat16Math, Subtraction) {
   EXPECT_EQ(res, expected);
 }
 
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-non-const-global-variables)
 TEST(BFloat16Math, NextAfterZero) {
   const c10::BFloat16 zero{0};
 
@@ -154,7 +160,8 @@ TEST(BFloat16Math, NextAfterZero) {
 }
 
 float BinaryToFloat(uint32_t bytes) {
-  float res = 0;
+  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+  float res;
   std::memcpy(&res, &bytes, sizeof(res));
   return res;
 }

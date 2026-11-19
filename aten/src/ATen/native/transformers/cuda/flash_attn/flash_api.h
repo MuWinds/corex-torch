@@ -1,11 +1,10 @@
 #pragma once
 #include <cstddef>
 
-#include <namespace_config.h>
 #include <ATen/core/Tensor.h>
 #include <c10/util/Exception.h>
 
-namespace FLASH_NAMESPACE {
+namespace pytorch_flash {
 
 TORCH_API
 std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
@@ -19,7 +18,6 @@ mha_fwd(const at::Tensor &q,         // batch_size x seqlen_q x num_heads x head
         bool is_causal,
         int window_size_left,
         int window_size_right,
-        const float softcap,
         const bool return_softmax,
         std::optional<at::Generator> gen_);
 
@@ -31,7 +29,6 @@ mha_varlen_fwd(const at::Tensor &q,  // total_q x num_heads x head_size, total_q
                const at::Tensor &cu_seqlens_q,  // b+1
                const at::Tensor &cu_seqlens_k,  // b+1
                std::optional<at::Tensor> &seqused_k, // b. If given, only this many elements of each batch element's keys are used.
-               std::optional<at::Tensor> &block_table_, // batch_size x max_num_blocks_per_seq
                std::optional<at::Tensor> &alibi_slopes_, // num_heads or b x num_heads
                int max_seqlen_q,
                const int max_seqlen_k,
@@ -41,7 +38,6 @@ mha_varlen_fwd(const at::Tensor &q,  // total_q x num_heads x head_size, total_q
                bool is_causal,
                int window_size_left,
                int window_size_right,
-               const float softcap,
                const bool return_softmax,
                std::optional<at::Generator> gen_);
 
@@ -62,7 +58,6 @@ mha_bwd(const at::Tensor &dout,  // batch_size x seqlen_q x num_heads, x head_si
         const bool is_causal,
         int window_size_left,
         int window_size_right,
-        const float softcap,
         const bool deterministic,
         const at::Tensor philox_seed,
         const at::Tensor philox_offset);
@@ -88,9 +83,8 @@ mha_varlen_bwd(const at::Tensor &dout,  // total_q x num_heads, x head_size
                const bool is_causal,
                int window_size_left,
                int window_size_right,
-               const float softcap,
                const bool deterministic,
                const at::Tensor philox_seed,
                const at::Tensor philox_offset);
 
-} // namespace FLASH_NAMESPACE
+} // namespace pytorch_flash

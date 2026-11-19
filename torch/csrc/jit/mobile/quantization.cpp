@@ -2,7 +2,10 @@
 #include <torch/csrc/jit/mobile/module.h>
 #include <torch/csrc/jit/mobile/quantization.h>
 
-namespace torch::jit::mobile::quantization {
+namespace torch {
+namespace jit {
+namespace mobile {
+namespace quantization {
 
 void PTQQuanizationHelper::quantize_dynamic(
     torch::jit::mobile::Module& m,
@@ -57,4 +60,7 @@ void PTQQuanizationHelper::quantize_dynamic(
   m.unsafeRemoveMethod(observe_method_name);
   m.unsafeRemoveMethod(reset_observers_method_name);
 }
-} // namespace torch::jit::mobile::quantization
+} // namespace quantization
+} // namespace mobile
+} // namespace jit
+} // namespace torch

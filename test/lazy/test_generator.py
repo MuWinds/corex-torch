@@ -5,7 +5,6 @@ import torch._lazy.metrics as metrics
 import torch._lazy.ts_backend
 from torch.testing._internal.common_utils import run_tests, skipIfTorchDynamo, TestCase
 
-
 torch._lazy.ts_backend.init()
 
 
@@ -81,7 +80,7 @@ class LazyGeneratorTest(TestCase):
                 uncached_compile == 2
             ), f"Expected 2 uncached compiles, got {uncached_compile}"
 
-            t = generate_tensor(1)  # noqa: F841
+            t = generate_tensor(1)
             torch._lazy.mark_step()
 
             uncached_compile = metrics.counter_value("UncachedCompile")

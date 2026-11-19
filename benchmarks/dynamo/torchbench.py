@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-
+import functools
 import gc
 import importlib
 import logging
@@ -10,28 +10,20 @@ import warnings
 from collections import namedtuple
 from os.path import abspath, exists
 
+import yaml
+
 import torch
 
-
 try:
-    from .common import BenchmarkRunner, load_yaml_file, main
+    from .common import BenchmarkRunner, main
 except ImportError:
-    from common import BenchmarkRunner, load_yaml_file, main
+    from common import BenchmarkRunner, main
 
 from torch._dynamo.testing import collect_results, reduce_to_scalar_loss
 from torch._dynamo.utils import clone_inputs
 
-
 # We are primarily interested in tf32 datatype
 torch.backends.cuda.matmul.allow_tf32 = True
-
-# Enable FX graph caching
-if "TORCHINDUCTOR_FX_GRAPH_CACHE" not in os.environ:
-    torch._inductor.config.fx_graph_cache = True
-
-# Enable Autograd caching
-if "TORCHINDUCTOR_AUTOGRAD_CACHE" not in os.environ:
-    torch._functorch.config.enable_autograd_cache = True
 
 
 def _reassign_parameters(model):
@@ -60,9 +52,6 @@ def setup_torchbench_cwd():
         "../../torchbenchmark",
         "../../torchbench",
         "../../benchmark",
-        "../../../torchbenchmark",
-        "../../../torchbench",
-        "../../../benchmark",
     ):
         if exists(torchbench_dir):
             break
@@ -75,6 +64,31 @@ def setup_torchbench_cwd():
     return original_dir
 
 
+@functools.lru_cache(maxsize=1)
+def load_yaml_file():
+    filename = "torchbench.yaml"
+    filepath = os.path.join(os.path.dirname(__file__), filename)
+
+    with open(filepath) as f:
+        data = yaml.safe_load(f)
+
+    def flatten(lst):
+        for item in lst:
+            if isinstance(item, list):
+                yield from flatten(item)
+            else:
+                yield item
+
+    def maybe_list_to_set(obj):
+        if isinstance(obj, dict):
+            return {k: maybe_list_to_set(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return set(flatten(obj))
+        return obj
+
+    return maybe_list_to_set(data)
+
+
 def process_hf_reformer_output(out):
     assert isinstance(out, list)
     # second output is unstable
@@ -85,9 +99,8 @@ def process_hf_whisper_output(out):
     out_ret = []
     for i, elem in enumerate(out):
         if i == 0:
-            if elem is not None:
-                assert isinstance(elem, dict)
-                out_ret.append({k: v for k, v in elem.items() if k != "logits"})
+            assert isinstance(elem, dict)
+            out_ret.append({k: v for k, v in elem.items() if k != "logits"})
         elif i != 1:
             out_ret.append(elem)
 
@@ -108,7 +121,7 @@ class TorchBenchmarkRunner(BenchmarkRunner):
 
     @property
     def _config(self):
-        return load_yaml_file("torchbench.yaml")
+        return load_yaml_file()
 
     @property
     def _skip(self):
@@ -121,10 +134,6 @@ class TorchBenchmarkRunner(BenchmarkRunner):
     @property
     def _tolerance(self):
         return self._config["tolerance"]
-
-    @property
-    def _require_larger_multiplier_for_smaller_tensor(self):
-        return self._config["require_larger_multiplier_for_smaller_tensor"]
 
     @property
     def _accuracy(self):
@@ -143,16 +152,8 @@ class TorchBenchmarkRunner(BenchmarkRunner):
         return self._skip["device"]["cuda"]
 
     @property
-    def skip_models_for_freezing_cuda(self):
-        return self._skip["freezing"]["cuda"]
-
-    @property
-    def disable_cudagraph_models(self):
-        return self._config["disable_cudagraph"]
-
-    @property
-    def skip_models_for_freezing_cpu(self):
-        return self._skip["freezing"]["cpu"]
+    def skip_models_for_freezing(self):
+        return self._skip["freezing"]
 
     @property
     def slow_models(self):
@@ -207,28 +208,9 @@ class TorchBenchmarkRunner(BenchmarkRunner):
         return self._skip["control_flow"]
 
     @property
-    def skip_models_due_to_export_not_supported(self):
-        return self._skip["export_not_supported"]
-
-    @property
     def guard_on_nn_module_models(self):
         return {
             "vision_maskrcnn",
-        }
-
-    @property
-    def inline_inbuilt_nn_modules_models(self):
-        return {
-            "basic_gnn_edgecnn",
-            "drq",
-            "hf_Reformer",
-            "DALLE2_pytorch",
-            "hf_BigBird",
-            "detectron2_maskrcnn_r_50_fpn",
-            "detectron2_maskrcnn_r_101_fpn",
-            "vision_maskrcnn",
-            "doctr_reco_predictor",
-            "hf_T5_generate",
         }
 
     def load_model(
@@ -245,6 +227,7 @@ class TorchBenchmarkRunner(BenchmarkRunner):
             )
         is_training = self.args.training
         use_eval_mode = self.args.use_eval_mode
+        dynamic_shapes = self.args.dynamic_shapes
         candidates = [
             f"torchbenchmark.models.{model_name}",
             f"torchbenchmark.canary_models.{model_name}",
@@ -316,7 +299,6 @@ class TorchBenchmarkRunner(BenchmarkRunner):
                 extra_args=extra_args,
                 model_kwargs=model_kwargs,
             )
-            use_eval_mode = True
         elif is_training:
             benchmark = benchmark_cls(
                 test="train",
@@ -399,8 +381,8 @@ class TorchBenchmarkRunner(BenchmarkRunner):
 
             model_name = os.path.basename(model_path)
             if (
-                not re.search("|".join(args.filter), model_name, re.IGNORECASE)
-                or re.search("|".join(args.exclude), model_name, re.IGNORECASE)
+                not re.search("|".join(args.filter), model_name, re.I)
+                or re.search("|".join(args.exclude), model_name, re.I)
                 or model_name in args.exclude_exact
                 or model_name in self.skip_models
             ):
@@ -414,25 +396,13 @@ class TorchBenchmarkRunner(BenchmarkRunner):
         else:
             return torch.no_grad()
 
-    def use_larger_multiplier_for_smaller_tensor(self, name):
-        return name in self._require_larger_multiplier_for_smaller_tensor
-
     def get_tolerance_and_cosine_flag(self, is_training, current_device, name):
         tolerance = 1e-4
         cosine = self.args.cosine
         # Increase the tolerance for torch allclose
         if self.args.float16 or self.args.amp:
-            if self.args.freezing and (freezing := self._tolerance["freezing"]):
-                higher_fp16 = freezing.get("higher_fp16", None)
-                even_higher = freezing.get("even_higher", None)
-                if higher_fp16 and name in higher_fp16:
-                    return 1e-2, cosine
-                elif even_higher and name in even_higher:
-                    return 8 * 1e-2, cosine
             if name in self._tolerance["higher_fp16"]:
                 return 1e-2, cosine
-            elif name in self._tolerance["even_higher"]:
-                return 8 * 1e-2, cosine
             return 1e-3, cosine
 
         if self.args.bfloat16:
@@ -471,7 +441,7 @@ class TorchBenchmarkRunner(BenchmarkRunner):
         self.grad_scaler.scale(loss).backward()
         self.optimizer_step()
         if collect_outputs:
-            return collect_results(mod, None, loss, cloned_inputs)
+            return collect_results(mod, pred, loss, cloned_inputs)
         return None
 
 

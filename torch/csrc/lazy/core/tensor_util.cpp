@@ -9,13 +9,19 @@
 #include <torch/csrc/lazy/core/config.h>
 #include <torch/csrc/lazy/core/helpers.h>
 
+#include <algorithm>
 #include <cstring>
+#include <functional>
+#include <list>
+#include <numeric>
+#include <thread>
 
-namespace torch::lazy {
+namespace torch {
+namespace lazy {
 
 std::vector<int64_t> ComputeArrayStrides(c10::ArrayRef<int64_t> sizes) {
   std::vector<int64_t> strides(sizes.size(), 1);
-  for (size_t i = sizes.size(); i > 1; --i) {
+  for (int64_t i = sizes.size(); i > 1; --i) {
     strides[i - 2] = strides[i - 1] * sizes[i - 1];
   }
   return strides;
@@ -63,4 +69,5 @@ bool IsSpecialScalar(const at::Scalar& value) {
   return false;
 }
 
-} // namespace torch::lazy
+} // namespace lazy
+} // namespace torch

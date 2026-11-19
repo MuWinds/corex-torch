@@ -15,7 +15,8 @@
 #include <ATen/ops/empty.h>
 #endif
 
-namespace ao::sparse {
+namespace ao {
+namespace sparse {
 
 int register_linear_params();
 
@@ -100,7 +101,7 @@ at::Tensor PackedLinearWeight::apply_impl(
   // 2. If the input tensor is {x, batch_size, K}, the output tensor is {x,
   // batch_size, out_channels}.
   std::vector<int64_t> out_sizes = input.sizes().vec();
-  out_sizes.back() = out_channels;
+  out_sizes.back() = out_channels; // NOLINT
   // Allocate output Tensor and a buffer for fbgemmPacked to use
   auto output_tr = at::_empty_affine_quantized(
       out_sizes,
@@ -256,4 +257,4 @@ TORCH_LIBRARY_IMPL(sparse, QuantizedCPU, m) {
 }
 
 } // namespace
-} // namespace ao::sparse
+}} // namespace ao::sparse

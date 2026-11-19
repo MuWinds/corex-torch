@@ -11,7 +11,8 @@
 #include <c10/util/irange.h>
 
 namespace at::native::xnnpack {
-namespace internal::convolution2d {
+namespace internal {
+namespace convolution2d {
 
 namespace {
 
@@ -187,7 +188,7 @@ ContextConv2D create(
   TORCH_CHECK(
       available(
           weight_nhwc,
-          (bias.has_value() && bias->defined()) ? at::OptionalIntArrayRef(bias->sizes()) : std::nullopt,
+          (bias.has_value() && bias->defined()) ? at::OptionalIntArrayRef(bias->sizes()) : c10::nullopt,
           padding_expanded,
           stride_expanded,
           dilation_expanded,
@@ -201,8 +202,10 @@ ContextConv2D create(
 
 
   xnn_operator_t convolution_op{};
-  xnn_status create_status{};
-  std::array<int64_t, 4> weight_sizes{};
+  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+  xnn_status create_status;
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
+  std::array<int64_t, 4> weight_sizes;
 
   if (transposed) {
     const Tensor weight_reordered = reorder_weights_for_transpose_conv(weight_nhwc, groups);
@@ -322,7 +325,8 @@ Tensor run(
       padded_input_nhwc.opt_names());
   }
 
-  xnn_status setup_status{};
+  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+  xnn_status setup_status;
 
   /*
    * Input Pointer Caching:
@@ -447,7 +451,7 @@ unpack_prepacked_sizes_conv2d(const IValue& ivalue) {
   const auto& bias = std::get<1>(tuple);
   return IValue(std::make_tuple(
       std::get<0>(tuple).sizes(),
-      (bias && bias->defined()) ? at::OptionalIntArrayRef(bias->sizes()) : std::nullopt,
+      (bias && bias->defined()) ? at::OptionalIntArrayRef(bias->sizes()) : c10::nullopt,
       std::get<2>(tuple),
       std::get<3>(tuple),
       std::get<4>(tuple),
@@ -460,6 +464,7 @@ Tensor conv2d_transpose_clamp_run(
   return op_context->run(input);
 }
 
+} // namespace convolution2d
 } // namespace internal
 
 bool use_convolution2d(

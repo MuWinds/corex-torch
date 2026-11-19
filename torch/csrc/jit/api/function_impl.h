@@ -7,12 +7,13 @@
 namespace torch::jit {
 
 struct TORCH_API GraphFunction : public Function {
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
   GraphFunction(
       c10::QualifiedName name,
       std::shared_ptr<Graph> graph,
       std::function<void(GraphFunction&)> function_creator,
       std::optional<ExecutorExecutionMode> executor_execution_mode =
-          std::nullopt)
+          c10::nullopt)
       : name_(std::move(name)),
         graph_(std::move(graph)),
         executor_execution_mode_(executor_execution_mode),
@@ -176,5 +177,5 @@ struct TORCH_API GraphFunction : public Function {
 TORCH_API GraphFunction* tryToGraphFunction(Function&) noexcept;
 TORCH_API GraphFunction& toGraphFunction(Function&);
 TORCH_API const GraphFunction& toGraphFunction(const Function&);
+
 } // namespace torch::jit
-C10_DECLARE_bool(torch_jit_do_not_store_optimized_graph);

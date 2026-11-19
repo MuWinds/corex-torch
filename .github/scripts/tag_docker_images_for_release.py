@@ -1,5 +1,6 @@
 import argparse
 import subprocess
+from typing import Dict
 
 import generate_binary_build_matrix
 
@@ -9,7 +10,7 @@ def tag_image(
     default_tag: str,
     release_version: str,
     dry_run: str,
-    tagged_images: dict[str, bool],
+    tagged_images: Dict[str, bool],
 ) -> None:
     if image in tagged_images:
         return
@@ -40,17 +41,16 @@ def main() -> None:
     )
 
     options = parser.parse_args()
-    tagged_images: dict[str, bool] = {}
+    tagged_images: Dict[str, bool] = dict()
     platform_images = [
         generate_binary_build_matrix.WHEEL_CONTAINER_IMAGES,
         generate_binary_build_matrix.LIBTORCH_CONTAINER_IMAGES,
+        generate_binary_build_matrix.CONDA_CONTAINER_IMAGES,
     ]
     default_tag = generate_binary_build_matrix.DEFAULT_TAG
 
     for platform_image in platform_images:  # type: ignore[attr-defined]
         for arch in platform_image.keys():  # type: ignore[attr-defined]
-            if arch == "cpu-s390x":
-                continue
             tag_image(
                 platform_image[arch],  # type: ignore[index]
                 default_tag,

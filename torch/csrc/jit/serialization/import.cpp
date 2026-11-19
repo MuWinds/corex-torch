@@ -6,6 +6,8 @@
 #include <caffe2/serialize/read_adapter_interface.h>
 
 #include <torch/csrc/jit/api/compilation_unit.h>
+#include <torch/csrc/jit/serialization/import.h>
+#include <torch/csrc/jit/serialization/source_range_serialization.h>
 
 #include <ATen/core/functional.h>
 #include <ATen/core/ivalue_inl.h>
@@ -19,7 +21,6 @@
 #include <torch/csrc/jit/operator_upgraders/upgraders_entry.h>
 #include <torch/csrc/jit/passes/shape_analysis.h>
 #include <torch/csrc/jit/passes/subgraph_rewrite.h>
-#include <torch/csrc/jit/serialization/import.h>
 #include <torch/csrc/jit/serialization/import_export_helpers.h>
 #include <torch/csrc/jit/serialization/import_read.h>
 #include <torch/csrc/jit/serialization/import_source.h>
@@ -30,7 +31,7 @@
 #include <fmt/format.h>
 
 #include <string>
-#include <utility>
+#include <unordered_map>
 #include <vector>
 
 namespace torch::jit {
@@ -44,9 +45,7 @@ static void postSetStateValidate(const IValue& v) {
   const auto& objType = obj->type();
   for (const auto i : c10::irange(objType->numAttributes())) {
     const auto& attrType = objType->getAttribute(i);
-#ifndef STRIP_ERROR_MESSAGES
     const auto& attrName = objType->getAttributeName(i);
-#endif
     const auto& slot = obj->getSlot(i);
     // const auto attrType = objType->getAttribute(i);
     // Verify that all the non-optional attributes have been initialized
@@ -117,7 +116,8 @@ class ScriptModuleDeserializer final {
       : compilation_unit_(std::move(cu)),
         reader_(std::move(reader)),
         code_prefix_("code/"),
-
+        pickle_dir_prefix_(""),
+        tensor_dir_prefix_(""),
         source_importer_(
             compilation_unit_,
             &constants_table_,
@@ -180,7 +180,7 @@ IValue ScriptModuleDeserializer::readArchive(const std::string& archive_name) {
       type_resolver,
       ObjLoaderFunc,
       device_,
-      *reader_,
+      *reader_.get(),
       nullptr,
       storage_context_);
 }
@@ -263,7 +263,7 @@ Module ScriptModuleDeserializer::deserialize(
     }
   }
   if (reader_->hasRecord("model.json") && code_prefix_ == "code/") {
-    TORCH_CHECK(false, "Legacy model format is not supported on mobile.");
+    AT_ERROR("Legacy model format is not supported on mobile.");
   }
   auto tuple = readArchive("constants").toTuple();
   for (auto constant : tuple->elements()) {
@@ -312,7 +312,7 @@ Module import_ir_module(
 }
 
 static Module _load_jit_module_from_bytes(
-    const std::shared_ptr<char>& data,
+    std::shared_ptr<char> data,
     size_t size,
     std::shared_ptr<CompilationUnit> cu,
     std::optional<c10::Device> device,
@@ -320,7 +320,7 @@ static Module _load_jit_module_from_bytes(
     bool restore_shapes);
 
 Module parse_and_initialize_jit_module(
-    const std::shared_ptr<char>& data,
+    std::shared_ptr<char> data,
     size_t size,
     ExtraFilesMap& extra_files,
     std::optional<at::Device> device) {
@@ -345,7 +345,7 @@ Module load_jit_module_from_file(
     std::optional<at::Device> device) {
   auto data = get_file_content(filename.c_str());
   return parse_and_initialize_jit_module(
-      std::get<0>(data), std::get<1>(data), extra_files, device);
+      std::move(std::get<0>(data)), std::get<1>(data), extra_files, device);
 }
 
 Module load_jit_module_from_stream(
@@ -354,7 +354,7 @@ Module load_jit_module_from_stream(
     std::optional<at::Device> device) {
   auto data = get_stream_content(in);
   return parse_and_initialize_jit_module(
-      std::get<0>(data), std::get<1>(data), extra_files, device);
+      std::move(std::get<0>(data)), std::get<1>(data), extra_files, device);
 }
 
 Module import_ir_module(
@@ -384,13 +384,13 @@ Module import_ir_module(
     std::shared_ptr<PyTorchStreamReader> reader,
     std::shared_ptr<DeserializationStorageContext> storage_context,
     std::optional<at::Device> device,
-    const std::string& ts_id) {
+    std::string ts_id) {
   ScriptModuleDeserializer deserializer(
       std::move(cu),
       std::move(reader),
       /* pickle_dir_prefix = */ ".data/ts_code/" + ts_id + "/",
       /* tensor_dir_prefix = */ ".data/",
-      std::move(storage_context));
+      storage_context);
   ExtraFilesMap extra_files;
   return deserializer.deserialize(device, extra_files);
 }
@@ -443,7 +443,7 @@ Module import_ir_module(
     bool load_debug_files) {
   std::shared_ptr<ReadAdapterInterface> rai_shared = std::move(rai);
   return import_ir_module(
-      std::move(cu), rai_shared, device, extra_files, load_debug_files);
+      cu, rai_shared, device, extra_files, load_debug_files);
 }
 
 Module import_ir_module(
@@ -515,7 +515,7 @@ Module load(
 }
 
 Module _load_jit_module_from_bytes(
-    const std::shared_ptr<char>& data,
+    std::shared_ptr<char> data,
     size_t size,
     std::shared_ptr<CompilationUnit> cu,
     std::optional<c10::Device> device,
@@ -544,7 +544,7 @@ Module _load_jit_module_from_bytes(
 // methods are attached to type; we need to replace it's type.
 // Non-objects are unchanged; however, nested structures such as list, dict
 // are also reconstructed because they might contain an object.
-static IValue recreateObject(IValue ivalue, const TypeResolver& resolver) {
+static IValue recreateObject(IValue ivalue, TypeResolver resolver) {
   if (ivalue.isObject()) {
     auto obj = ivalue.toObject();
     auto classtype_old = obj->type();

@@ -10,21 +10,22 @@
 
 #if !AT_MKLDNN_ENABLED()
 
-
-namespace at::native {
+namespace at {
+namespace native {
 
 Tensor& copy_mkldnn_(Tensor& self, const Tensor& src, bool non_blocking) {
   TORCH_CHECK(false, "copy_mkldnn_: ATen not compiled with MKLDNN support");
 }
 
-} // namespace at::native
-
+} // namespace native
+} // namespace at
 
 #else // AT_MKLDNN_ENABLED
 
 #include <ATen/native/mkldnn/MKLDNNCommon.h>
 
-namespace at::native {
+namespace at {
+namespace native {
 
 Tensor& copy_mkldnn_(Tensor& self, const Tensor& src, bool non_blocking) {
   TORCH_CHECK(
@@ -42,6 +43,7 @@ Tensor& copy_mkldnn_(Tensor& self, const Tensor& src, bool non_blocking) {
   return self;
 }
 
+} // namespace native
 } // namespace at
 
 #endif // AT_MKLDNN_ENABLED

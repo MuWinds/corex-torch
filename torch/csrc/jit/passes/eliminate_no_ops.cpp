@@ -4,7 +4,8 @@
 #include <torch/csrc/jit/passes/dead_code_elimination.h>
 #include <torch/csrc/jit/runtime/graph_iterator.h>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 namespace {
 
@@ -75,4 +76,5 @@ bool EliminateNoOps(
   return changed;
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

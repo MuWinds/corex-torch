@@ -16,6 +16,7 @@
 #include <c10/core/ScalarType.h>
 #include <torch/csrc/jit/frontend/error_report.h>
 
+#include <regex>
 #include <sstream>
 
 namespace torch::jit {
@@ -77,8 +78,7 @@ std::vector<int64_t> compute_sizes(const IValue& seq) {
 
 void checkSequenceSize(int64_t n, int64_t dim, int64_t seq_size) {
   if (seq_size != n) {
-    TORCH_CHECK(
-        false,
+    AT_ERROR(
         "Expected sequence of length ",
         n,
         " at dim ",
@@ -187,7 +187,8 @@ template <bool if_set_requires_grad>
 void createTensorFromList(Stack& stack) {
   // torch.tensor has a fourth requires_grad arg but torch.as_tensor not, so
   // we use the template arg to distinguish between these two cases
-  bool requires_grad = false;
+  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+  bool requires_grad;
   IValue data;
   IValue dtype;
   IValue device;
@@ -293,16 +294,16 @@ RegisterOperators reg({
     DEFINE_TORCH_TENSOR_OP(
         bool,
         bool,
-        at::empty({}, at::device(at::kCPU).dtype(at::kBool)).fill_(scalar_val))
+        at::empty({}, at::CPU(at::kBool).options()).fill_(scalar_val))
         DEFINE_TORCH_TENSOR_OP(
             float,
             double,
             at::native::scalar_tensor(
                 scalar_val,
                 typeMetaToScalarType(c10::get_default_dtype()),
-                std::nullopt /* layout */,
+                c10::nullopt /* layout */,
                 at::kCPU,
-                std::nullopt /* pin_memory*/))
+                c10::nullopt /* pin_memory*/))
             DEFINE_TORCH_TENSOR_OP(
                 int,
                 int64_t,
@@ -313,9 +314,9 @@ RegisterOperators reg({
                     at::native::scalar_tensor(
                         scalar_val,
                         typeMetaToScalarType(c10::get_default_complex_dtype()),
-                        std::nullopt /* layout */,
+                        c10::nullopt /* layout */,
                         at::kCPU,
-                        std::nullopt /* pin_memory */))
+                        c10::nullopt /* pin_memory */))
 
     // reference python implementation: internal_new_from_data in
     // tensor_new.cpp
@@ -333,8 +334,10 @@ RegisterOperators reg({
         [](Stack& stack) {
           at::Tensor weight;
           at::Tensor input;
-          double max_norm = 0;
-          double norm_type = 0;
+          // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+          double max_norm;
+          // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+          double norm_type;
           pop(stack, weight, input, max_norm, norm_type);
 
           // TODO: remove when script supports setting grad mode
@@ -399,11 +402,13 @@ RegisterOperators reg({
           torch::NoGradGuard no_grad;
 
           at::Tensor tensor;
+          // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+          double a;
+          // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+          double b;
           std::optional<at::Generator> generator =
               pop(stack).toOptional<at::Generator>();
 
-          double a = 0;
-          double b = 0;
           pop(stack, tensor, a, b);
           push(stack, tensor.uniform_(a, b, generator));
         },
@@ -416,8 +421,10 @@ RegisterOperators reg({
           torch::NoGradGuard no_grad;
 
           at::Tensor tensor;
-          double mean = 0;
-          double std = 0;
+          // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+          double mean;
+          // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+          double std;
           std::optional<at::Generator> generator =
               pop(stack).toOptional<at::Generator>();
 
@@ -433,7 +440,8 @@ RegisterOperators reg({
           torch::NoGradGuard no_grad;
 
           at::Tensor tensor;
-          double val = 0;
+          // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+          double val;
           pop(stack, tensor, val);
           push(stack, at::fill_(tensor, val));
         },

@@ -1,6 +1,5 @@
 import operator_benchmark as op_bench
 
-
 """
 Configs shared by multiple benchmarks
 """
@@ -33,17 +32,6 @@ conv_1d_configs_long = op_bench.cross_product_configs(
     L=[128],
     device=["cpu", "cuda"],
     tags=["long"],
-)
-
-convtranspose_1d_configs_short = op_bench.config_list(
-    attr_names=["IC", "OC", "kernel", "stride", "N", "L"],
-    attrs=[
-        [2016, 1026, 1024, 256, 1, 224],
-    ],
-    cross_product_configs={
-        "device": ["cpu", "cuda"],
-    },
-    tags=["short"],
 )
 
 # Configs for Conv2d and ConvTranspose1d

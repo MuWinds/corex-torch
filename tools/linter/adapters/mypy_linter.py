@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import argparse
 import json
 import logging
@@ -10,7 +8,14 @@ import sys
 import time
 from enum import Enum
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, Dict, List, NamedTuple, Optional, Pattern
+
+
+IS_WINDOWS: bool = os.name == "nt"
+
+
+def eprint(*args: Any, **kwargs: Any) -> None:
+    print(*args, file=sys.stderr, flush=True, **kwargs)
 
 
 class LintSeverity(str, Enum):
@@ -21,19 +26,23 @@ class LintSeverity(str, Enum):
 
 
 class LintMessage(NamedTuple):
-    path: str | None
-    line: int | None
-    char: int | None
+    path: Optional[str]
+    line: Optional[int]
+    char: Optional[int]
     code: str
     severity: LintSeverity
     name: str
-    original: str | None
-    replacement: str | None
-    description: str | None
+    original: Optional[str]
+    replacement: Optional[str]
+    description: Optional[str]
+
+
+def as_posix(name: str) -> str:
+    return name.replace("\\", "/") if IS_WINDOWS else name
 
 
 # tools/linter/flake8_linter.py:15:13: error: Incompatibl...int")  [assignment]
-RESULTS_RE: re.Pattern[str] = re.compile(
+RESULTS_RE: Pattern[str] = re.compile(
     r"""(?mx)
     ^
     (?P<file>.*?):
@@ -47,7 +56,7 @@ RESULTS_RE: re.Pattern[str] = re.compile(
 )
 
 # torch/_dynamo/variables/tensor.py:363: error: INTERNAL ERROR
-INTERNAL_ERROR_RE: re.Pattern[str] = re.compile(
+INTERNAL_ERROR_RE: Pattern[str] = re.compile(
     r"""(?mx)
     ^
     (?P<file>.*?):
@@ -60,11 +69,11 @@ INTERNAL_ERROR_RE: re.Pattern[str] = re.compile(
 
 
 def run_command(
-    args: list[str],
+    args: List[str],
     *,
-    extra_env: dict[str, str] | None,
+    extra_env: Optional[Dict[str, str]],
     retries: int,
-) -> subprocess.CompletedProcess[bytes]:
+) -> "subprocess.CompletedProcess[bytes]":
     logging.debug("$ %s", " ".join(args))
     start_time = time.monotonic()
     try:
@@ -85,7 +94,7 @@ severities = {
 }
 
 
-def check_mypy_installed(code: str) -> list[LintMessage]:
+def check_mypy_installed(code: str) -> List[LintMessage]:
     cmd = [sys.executable, "-mmypy", "-V"]
     try:
         subprocess.run(cmd, check=True, capture_output=True)
@@ -107,25 +116,18 @@ def check_mypy_installed(code: str) -> list[LintMessage]:
         ]
 
 
-def in_github_actions() -> bool:
-    return bool(os.getenv("GITHUB_ACTIONS"))
-
-
 def check_files(
-    filenames: list[str],
+    filenames: List[str],
     config: str,
     retries: int,
     code: str,
-) -> list[LintMessage]:
+) -> List[LintMessage]:
     # dmypy has a bug where it won't pick up changes if you pass it absolute
     # file names, see https://github.com/python/mypy/issues/16768
     filenames = [os.path.relpath(f) for f in filenames]
     try:
-        mypy_commands = ["dmypy", "run", "--"]
-        if in_github_actions():
-            mypy_commands = ["mypy"]
         proc = run_command(
-            [*mypy_commands, f"--config={config}"] + filenames,
+            ["dmypy", "run", "--", f"--config={config}"] + filenames,
             extra_env={},
             retries=retries,
         )
@@ -145,21 +147,6 @@ def check_files(
         ]
     stdout = str(proc.stdout, "utf-8").strip()
     stderr = str(proc.stderr, "utf-8").strip()
-    if proc.returncode not in (0, 1):
-        return [
-            LintMessage(
-                path=None,
-                line=None,
-                char=None,
-                code=code,
-                severity=LintSeverity.ERROR,
-                name="command-failed",
-                original=None,
-                replacement=None,
-                description=stderr,
-            )
-        ]
-
     rc = [
         LintMessage(
             path=match["file"],
@@ -237,7 +224,7 @@ def main() -> None:
 
     # Use a dictionary here to preserve order. mypy cares about order,
     # tragically, e.g. https://github.com/python/mypy/issues/2015
-    filenames: dict[str, bool] = {}
+    filenames: Dict[str, bool] = {}
 
     # If a stub file exists, have mypy check it instead of the original file, in
     # accordance with PEP-484 (see https://www.python.org/dev/peps/pep-0484/#stub-files)

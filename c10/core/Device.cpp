@@ -16,11 +16,7 @@ DeviceType parse_type(const std::string& device_string) {
       static_cast<size_t>(DeviceType::COMPILE_TIME_MAX_DEVICE_TYPES)>
       types = {{
           {"cpu", DeviceType::CPU},
-          // corex fork: this build has no CUDA backend (USE_CUDA=0); "cuda" means our card.
-          {"cuda", DeviceType::PrivateUse1},
-          // corex fork: keep the old name working too, so existing probes/scripts
-          // that say device="corex" still resolve to the same backend.
-          {"corex", DeviceType::PrivateUse1},
+          {"cuda", DeviceType::CUDA},
           {"ipu", DeviceType::IPU},
           {"xpu", DeviceType::XPU},
           {"mkldnn", DeviceType::MKLDNN},
@@ -40,11 +36,6 @@ DeviceType parse_type(const std::string& device_string) {
           {"mtia", DeviceType::MTIA},
           {"privateuseone", DeviceType::PrivateUse1},
       }};
-  if (device_string == "mkldnn") {
-    TORCH_WARN_ONCE(
-        "'mkldnn' is no longer used as device type. So torch.device('mkldnn') will be "
-        "deprecated and removed in the future. Please use other valid device types instead.");
-  }
   auto device = std::find_if(
       types.begin(),
       types.end(),
@@ -87,11 +78,10 @@ Device::Device(const std::string& device_string) : Device(Type::CPU) {
        pstate != DeviceStringParsingState::ERROR && i < device_string.size();
        ++i) {
     const char ch = device_string.at(i);
-    const unsigned char uch = static_cast<unsigned char>(ch);
     switch (pstate) {
       case DeviceStringParsingState::START:
         if (ch != ':') {
-          if (std::isalpha(uch) || ch == '_') {
+          if (isalpha(ch) || ch == '_') {
             device_name.push_back(ch);
           } else {
             pstate = DeviceStringParsingState::ERROR;
@@ -102,7 +92,7 @@ Device::Device(const std::string& device_string) : Device(Type::CPU) {
         break;
 
       case DeviceStringParsingState::INDEX_START:
-        if (std::isdigit(uch)) {
+        if (isdigit(ch)) {
           device_index_str.push_back(ch);
           pstate = DeviceStringParsingState::INDEX_REST;
         } else {
@@ -115,7 +105,7 @@ Device::Device(const std::string& device_string) : Device(Type::CPU) {
           pstate = DeviceStringParsingState::ERROR;
           break;
         }
-        if (std::isdigit(uch)) {
+        if (isdigit(ch)) {
           device_index_str.push_back(ch);
         } else {
           pstate = DeviceStringParsingState::ERROR;

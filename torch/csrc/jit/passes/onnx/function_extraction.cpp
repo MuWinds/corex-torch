@@ -2,7 +2,9 @@
 #include <torch/csrc/jit/passes/onnx/function_extraction.h>
 #include <torch/csrc/jit/passes/onnx/naming.h>
 
-namespace torch::jit::onnx {
+namespace torch {
+namespace jit {
+namespace onnx {
 
 namespace {
 
@@ -73,9 +75,9 @@ struct FunctionExtractor {
   using FunctionCtxPtr = FunctionContext*;
   using func_ctx_map = std::unordered_map<ScopePtr, FunctionCtxPtr>;
 
-  static bool IsValidScope(const ScopePtr& s);
+  static bool IsValidScope(ScopePtr s);
   static std::optional<ScopePtr> InferScope(Node* n);
-  static bool IsAncestor(const ScopePtr& parent, ScopePtr child);
+  static bool IsAncestor(ScopePtr parent, ScopePtr child);
   static std::optional<ScopePtr> FindCommonAncestor(ScopePtr a, ScopePtr b);
   static std::optional<ScopePtr> FindCommonAncestor(const scope_list& scopes);
   std::shared_ptr<Graph> ConstructFuncGraph(FunctionContext& ctx);
@@ -86,9 +88,7 @@ struct FunctionExtractor {
       scope_ctx_map& scope_ctxs,
       const std::shared_ptr<Graph>& graph);
 
-  static void HandleNoScopeNodes(
-      scope_ctx_map&,
-      const node_list& no_scope_nlist);
+  static void HandleNoScopeNodes(scope_ctx_map&, node_list no_scope_nlist);
   std::tuple<scope_ctx_map, node_list> PartitionNodesByScope(Block* b);
   scope_ctx_map PartitionNodesByScope(const std::shared_ptr<Graph>& graph);
   static std::unordered_map<ScopePtr, scope_list> PartitionIdenticalScopes(
@@ -225,16 +225,16 @@ std::optional<std::string> FunctionExtractor::FunctionContext::FindAttrName(
   auto v_it =
       scope_ctxs_[scope_key_]->env_to_subgraph_.find(ref_n->outputs().at(0));
   if (v_it == scope_ctxs_[scope_key_]->env_to_subgraph_.end()) {
-    return std::nullopt;
+    return c10::nullopt;
   }
   auto* n_in_def = v_it->second->node();
   auto n_attr_it = node_attr_to_name_.find(n_in_def);
   if (n_attr_it == node_attr_to_name_.end()) {
-    return std::nullopt;
+    return c10::nullopt;
   }
   auto name_it = n_attr_it->second.find(attr.toUnqualString());
   if (name_it == n_attr_it->second.end()) {
-    return std::nullopt;
+    return c10::nullopt;
   }
   return name_it->second;
 }
@@ -279,11 +279,11 @@ void FunctionExtractor::DebugPrintGraphWithFunction(
   GRAPH_UPDATE("Main graph: ", g->toString());
 }
 
-bool FunctionExtractor::IsValidScope(const ScopePtr& s) {
+bool FunctionExtractor::IsValidScope(ScopePtr s) {
   return !s->isRoot() && !s->isBlank();
 }
 
-bool FunctionExtractor::IsAncestor(const ScopePtr& parent, ScopePtr child) {
+bool FunctionExtractor::IsAncestor(ScopePtr parent, ScopePtr child) {
   if (!IsValidScope(parent) || !IsValidScope(child) ||
       parent->getDepth() >= child->getDepth()) {
     return false;
@@ -301,7 +301,7 @@ std::optional<ScopePtr> FunctionExtractor::FindCommonAncestor(
     ScopePtr a,
     ScopePtr b) {
   if (!IsValidScope(a) || !IsValidScope(b)) {
-    return std::nullopt;
+    return c10::nullopt;
   }
 
   auto diff =
@@ -327,20 +327,20 @@ std::optional<ScopePtr> FunctionExtractor::FindCommonAncestor(
     }
   }
 
-  return std::nullopt;
+  return c10::nullopt;
 }
 
 std::optional<ScopePtr> FunctionExtractor::FindCommonAncestor(
     const scope_list& scopes) {
   if (scopes.empty()) {
-    return std::nullopt;
+    return c10::nullopt;
   }
 
   std::optional<ScopePtr> common_ancestor = scopes.at(0);
   for (const auto& scope : scopes) {
     common_ancestor = FindCommonAncestor(common_ancestor.value(), scope);
     if (!common_ancestor.has_value()) {
-      return std::nullopt;
+      return c10::nullopt;
     }
   }
 
@@ -376,7 +376,7 @@ std::optional<ScopePtr> FunctionExtractor::InferScope(Node* n) {
       std::all_of(
           output_scopes.begin(),
           output_scopes.end(),
-          [&output_scopes](const ScopePtr& scope) -> bool {
+          [&output_scopes](ScopePtr scope) -> bool {
             return IsValidScope(scope) && scope == output_scopes.at(0);
           })) {
     return output_scopes.at(0);
@@ -385,7 +385,7 @@ std::optional<ScopePtr> FunctionExtractor::InferScope(Node* n) {
       std::all_of(
           input_scopes.begin(),
           input_scopes.end(),
-          [&input_scopes](const ScopePtr& scope) -> bool {
+          [&input_scopes](ScopePtr scope) -> bool {
             return IsValidScope(scope) && scope == input_scopes.at(0);
           })) {
     return input_scopes.at(0);
@@ -410,7 +410,7 @@ std::optional<ScopePtr> FunctionExtractor::InferScope(Node* n) {
     }
   }
 
-  return std::nullopt;
+  return c10::nullopt;
 }
 
 std::shared_ptr<Graph> FunctionExtractor::ConstructFuncGraph(
@@ -822,7 +822,7 @@ void FunctionExtractor::ScopeContext::PopulateInputsOutputs(
 
 void FunctionExtractor::HandleNoScopeNodes(
     scope_ctx_map& scope_ctxs,
-    const node_list& no_scope_nlist) {
+    node_list no_scope_nlist) {
   GRAPH_UPDATE("No scope node count: ", no_scope_nlist.size());
   for (auto n : no_scope_nlist) {
     TORCH_WARN(
@@ -1125,6 +1125,20 @@ NodeAttrNameMap ONNXFunctionExtraction(
   return fe.run();
 }
 
+Node* ONNXGetPreviousScope(std::shared_ptr<Graph>& graph) {
+  auto* last_node = graph->nodes().back()->prev();
+  auto* scope_node = NodeOfMostRecentScope(last_node);
+  auto* attr_node = scope_attr_graph_->create(prim::TracedModuleForward);
+  attr_node->setScope(scope_node->scope());
+  TORCH_INTERNAL_ASSERT(
+      scope_attr_map_.find(scope_node->scope()) == scope_attr_map_.end(),
+      "Found duplicated scope. Scope ",
+      scope_node->scope()->namesFromRoot(),
+      " already processed.");
+  scope_attr_map_[scope_node->scope()] = attr_node;
+  return attr_node;
+}
+
 void ONNXClearScopeRecords() {
   scope_attr_map_.clear();
   scope_attr_graph_ = std::make_shared<Graph>();
@@ -1167,4 +1181,6 @@ void ONNXTrackScopeAttributes(
   }
 }
 
-} // namespace torch::jit::onnx
+} // namespace onnx
+} // namespace jit
+} // namespace torch

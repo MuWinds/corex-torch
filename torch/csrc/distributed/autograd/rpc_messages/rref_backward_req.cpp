@@ -2,7 +2,9 @@
 #include <torch/csrc/distributed/rpc/rpc_agent.h>
 #include <torch/csrc/jit/serialization/pickle.h>
 
-namespace torch::distributed::autograd {
+namespace torch {
+namespace distributed {
+namespace autograd {
 
 using rpc::Message;
 using rpc::MessageType;
@@ -70,4 +72,6 @@ bool RRefBackwardReq::retainGraph() const {
   return retainGraph_;
 }
 
-} // namespace torch::distributed::autograd
+} // namespace autograd
+} // namespace distributed
+} // namespace torch

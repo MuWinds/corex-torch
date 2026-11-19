@@ -1,5 +1,6 @@
 # Owner(s): ["module: unknown"]
 import copy
+import logging
 import random
 
 import torch
@@ -28,12 +29,13 @@ from torch.testing._internal.common_pruning import (
     SimpleConv2d,
     SimpleLinear,
 )
-from torch.testing._internal.common_utils import (
-    raise_on_run_directly,
-    skipIfTorchDynamo,
-    TestCase,
-)
 
+from torch.testing._internal.common_utils import skipIfTorchDynamo, TestCase
+
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
 
 DEVICES = {
     torch.device("cpu"),
@@ -268,6 +270,7 @@ class TestBaseStructuredSparsifier(TestCase):
 
     def _test_step_linear_on_device(self, model, device):
         model = model.to(device)
+        x = torch.ones(7, 7, device=device)
         pruner = SimplePruner(None)
         pruner.prepare(model, None)
         pruner.enable_mask_update = True
@@ -806,7 +809,7 @@ class TestBaseStructuredSparsifier(TestCase):
         pruned_model = fx_pruner.prune()
         pruned_model.eval()
         out_pruned, lstm_out_pruned = pruned_model(lstm_input)
-        _, c = lstm_out_expected.size()
+        r, c = lstm_out_expected.size()
 
         # We cannot check that y_expected == y_pruned as usual because
         # zeros vs. missing elements yield different numerical results.
@@ -889,7 +892,7 @@ class TestBaseStructuredSparsifier(TestCase):
         pruned_model = fx_pruner.prune()
         pruned_model.eval()
         out_pruned, lstm_out_pruned = pruned_model(lstm_input)
-        _, c = lstm_out_expected.size()
+        r, c = lstm_out_expected.size()
 
         # We cannot check that y_expected == y_pruned as usual because
         # zeros vs. missing elements yield different numerical results.
@@ -910,7 +913,7 @@ class TestFPGMPruner(TestCase):
     """
 
     class SimpleConvFPGM(nn.Module):
-        def __init__(self) -> None:
+        def __init__(self):
             super().__init__()
             self.conv2d1 = nn.Conv2d(
                 in_channels=1, out_channels=3, kernel_size=3, padding=1, bias=False
@@ -1055,9 +1058,9 @@ class TestFPGMPruner(TestCase):
         mask1 = pruner.groups[0]["module"].parametrizations.weight[0].mask[-1]
         mask2 = pruner.groups[0]["module"].parametrizations.weight[0].mask[-2]
         # Check if either of the least-norm filters is not pruned
-        assert mask1.item() is not False or mask2.item() is not False, (
-            "Do not prune all least-norm filters"
-        )
+        assert (
+            mask1.item() is not False or mask2.item() is not False
+        ), "Do not prune all least-norm filters"
 
         # fusion step
         pruned_model = pruner.prune()
@@ -1088,7 +1091,3 @@ class TestFPGMPruner(TestCase):
             self._test_update_mask_on_multiple_layer(
                 expected_conv1, expected_conv2, device
             )
-
-
-if __name__ == "__main__":
-    raise_on_run_directly("test/test_ao_sparsity.py")

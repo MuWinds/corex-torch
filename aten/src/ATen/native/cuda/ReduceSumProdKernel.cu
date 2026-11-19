@@ -13,20 +13,6 @@ namespace at::native {
 template <typename scalar_t, typename acc_t = scalar_t, typename out_t = scalar_t>
 struct sum_functor {
   void operator()(TensorIterator& iter) {
-#ifdef USE_ROCM
-    // Half and BFloat16 can be packed in groups of up to 8 elements and
-    // can use *_DWORDX4 instructions to achieve that.
-    const bool is_16_bits =
-      ( (std::is_same<at::Half, scalar_t>::value) ||
-        (std::is_same<at::BFloat16, scalar_t>::value) );
-    if (is_16_bits) {
-      gpu_reduce_kernel<scalar_t, out_t, /*vt0=*/4, /*input_vec_size=*/8>(
-        iter, func_wrapper<out_t>([] GPU_LAMBDA(acc_t a, acc_t b) -> acc_t {
-          return a + b;
-        }));
-      return;
-    }
-#endif
     gpu_reduce_kernel<scalar_t, out_t>(
         iter, func_wrapper<out_t>([] GPU_LAMBDA(acc_t a, acc_t b) -> acc_t {
           return a + b;
@@ -35,7 +21,7 @@ struct sum_functor {
 };
 
 // jiterated specialization for `complex<Half>`
-constexpr char sum_name[] = "sum";
+CONSTEXPR_EXCEPT_WIN_CUDA char sum_name[] = "sum";
 template <>
 struct sum_functor<c10::complex<at::Half>> {
 // jiterator reduction fails on windows
@@ -71,7 +57,7 @@ struct nansum_functor {
   }
 };
 
-constexpr char nansum_name[] = "nansum";
+CONSTEXPR_EXCEPT_WIN_CUDA char nansum_name[] = "nansum";
 template <typename scalar_t>
 struct nansum_functor_complex {
 #if AT_USE_JITERATOR()
@@ -93,7 +79,7 @@ struct nansum_functor_complex {
 #endif
 };
 
-constexpr char prod_name[] = "prod";
+CONSTEXPR_EXCEPT_WIN_CUDA char prod_name[] = "prod";
 template <typename scalar_t, typename acc_t = scalar_t, typename out_t = scalar_t>
 struct prod_functor {
   // jiterator reduction fails on windows
@@ -222,8 +208,8 @@ static void prod_kernel_cuda(TensorIterator& iter) {
   reduce_dispatch<prod_functor>(iter, general_dispatcher);
 }
 
-REGISTER_DISPATCH(sum_stub, &sum_kernel_cuda)
-REGISTER_DISPATCH(nansum_stub, &nansum_kernel_cuda)
-REGISTER_DISPATCH(prod_stub, &prod_kernel_cuda)
+REGISTER_DISPATCH(sum_stub, &sum_kernel_cuda);
+REGISTER_DISPATCH(nansum_stub, &nansum_kernel_cuda);
+REGISTER_DISPATCH(prod_stub, &prod_kernel_cuda);
 
 } // namespace at::native

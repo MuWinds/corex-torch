@@ -6,8 +6,8 @@
 #include <ATen/native/TensorCompare.h>
 #include <c10/util/Exception.h>
 
-
-namespace at::native {
+namespace at {
+namespace native {
 
 Tensor max_quantized_cpu(const Tensor& self) {
   return std::get<0>(self.reshape({-1}).max(/*dim=*/0));
@@ -58,4 +58,5 @@ std::tuple<Tensor, Tensor> sort_quantized_cpu_stable(
       sort_indicies);
 }
 
-} // namespace at::native
+} // namespace native
+} // namespace at

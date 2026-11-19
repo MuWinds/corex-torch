@@ -1,23 +1,26 @@
 # ${generated_comment}
 # mypy: disable-error-code="type-arg"
 # mypy: allow-untyped-defs
-# ruff: noqa: F401,PYI054
 
-from collections.abc import Sequence
-from types import EllipsisType
-from typing import Any, Callable, Literal, overload, TypeVar
+import builtins
+from typing import (
+    Any,
+    Callable,
+    ContextManager,
+    Iterator,
+    List,
+    Literal,
+    NamedTuple,
+    Optional,
+    overload,
+    Sequence,
+    Tuple,
+    TypeVar,
+    Union,
+)
 
 import torch
-from torch import (
-    contiguous_format,
-    Generator,
-    inf,
-    memory_format,
-    strided,
-    SymInt,
-    Tensor,
-)
-from torch._prims_common import DeviceLikeType
+from torch import contiguous_format, Generator, inf, memory_format, strided, SymInt, Tensor
 from torch.types import (
     _bool,
     _complex,
@@ -32,6 +35,8 @@ from torch.types import (
     Number,
 )
 
-${all_directive}
+from torch._prims_common import DeviceLikeType
 
 ${function_hints}
+
+${all_directive}

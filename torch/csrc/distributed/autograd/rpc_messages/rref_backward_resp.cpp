@@ -1,6 +1,8 @@
 #include <torch/csrc/distributed/autograd/rpc_messages/rref_backward_resp.h>
 
-namespace torch::distributed::autograd {
+namespace torch {
+namespace distributed {
+namespace autograd {
 
 c10::intrusive_ptr<rpc::Message> RRefBackwardResp::toMessageImpl() && {
   return c10::make_intrusive<rpc::Message>(
@@ -15,4 +17,6 @@ std::unique_ptr<RRefBackwardResp> RRefBackwardResp::fromMessage(
   return std::unique_ptr<RRefBackwardResp>();
 }
 
-} // namespace torch::distributed::autograd
+} // namespace autograd
+} // namespace distributed
+} // namespace torch

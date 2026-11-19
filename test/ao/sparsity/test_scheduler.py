@@ -3,8 +3,10 @@
 import warnings
 
 from torch import nn
+
 from torch.ao.pruning import BaseScheduler, CubicSL, LambdaSL, WeightNormSparsifier
-from torch.testing._internal.common_utils import raise_on_run_directly, TestCase
+
+from torch.testing._internal.common_utils import TestCase
 
 
 class ImplementedScheduler(BaseScheduler):
@@ -190,7 +192,3 @@ class TestCubicScheduler(TestCase):
             self.sorted_sparse_levels,
             msg="Sparsity level is not reaching the target level afer delta_t * n steps ",
         )
-
-
-if __name__ == "__main__":
-    raise_on_run_directly("test/test_ao_sparsity.py")

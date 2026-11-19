@@ -5,7 +5,8 @@
 #include <ATen/native/cuda/fused_adamw_amsgrad_impl.cuh>
 #include <ATen/native/cuda/fused_adamw_impl.cuh>
 
-namespace at::native {
+namespace at {
+namespace native {
 
 // note(crcrpar): To observe the CI rules, i.e. 20 minutes per file to compile,
 // defensively split instantiations into _impl files. this is only for CUDA 11.3
@@ -111,12 +112,12 @@ void _fused_adamw_kernel_cuda_(
   // Manually check devices since we specify no device check in
   // native_functions.yaml
   Device param_device = params[0].device();
-  if (grad_scale.has_value()) {
+  if (grad_scale != c10::nullopt) {
     TORCH_CHECK(
         grad_scale->device() == param_device,
         "grad_scale must be on the same GPU device as the params");
   }
-  if (found_inf.has_value()) {
+  if (found_inf != c10::nullopt) {
     TORCH_CHECK(
         found_inf->device() == param_device,
         "found_inf must be on the same GPU device as the params");
@@ -167,4 +168,5 @@ void _fused_adamw_kernel_cuda_(
   }
 }
 
-} // namespace at::native
+} // namespace native
+} // namespace at

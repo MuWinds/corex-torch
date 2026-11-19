@@ -2,7 +2,8 @@
 #include <torch/nn/options/transformercoder.h>
 #include <torch/nn/options/transformerlayer.h>
 
-namespace torch::nn {
+namespace torch {
+namespace nn {
 
 TransformerEncoderLayerOptions::TransformerEncoderLayerOptions(
     int64_t d_model,
@@ -47,4 +48,5 @@ TransformerOptions::TransformerOptions(
       num_encoder_layers_(num_encoder_layers),
       num_decoder_layers_(num_decoder_layers) {}
 
-} // namespace torch::nn
+} // namespace nn
+} // namespace torch

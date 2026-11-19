@@ -7,7 +7,8 @@
 #include <torch/csrc/jit/passes/hoist_conv_packed_params.h>
 #include <torch/csrc/jit/passes/quantization/helper.h>
 
-namespace torch::jit {
+namespace torch {
+namespace jit {
 
 // Hoists packed params from a conv module to the parent module.
 // The benefit is that after this hoisting, the conv module
@@ -57,16 +58,16 @@ static void hoistConvPackedParams(
 
   // create the new name
 
-  std::string suffix;
+  std::string suffix = "";
   for (const auto& attrName : rootToConvPath) {
     suffix += attrName + ".";
   }
   std::string newNameBase = prefix + "." + suffix + "_packed_params";
   nameUniqueCounter++;
-  std::string newName = newNameBase + "." + std::to_string(nameUniqueCounter);
+  std::string newName = newNameBase + "." + c10::to_string(nameUniqueCounter);
   while (rootModule.hasattr(newName)) {
     nameUniqueCounter++;
-    newName = newNameBase + "." + std::to_string(nameUniqueCounter);
+    newName = newNameBase + "." + c10::to_string(nameUniqueCounter);
   }
 
   // copy the packed params
@@ -136,4 +137,5 @@ void HoistConvPackedParams(script::Module& m) {
   } // while
 }
 
-} // namespace torch::jit
+} // namespace jit
+} // namespace torch

@@ -27,7 +27,9 @@
 
 using namespace torch::autograd::profiler;
 
-namespace torch::distributed::rpc {
+namespace torch {
+namespace distributed {
+namespace rpc {
 namespace {
 void processRemoteProfiledEvents(
     autograd::RpcWithProfilingResp& rpcWithProfilingResp) {
@@ -316,7 +318,7 @@ parseWireSections(const void* data, size_t data_size) {
 
 static const char* kMeta = "meta";
 static const char* kPayload = "payload";
-} // namespace
+}; // namespace
 
 c10::List<at::Tensor> cloneSparseTensors(
     const std::vector<at::Tensor>& tensors) {
@@ -330,7 +332,7 @@ c10::List<at::Tensor> cloneSparseTensors(
     auto storageSize = t.storage().nbytes();
     auto usefulSize = t.element_size() * t.numel();
     constexpr size_t kMinMultiple = 2;
-    constexpr size_t kMinRecopyBytes = 8ull * 1024;
+    constexpr size_t kMinRecopyBytes = 8 * 1024;
     return storageSize >= kMinRecopyBytes &&
         storageSize >= usefulSize * kMinMultiple;
   };
@@ -387,7 +389,7 @@ std::string wireSerialize(
       // out of scope of this loop.
       auto writeableTensorData = jit::getWriteableTensorData(tensorData[i]);
       entries.push_back(
-          {std::to_string(i),
+          {c10::to_string(i),
            writeableTensorData.data(),
            writeableTensorData.sizeInBytes()});
     }
@@ -399,7 +401,7 @@ std::string wireSerialize(
     tot += e.size;
     header.append(e.name)
         .append(" ")
-        .append(std::to_string(e.size))
+        .append(c10::to_string(e.size))
         .append("\n");
   }
   header.push_back('\n');
@@ -474,11 +476,10 @@ void writeWrappedPayload(
       additionalPayload.end());
 
   // Add size of the additional payload
-  int64_t indexToWrite = static_cast<int64_t>(originalPayload.size());
+  int64_t indexToWrite = originalPayload.size();
   originalPayload.resize(originalPayload.size() + sizeof(int64_t));
-  const int64_t additionalPayloadSize =
-      static_cast<int64_t>(additionalPayload.size());
-  torch::utils::THP_encodeBuffer(
+  const int64_t additionalPayloadSize = additionalPayload.size();
+  torch::utils::THP_encodeInt64Buffer(
       reinterpret_cast<uint8_t*>(originalPayload.data()) + indexToWrite,
       &additionalPayloadSize,
       torch::utils::THPByteOrder::THP_BIG_ENDIAN,
@@ -489,10 +490,11 @@ std::vector<at::IValue> readWrappedPayload(
     std::vector<char>& payload,
     const rpc::Message& message) {
   // Read the additional payload remove it from the payload.
+  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+  int64_t additionalPayloadSize;
   TORCH_INTERNAL_ASSERT(payload.size() >= sizeof(int64_t));
   size_t indexToRead = payload.size() - sizeof(int64_t);
-  int64_t additionalPayloadSize = 0;
-  torch::utils::THP_decodeBuffer(
+  torch::utils::THP_decodeInt64Buffer(
       &additionalPayloadSize,
       reinterpret_cast<uint8_t*>(payload.data()) + indexToRead,
       torch::utils::THPByteOrder::THP_BIG_ENDIAN,
@@ -564,7 +566,7 @@ void populateRemoteProfiledEvents(
         if (e.kind() == EventKind::PopRange) {
           auto it = startEvents.find(e.handle());
           if (it != startEvents.end()) {
-            e.setCudaUs(static_cast<int64_t>(it->second->cudaElapsedUs(e)));
+            e.setCudaUs(it->second->cudaElapsedUs(e));
           } else {
             TORCH_WARN("Found a pop event without a corresponding push event");
             e.setCudaUs(0);
@@ -577,4 +579,6 @@ void populateRemoteProfiledEvents(
   }
 }
 
-} // namespace torch::distributed::rpc
+} // namespace rpc
+} // namespace distributed
+} // namespace torch

@@ -13,8 +13,12 @@
 #include <ATen/core/Tensor.h>
 #include <ATen/core/grad_mode.h>
 #include <ATen/native/layer_norm.h>
+#include <ATen/native/nested/NestedTensorUtils.h>
 
-namespace at::native {
+#include <tuple>
+
+namespace at {
+namespace native {
 
 Tensor bmm_nested(const Tensor& self, const Tensor& mat2) {
   TORCH_CHECK(self.dim() == 3, "batch1 must be a 3D tensor");
@@ -91,7 +95,7 @@ static Tensor matmul_with_bmm_nested(const Tensor& self, const Tensor& mat2) {
       mat2_ptr->get_storage_offsets().data_ptr<int64_t>();
   auto opt2 = mat2_ptr->get_nested_sizes().options();
 
-  int64_t N = static_cast<int64_t>(self_sizes.size());
+  int64_t N = self_sizes.size();
   int64_t n_heads = self_sizes[0][0];
 
   // viewed metadata for self
@@ -223,10 +227,10 @@ Tensor matmul_nested(const Tensor& self, const Tensor& mat2) {
     return matmul_nested_with_broadcasted_dense(self, mat2);
   }
   if (self.is_nested() && !mat2.is_nested()) {
-    TORCH_CHECK(false,
+    AT_ERROR(
         "Expected both to be nested, but got a nested self and non-nested other");
   } else if (!self.is_nested() && mat2.is_nested()) {
-    TORCH_CHECK(false,
+    AT_ERROR(
         "Expected both to be nested, but got a non-nested self and nested other");
   }
   // to_padded_tensor only supports contiguous inputs
@@ -328,4 +332,5 @@ Tensor& matmul_out_nested(
   return result;
 }
 
-} // namespace at::native
+} // namespace native
+} // namespace at

@@ -1,15 +1,10 @@
 #include <c10/util/Exception.h>
-#include <c10/util/error.h>
 #include <torch/csrc/distributed/c10d/ProcessGroupGloo.hpp>
 
 #ifdef USE_C10D_GLOO
 
-#include <torch/csrc/distributed/c10d/FlightRecorder.hpp>
 #include <torch/csrc/distributed/c10d/GlooDeviceFactory.hpp>
 #include <torch/csrc/distributed/c10d/PrefixStore.hpp>
-#include <torch/csrc/distributed/c10d/ProcessGroup.hpp>
-#include <torch/csrc/distributed/c10d/ProcessGroupGlooDetail.hpp>
-#include <torch/csrc/distributed/c10d/Utils.hpp>
 #include <chrono>
 #include <exception>
 
@@ -27,6 +22,17 @@
 #include <type_traits>
 #include <utility>
 
+#include <gloo/allgather.h>
+#include <gloo/allgatherv.h>
+#include <gloo/allreduce.h>
+#include <gloo/alltoall.h>
+#include <gloo/alltoallv.h>
+#include <gloo/barrier.h>
+#include <gloo/broadcast.h>
+#include <gloo/gather.h>
+#include <gloo/reduce.h>
+#include <gloo/scatter.h>
+
 #include <ATen/ThreadLocalState.h>
 #include <ATen/native/SparseTensorUtils.h>
 
@@ -36,6 +42,72 @@
 #include <gloo/config.h>
 #include <gloo/rendezvous/context.h>
 #include <gloo/rendezvous/prefix_store.h>
+
+#ifdef _WIN32
+#define GENERATE_ALL_TYPES(type, func, ...)      \
+  switch (type) {                                \
+    case ::at::ScalarType::Float:                \
+      func<float>(__VA_ARGS__);                  \
+      break;                                     \
+    case ::at::ScalarType::Double:               \
+      func<double>(__VA_ARGS__);                 \
+      break;                                     \
+    case ::at::ScalarType::Half:                 \
+      func<gloo::float16>(__VA_ARGS__);          \
+      break;                                     \
+    case ::at::ScalarType::BFloat16:             \
+      func<c10::BFloat16>(__VA_ARGS__);          \
+      break;                                     \
+    case ::at::ScalarType::Char:                 \
+      func<int8_t>(__VA_ARGS__);                 \
+      break;                                     \
+    case ::at::ScalarType::Byte:                 \
+    case ::at::ScalarType::Bool:                 \
+      func<uint8_t>(__VA_ARGS__);                \
+      break;                                     \
+    case ::at::ScalarType::Int:                  \
+      func<int32_t>(__VA_ARGS__);                \
+      break;                                     \
+    case ::at::ScalarType::Long:                 \
+      func<int64_t>(__VA_ARGS__);                \
+      break;                                     \
+    default:                                     \
+      TORCH_CHECK(false, "Invalid scalar type"); \
+  }
+
+#define HOST_NAME_MAX 256
+#else
+#define GENERATE_ALL_TYPES(type, func, args...)  \
+  switch (type) {                                \
+    case ::at::ScalarType::Float:                \
+      func<float>(args);                         \
+      break;                                     \
+    case ::at::ScalarType::Double:               \
+      func<double>(args);                        \
+      break;                                     \
+    case ::at::ScalarType::Half:                 \
+      func<gloo::float16>(args);                 \
+      break;                                     \
+    case ::at::ScalarType::BFloat16:             \
+      func<c10::BFloat16>(args);                 \
+      break;                                     \
+    case ::at::ScalarType::Char:                 \
+      func<int8_t>(args);                        \
+      break;                                     \
+    case ::at::ScalarType::Byte:                 \
+    case ::at::ScalarType::Bool:                 \
+      func<uint8_t>(args);                       \
+      break;                                     \
+    case ::at::ScalarType::Int:                  \
+      func<int32_t>(args);                       \
+      break;                                     \
+    case ::at::ScalarType::Long:                 \
+      func<int64_t>(args);                       \
+      break;                                     \
+    default:                                     \
+      TORCH_CHECK(false, "Invalid scalar type"); \
+  }
+#endif
 
 namespace c10d {
 
@@ -98,9 +170,155 @@ void checkRemainingTime(
   }
 }
 
-const auto kLoopbackAddress = "127.0.0.1";
+typedef void (*ReduceFunc)(void*, const void*, const void*, size_t);
 
-} // namespace
+template <typename T, std::enable_if_t<!std::is_integral_v<T>, int> = 0>
+ReduceFunc toFunction(const ReduceOp& r) {
+  switch (r) {
+    case ReduceOp::SUM:
+      return ReduceFunc(&::gloo::sum<T>);
+    case ReduceOp::PRODUCT:
+      return ReduceFunc(&::gloo::product<T>);
+    case ReduceOp::MIN:
+      return ReduceFunc(&::gloo::min<T>);
+    case ReduceOp::MAX:
+      return ReduceFunc(&::gloo::max<T>);
+    case ReduceOp::BAND:
+      TORCH_CHECK(false, "Cannot use ReduceOp.BAND with non-integral dtype");
+      break;
+    case ReduceOp::BOR:
+      TORCH_CHECK(false, "Cannot use ReduceOp.BOR with non-integral dtype");
+      break;
+    case ReduceOp::BXOR:
+      TORCH_CHECK(false, "Cannot use ReduceOp.BXOR with non-integral dtype");
+      break;
+    case ReduceOp::AVG:
+      TORCH_CHECK(false, "Cannot use ReduceOp.AVG with Gloo");
+      break;
+    case ReduceOp::PREMUL_SUM:
+      TORCH_CHECK(false, "Cannot use ReduceOp.PREMUL_SUM with Gloo");
+      break;
+    case ReduceOp::UNUSED:
+      break;
+  }
+
+  TORCH_CHECK(false, "Unhandled ReduceOp");
+}
+
+// Bitwise AND with SFINAE guard for integral types.
+template <typename T, std::enable_if_t<std::is_integral_v<T>, int> = 0>
+void band(void* c, const void* a, const void* b, size_t n) {
+  auto tc = static_cast<T*>(c);
+  auto ta = static_cast<const T*>(a);
+  auto tb = static_cast<const T*>(b);
+  for (const auto i : c10::irange(n)) {
+    tc[i] = ta[i] & tb[i];
+  }
+}
+
+// Bitwise OR with SFINAE guard for integral types.
+template <typename T, std::enable_if_t<std::is_integral_v<T>, int> = 0>
+void bor(void* c, const void* a, const void* b, size_t n) {
+  auto tc = static_cast<T*>(c);
+  auto ta = static_cast<const T*>(a);
+  auto tb = static_cast<const T*>(b);
+  for (const auto i : c10::irange(n)) {
+    tc[i] = ta[i] | tb[i];
+  }
+}
+
+// Bitwise XOR with SFINAE guard for integral types.
+template <typename T, std::enable_if_t<std::is_integral_v<T>, int> = 0>
+void bxor(void* c, const void* a, const void* b, size_t n) {
+  auto tc = static_cast<T*>(c);
+  auto ta = static_cast<const T*>(a);
+  auto tb = static_cast<const T*>(b);
+  for (const auto i : c10::irange(n)) {
+    tc[i] = ta[i] ^ tb[i];
+  }
+}
+
+template <typename T, std::enable_if_t<std::is_integral_v<T>, int> = 0>
+ReduceFunc toFunction(const ReduceOp& r) {
+  switch (r) {
+    case ReduceOp::SUM:
+      return ReduceFunc(&::gloo::sum<T>);
+    case ReduceOp::PRODUCT:
+      return ReduceFunc(&::gloo::product<T>);
+    case ReduceOp::MIN:
+      return ReduceFunc(&::gloo::min<T>);
+    case ReduceOp::MAX:
+      return ReduceFunc(&::gloo::max<T>);
+    case ReduceOp::BAND:
+      return ReduceFunc(&band<T>);
+    case ReduceOp::BOR:
+      return ReduceFunc(&bor<T>);
+    case ReduceOp::BXOR:
+      return ReduceFunc(&bxor<T>);
+    case ReduceOp::AVG:
+      TORCH_CHECK(false, "Cannot use ReduceOp.AVG with Gloo");
+      break;
+    case ReduceOp::PREMUL_SUM:
+      TORCH_CHECK(false, "Cannot use ReduceOp.PREMUL_SUM with Gloo");
+      break;
+    case ReduceOp::UNUSED:
+      break;
+  }
+
+  TORCH_CHECK(false, "Unhandled ReduceOp");
+}
+
+template <typename T, typename O>
+void setInputs(O& opts, std::vector<at::Tensor>& tensors) {
+  opts.setInputs(getDataPointers<T>(tensors), tensors[0].numel());
+}
+
+template <typename T, typename O>
+void setInput(O& opts, at::Tensor& tensor) {
+  opts.setInput(getDataPointer<T>(tensor), tensor.numel());
+}
+
+template <typename T, typename O>
+void setInput(O& opts, at::Tensor& tensor, std::vector<size_t>& counts) {
+  opts.setInput(getDataPointer<T>(tensor), counts);
+}
+
+template <typename T, typename O>
+void setInput(O& opts, at::Tensor& tensor, std::vector<int64_t>& counts) {
+  opts.setInput(getDataPointer<T>(tensor), counts);
+}
+
+template <typename T, typename O>
+void setOutputs(O& opts, std::vector<at::Tensor>& tensors) {
+  opts.setOutputs(getDataPointers<T>(tensors), tensors[0].numel());
+}
+
+template <typename T, typename O>
+void setOutput(O& opts, at::Tensor& tensor) {
+  opts.setOutput(getDataPointer<T>(tensor), tensor.numel());
+}
+
+template <typename T, typename O>
+void setOutput(O& opts, at::Tensor& tensor, std::vector<size_t>& counts) {
+  opts.setOutput(getDataPointer<T>(tensor), counts);
+}
+
+template <typename T, typename O>
+void setOutput(O& opts, at::Tensor& tensor, std::vector<int64_t>& counts) {
+  opts.setOutput(getDataPointer<T>(tensor), counts);
+}
+
+at::Tensor pinnedLike(at::Tensor& tensor) {
+  auto* allocator = at::detail::getCUDAHooks().getPinnedMemoryAllocator();
+  auto storage = c10::Storage(
+      c10::Storage::use_byte_size_t(),
+      static_cast<int64_t>(at::detail::computeStorageNbytes(
+          tensor.sizes(), tensor.strides(), tensor.dtype().itemsize())),
+      allocator,
+      /*resizable=*/false);
+  return at::empty({0}, tensor.options().device(at::kCPU))
+      .set_(storage, 0, tensor.sizes(), tensor.strides());
+}
 
 // This function initializes a vector of CUDA streams, one for every
 // tensor in the input tensor vector, and ensures that these streams are
@@ -120,7 +338,7 @@ void initializeStreamsEvents(
     events.emplace_back(device.type());
     events[i].record(impl.getStream(device));
     // Get a non-default stream to execute asynchronous CUDA operations
-    // on this device. This ensures that the default stream used
+    // on for this device. This ensures that the default stream used
     // by the caller is not occupied by c10d related operations.
     streams.push_back(
         impl.getStreamFromGlobalPool(device, /*isHighPriority=*/true));
@@ -193,9 +411,9 @@ void initializeStreamsEvents(
   }
 }
 
-bool getDefaultGlooLazyInit() {
-  return ::c10d::getCvarBool(TORCH_GLOO_LAZY_INIT, false);
-}
+const auto kLoopbackAddress = "127.0.0.1";
+
+} // namespace
 
 // static
 void ProcessGroupGloo::AsyncWork::execute(
@@ -204,7 +422,6 @@ void ProcessGroupGloo::AsyncWork::execute(
     work->recordFunctionBeforeCallback_();
   }
   try {
-    at::ThreadLocalStateGuard g(work->getTLS());
     work->run();
   } catch (...) {
     work->finishWorkGlooError(std::current_exception());
@@ -232,10 +449,6 @@ std::vector<at::Tensor> ProcessGroupGloo::AsyncWork::result() {
 c10::intrusive_ptr<c10::ivalue::Future> ProcessGroupGloo::AsyncWork::
     getFuture() {
   return future_;
-}
-
-std::chrono::milliseconds ProcessGroupGloo::AsyncWork::getTimeout() const {
-  return context_->getTimeout();
 }
 
 namespace {
@@ -285,8 +498,7 @@ inline void ProcessGroupGloo::AsyncWork::recordAsyncWorkProfilingInfo(
               profilingTitle,
               c10::ArrayRef<const c10::IValue>(inputs.data(), inputs.size()));
         };
-    recordFunctionBeforeCallback_ =
-        at::wrapPropagateTLSState(std::move(before_handler));
+    recordFunctionBeforeCallback_ = at::wrapPropagateTLSState(before_handler);
     std::function<void()> end_handler = [recordingFunction]() {
       recordingFunction->end();
     };
@@ -295,7 +507,6 @@ inline void ProcessGroupGloo::AsyncWork::recordAsyncWorkProfilingInfo(
 }
 
 ProcessGroupGloo::AsyncWork::AsyncWork(
-    std::shared_ptr<gloo::Context> context,
     std::vector<std::vector<at::Tensor>> outputTensors,
     OpType opType,
     uint64_t seq,
@@ -305,13 +516,11 @@ ProcessGroupGloo::AsyncWork::AsyncWork(
     // replace default profiler implementation with async version that reports
     // correct timestamps for work that is asynchronously executed.
     : Work(-1, opType, nullptr, inputTensors),
-      context_(std::move(context)),
       outputTensors_(std::move(outputTensors)),
       future_(createFutureAsOutput(outputTensors_)),
       seq_(seq) {
   if (profilingTitle != nullptr) {
     recordAsyncWorkProfilingInfo(profilingTitle, inputTensors);
-    profilingTitle_ = profilingTitle;
   }
 }
 
@@ -362,11 +571,6 @@ bool ProcessGroupGloo::SendWork::wait(std::chrono::milliseconds timeout) {
 
   // Completes the Work object and throws the exception.
   finishAndThrow(exception);
-  if (c10d::allow_inflight_collective_as_graph_input()) {
-    c10d::unregister_work(
-        c10::intrusive_ptr<
-            ProcessGroupGloo::SendWork>::unsafe_reclaim_from_nonowning(this));
-  }
   return sendCompleted;
 }
 
@@ -414,11 +618,6 @@ bool ProcessGroupGloo::RecvWork::wait(std::chrono::milliseconds timeout) {
 
   // Completes the Work object and throws the exception.
   finishAndThrow(exception);
-  if (c10d::allow_inflight_collective_as_graph_input()) {
-    c10d::unregister_work(
-        c10::intrusive_ptr<
-            ProcessGroupGloo::RecvWork>::unsafe_reclaim_from_nonowning(this));
-  }
   return recvCompleted;
 }
 
@@ -444,7 +643,8 @@ void socketInitialize() {
 // gracefully fall back to an alternative if it doesn't.
 bool doesHostnameResolveToUsableAddress(const std::string& hostname) {
   socketInitialize();
-  struct addrinfo hints{};
+  struct addrinfo hints {};
+  memset(&hints, 0, sizeof(hints));
   hints.ai_family = AF_UNSPEC;
   hints.ai_socktype = SOCK_STREAM;
   struct addrinfo* result = nullptr;
@@ -476,24 +676,23 @@ bool doesHostnameResolveToUsableAddress(const std::string& hostname) {
 } // namespace
 
 std::shared_ptr<::gloo::transport::Device> ProcessGroupGloo::
-    createDeviceForInterface(const std::string& interface_name, bool lazyInit) {
-  return ::c10d::GlooDeviceFactory::makeDeviceForInterface(
-      interface_name, lazyInit);
+    createDeviceForInterface(const std::string& interface_name) {
+  return ::c10d::GlooDeviceFactory::makeDeviceForInterface(interface_name);
 }
 
 std::shared_ptr<::gloo::transport::Device> ProcessGroupGloo::
-    createDeviceForHostname(const std::string& hostname, bool lazyInit) {
+    createDeviceForHostname(const std::string& hostname) {
   TORCH_CHECK(
       doesHostnameResolveToUsableAddress(hostname),
       "Cannot resolve ",
       hostname,
       " to a (local) address");
-  return ::c10d::GlooDeviceFactory::makeDeviceForHostname(hostname, lazyInit);
+  return ::c10d::GlooDeviceFactory::makeDeviceForHostname(hostname);
 }
 
 #if defined(__linux__) || defined(_WIN32)
 std::shared_ptr<::gloo::transport::Device> ProcessGroupGloo::
-    createDefaultDevice(bool lazyInit) {
+    createDefaultDevice() {
   // Use the hostname to resolve the network address to
   // use. Note: if the hostname does not resolve to an address (e.g.
   // because of misconfigured /etc/hosts file), this will not work.
@@ -501,13 +700,12 @@ std::shared_ptr<::gloo::transport::Device> ProcessGroupGloo::
   std::array<char, HOST_NAME_MAX> hostname{};
   auto rv = gethostname(hostname.data(), HOST_NAME_MAX);
   if (rv != 0) {
-    C10_THROW_ERROR(DistBackendError, c10::utils::str_error(errno));
+    C10_THROW_ERROR(DistBackendError, std::strerror(errno));
   }
 
   // Use this machine's hostname if it resolves to an address.
   if (doesHostnameResolveToUsableAddress(hostname.data())) {
-    return ::c10d::GlooDeviceFactory::makeDeviceForHostname(
-        hostname.data(), lazyInit);
+    return ::c10d::GlooDeviceFactory::makeDeviceForHostname(hostname.data());
   }
 
   // Otherwise, use the loopback address.
@@ -515,13 +713,13 @@ std::shared_ptr<::gloo::transport::Device> ProcessGroupGloo::
       "Unable to resolve hostname to a (local) address. ",
       "Using the loopback address as fallback. ",
       "Manually set the network interface to bind to with GLOO_SOCKET_IFNAME.");
-  return createDeviceForHostname(kLoopbackAddress, lazyInit);
+  return createDeviceForHostname(kLoopbackAddress);
 }
 #endif
 
 #ifdef __APPLE__
 std::shared_ptr<::gloo::transport::Device> ProcessGroupGloo::
-    createDefaultDevice(bool lazyInit) {
+    createDefaultDevice() {
   // Use the hostname to resolve the network address to
   // use. Note: if the hostname does not resolve to an address (e.g.
   // because of misconfigured /etc/hosts file), this will not work.
@@ -529,13 +727,12 @@ std::shared_ptr<::gloo::transport::Device> ProcessGroupGloo::
   auto hostname = std::unique_ptr<char[]>(new char[hostNameMax]);
   auto rv = gethostname(hostname.get(), hostNameMax);
   if (rv != 0) {
-    C10_THROW_ERROR(DistBackendError, c10::utils::str_error(errno));
+    C10_THROW_ERROR(DistBackendError, std::strerror(errno));
   }
 
   // Use this machine's hostname if it resolves to an address.
   if (doesHostnameResolveToUsableAddress(hostname.get())) {
-    return ::c10d::GlooDeviceFactory::makeDeviceForHostname(
-        hostname.get(), lazyInit);
+    return ::c10d::GlooDeviceFactory::makeDeviceForHostname(hostname.get());
   }
 
   // Otherwise, use the loopback address.
@@ -543,11 +740,9 @@ std::shared_ptr<::gloo::transport::Device> ProcessGroupGloo::
       "Unable to resolve hostname to a (local) address. ",
       "Using the loopback address as fallback. ",
       "Manually set the network interface to bind to with GLOO_SOCKET_IFNAME.");
-  return createDeviceForHostname(kLoopbackAddress, lazyInit);
+  return createDeviceForHostname(kLoopbackAddress);
 }
 #endif
-
-static std::atomic<size_t> process_group_id = 0;
 
 ProcessGroupGloo::ProcessGroupGloo(
     const c10::intrusive_ptr<Store>& store,
@@ -558,8 +753,7 @@ ProcessGroupGloo::ProcessGroupGloo(
       store_(new GlooStore(store)),
       options_(std::move(options)),
       stop_(false),
-      collectiveCounter_(0),
-      local_id_(process_group_id++) {
+      collectiveCounter_(0) {
   auto& devices = options_->devices;
   if (devices.empty()) {
     TORCH_CHECK(false, "No device(s) specified");
@@ -580,25 +774,10 @@ ProcessGroupGloo::ProcessGroupGloo(
   contexts_.reserve(options_->devices.size());
   for (const auto i : c10::irange(options_->devices.size())) {
     auto context = std::make_shared<::gloo::rendezvous::Context>(rank_, size_);
-
-#ifdef GLOO_SHARED_STORE
-    auto underlyingStore = store_;
-#else
-    auto& underlyingStore = *store_;
-#endif
-
-    auto store = std::make_shared<::gloo::rendezvous::PrefixStore>(
-        std::to_string(i), underlyingStore);
-
-#ifdef GLOO_SHARED_STORE
-    auto connectStore = store;
-#else
-    auto& connectStore = *store;
-#endif
-
+    auto store = ::gloo::rendezvous::PrefixStore(std::to_string(i), *store_);
     context->setTimeout(options_->timeout);
     try {
-      context->connectFullMesh(connectStore, options_->devices[i]);
+      context->connectFullMesh(store, options_->devices[i]);
     } catch (const std::runtime_error& e) {
       auto err = e.what();
       // TORCH_CHECK to print the cpp stacktrace.
@@ -618,14 +797,8 @@ ProcessGroupGloo::ProcessGroupGloo(
   for (const auto i : c10::irange(threads_.size())) {
     threads_[i] = std::thread(&ProcessGroupGloo::runLoop, this, i);
   }
-  this->setGroupUid(options_->group_name);
 
-  // TODO: If gloo has version, we also need to log gloo version into FR.
-  FlightRecorder<c10::Event>::get()->record_pg_ranks(
-      std::make_tuple(pg_uid_, pg_desc_), groupRanks());
   init();
-
-  // TODO: Add configs print like ProcessGroupNCCL.
 }
 
 ProcessGroupGloo::~ProcessGroupGloo() {
@@ -673,52 +846,13 @@ void ProcessGroupGloo::runLoop(int workerIndex) {
     workConsumeCV_.notify_one();
 
     AsyncWork::execute(work);
-    // TODO: Need to find a way to calculate the difference of duration of two
-    // c10d::Event
-    pgStatus_->lastCompletedSeq = static_cast<int64_t>(work->seq_);
-    pgStatus_->lastCompletedWorkName = opTypeToString(work->opType_);
-    // TODO: We need to have numel of tensors for gloo as well.
-    pgStatus_->lastCompletedNumelIn = 0;
-    pgStatus_->lastCompletedNumelOut = 0;
-    FlightRecorder<c10::Event>::get()->retire_id(work->trace_id_, false);
     lock.lock();
     workInProgress_[workerIndex].reset();
   }
 }
 
-const std::vector<uint64_t>& ProcessGroupGloo::groupRanks() const {
-  if (options_->global_ranks_in_group.empty() && local_id_ == 0) {
-    static std::vector<uint64_t> globalRanks(size_);
-    std::iota(globalRanks.begin(), globalRanks.end(), 0);
-    return globalRanks;
-  }
-  return options_->global_ranks_in_group;
-}
-
 void ProcessGroupGloo::enqueue(c10::intrusive_ptr<AsyncWork> work) {
   std::unique_lock<std::mutex> lock(workMutex_);
-  pgStatus_->lastEnqueuedSeq = static_cast<int64_t>(work->seq_);
-  pgStatus_->lastEnqueuedWorkName = opTypeToString(work->opType_);
-  // TODO: We need to have numel of tensors for gloo as well.
-  pgStatus_->lastEnqueuedNumelIn = 0;
-  pgStatus_->lastEnqueuedNumelOut = 0;
-  // using c10d::FlightRecorder;
-  // TODO: We need to have a way to use c10::Event inside gloo as well.
-  work->trace_id_ = FlightRecorder<c10::Event>::get()->record(
-      local_id_,
-      std::make_tuple(pg_uid_, pg_desc_),
-      collectiveCounter_,
-      0, // p2p_seq_id, set 0 for now since p2p does not call enqueue
-      work->getSequencenumber(), // We need to differentiate between p2p and
-                                 // non-p2p op.
-      work->getProfilerTitle(),
-      work->getInputTensors(),
-      work->getOutputTensors(),
-      nullptr,
-      nullptr,
-      work->getTimeout(),
-      pgStatus_,
-      false);
   workQueue_.push_back(std::move(work));
   lock.unlock();
 
@@ -732,24 +866,25 @@ namespace {
 class AsyncBroadcastWork : public ProcessGroupGloo::AsyncWork {
  public:
   AsyncBroadcastWork(
-      std::shared_ptr<gloo::Context> context,
+      const std::shared_ptr<gloo::Context>& context,
       std::vector<at::Tensor>& inputs,
       int rootRank,
       int rootTensor,
       uint32_t tag,
       uint64_t seq)
       : ProcessGroupGloo::AsyncWork(
-            std::move(context),
             {inputs},
             OpType::BROADCAST,
             seq,
             "gloo:broadcast",
             inputs),
+        context(context),
         inputs(inputs),
         rootRank(rootRank),
         rootTensor(rootTensor),
         tag(tag) {}
 
+  std::shared_ptr<gloo::Context> context;
   std::vector<at::Tensor> inputs{};
   const int rootRank;
   const int rootTensor;
@@ -757,19 +892,11 @@ class AsyncBroadcastWork : public ProcessGroupGloo::AsyncWork {
 
   void broadcast(at::Tensor& tensor) {
     const auto& scalarType = tensor.scalar_type();
-    gloo::BroadcastOptions opts(context_);
+    gloo::BroadcastOptions opts(context);
     opts.setRoot(rootRank);
     opts.setTag(tag);
     GENERATE_ALL_TYPES(scalarType, setOutput, opts, tensor);
     gloo::broadcast(opts);
-  }
-
-  const std::vector<at::Tensor> getInputTensors() override {
-    return inputs;
-  }
-
-  const std::vector<at::Tensor> getOutputTensors() override {
-    return inputs;
   }
 
   void run() override {
@@ -800,7 +927,7 @@ class AsyncBroadcastCUDAWork : public AsyncBroadcastWork {
     // Create pinned host side tensors.
     tmp = pinnedLike(inputs[rootTensor]);
     c10::OptionalStreamGuard guard;
-    if (context_->rank == rootRank) {
+    if (context->rank == rootRank) {
       guard.reset_stream(streams[rootTensor]);
       tmp.copy_(inputs[rootTensor], /* non_blocking */ true);
     }
@@ -808,7 +935,7 @@ class AsyncBroadcastCUDAWork : public AsyncBroadcastWork {
 
   void run() override {
     // Synchronize with copy operation if applicable.
-    if (context_->rank == rootRank) {
+    if (context->rank == rootRank) {
       streams[rootTensor].synchronize();
     }
 
@@ -883,6 +1010,476 @@ c10::intrusive_ptr<Work> ProcessGroupGloo::broadcast(
   return work;
 }
 
+namespace {
+
+class AsyncAllreduceWork : public ProcessGroupGloo::AsyncWork {
+ public:
+  AsyncAllreduceWork(
+      const std::shared_ptr<gloo::Context>& context,
+      std::vector<at::Tensor>& inputs,
+      ReduceOp reduceOp,
+      uint32_t tag,
+      uint64_t seq)
+      : ProcessGroupGloo::AsyncWork(
+            {inputs},
+            OpType::ALLREDUCE,
+            seq,
+            "gloo:all_reduce",
+            inputs),
+        context(context),
+        inputs(inputs),
+        reduceOp(std::move(reduceOp)),
+        tag(tag) {}
+
+  std::shared_ptr<gloo::Context> context;
+  std::vector<at::Tensor> inputs{};
+  const ReduceOp reduceOp;
+  const uint32_t tag;
+
+  void allreduce(std::vector<at::Tensor>& tensors) {
+    const auto& scalarType = tensors[0].scalar_type();
+    gloo::AllreduceOptions opts(context);
+    opts.setReduceFunction(getFunction(scalarType, reduceOp));
+    opts.setTag(tag);
+    GENERATE_ALL_TYPES(scalarType, setOutputs, opts, tensors);
+    gloo::allreduce(opts);
+  }
+
+  void run() override {
+    allreduce(inputs);
+  }
+
+  template <typename T>
+  void getFunction(gloo::AllreduceOptions::Func& fn, const ReduceOp op) {
+    fn = toFunction<T>(op);
+  }
+
+  gloo::AllreduceOptions::Func getFunction(
+      const at::ScalarType& dtype,
+      const ReduceOp& op) {
+    gloo::AllreduceOptions::Func fn;
+    GENERATE_ALL_TYPES(dtype, getFunction, fn, op);
+    return fn;
+  }
+};
+
+class AsyncAllreduceCoalescedWork : public AsyncAllreduceWork {
+ public:
+  AsyncAllreduceCoalescedWork(
+      const std::shared_ptr<gloo::Context>& context,
+      std::vector<at::Tensor>& inputs,
+      ReduceOp reduceOp,
+      uint32_t tag,
+      uint64_t seq)
+      : AsyncAllreduceWork(context, inputs, std::move(reduceOp), tag, seq) {}
+
+  void run() override {
+    allreduceCoalesced(inputs);
+  }
+
+ private:
+  void allreduceCoalesced(std::vector<at::Tensor>& tensors) {
+    // reduce coalesced, flattened tensors.
+    at::Tensor coalescedTensor = flattenDenseTensors(tensors);
+    std::vector<at::Tensor> allreduceInput = {coalescedTensor};
+    allreduce(allreduceInput);
+
+    // separate and reshape tensors.
+    size_t offset = 0;
+    for (at::Tensor& tensor : tensors) {
+      const int64_t tensorNumel = tensor.numel();
+      const c10::IntArrayRef tensorShape = tensor.sizes();
+      tensor.copy_(coalescedTensor.slice(0, offset, offset + tensorNumel)
+                       .view(tensorShape));
+      offset += tensorNumel;
+    }
+  }
+};
+
+class AsyncSparseAllreduceWork : public ProcessGroupGloo::AsyncWork {
+ public:
+  AsyncSparseAllreduceWork(
+      const std::shared_ptr<gloo::Context>& context,
+      std::vector<at::Tensor>& inputs,
+      uint32_t tag,
+      uint64_t seq)
+      : ProcessGroupGloo::AsyncWork(
+            {inputs},
+            OpType::_ALLREDUCE_SPARSE,
+            seq,
+            "gloo:sparse_all_reduce",
+            inputs),
+        context(context),
+        inputs(inputs),
+        tag(tag) {}
+
+  std::shared_ptr<gloo::Context> context;
+  std::vector<at::Tensor> inputs{};
+  const uint32_t tag;
+
+  // We share dimensionality about the sparse tensors before collecting
+  // their contents. We assume here that the maximum number of sparse
+  // and dense dimensions is 4. This is stored in a contiguous piece of
+  // memory so that we can easily run allgather on it.
+  //
+  // The layout of this memory is as follows:
+  //
+  //   - [0:4]: sparse dims
+  //   - [4:8]: dense dims
+  //   -   [8]: nnz
+  //
+  class SparseTensorMetadata {
+   public:
+    static constexpr auto dim = 9;
+
+    // Construct from an existing metadata tensor to facilitate structured
+    // access to metadata from peers, after gathering it.
+    explicit SparseTensorMetadata(at::Tensor metadata)
+        : metadata_(std::move(metadata)),
+          data_(metadata_.mutable_data_ptr<int64_t>()) {
+      AT_ASSERT(metadata_.scalar_type() == at::kLong);
+      AT_ASSERT(metadata_.dim() == 1);
+      AT_ASSERT(metadata_.size(0) == dim);
+    }
+
+    // Populate the metadata.
+    void populate_from_sparse_tensor(const at::Tensor& tensor) {
+      const auto sparse_dim = tensor.sparse_dim();
+      AT_ASSERT(sparse_dim <= 4);
+      for (const auto i : c10::irange(4)) {
+        if (i < sparse_dim) {
+          data_[i] = tensor.size(i);
+        }
+      }
+      const auto dense_dim = tensor.dense_dim();
+      AT_ASSERT(dense_dim <= 4);
+      for (const auto i : c10::irange(4)) {
+        if (i < dense_dim) {
+          data_[i + 4] = tensor.size(sparse_dim + i);
+        }
+      }
+      data_[8] = tensor._nnz();
+    }
+
+    std::vector<int64_t> sizes() const {
+      std::vector<int64_t> sizes;
+      // Sparse sizes
+      for (const auto i : c10::irange(4)) {
+        if (data_[i] <= 0) {
+          break;
+        }
+        sizes.push_back(data_[i]);
+      }
+      // Dense sizes
+      for (const auto i : c10::irange(4, 8)) {
+        if (data_[i] <= 0) {
+          break;
+        }
+        sizes.push_back(data_[i]);
+      }
+      return sizes;
+    }
+
+    int64_t nnz() const {
+      return data_[8];
+    }
+
+   protected:
+    at::Tensor metadata_;
+    int64_t* data_;
+  };
+
+  // Sparse allreduce is implemented with allgather on indices and values.
+  // Every process then sums the resulting sparse tensors locally.
+  // The nnz for sparse tensors may be different across processes, so first
+  // we run allgather on the nnz, and then allgather with max(nnz).
+  at::Tensor allreduce(std::vector<at::Tensor>& tensors) {
+    // TODO: This is a massive hack!  There is some confusion about
+    // Variable/Tensor inside the body of this function.  Turning off
+    // grad smooths over the confusion for now.  This fixes
+    // test/test_c10d_gloo.py ProcessGroupGlooTest.test_sparse_allreduce_basics
+    //
+    // The correct fix is to stop allocating tensors that are not variables,
+    // but to conveniently do this c10d must depend on torch not ATen
+    at::AutoDispatchBelowAutograd guard;
+    auto input = tensors[0];
+
+    // Perform local reduction if we have multiple inputs.
+    for (const auto i : c10::irange(1, tensors.size())) {
+      input += tensors[i];
+    }
+
+    // Need to coalesce before we can access indices and values.
+    input = input.coalesce();
+
+    // Gather metadata information from all ranks.
+    auto metadata = allgather_metadata(input);
+
+    // Sanity check dimensionality across ranks.
+    {
+      const auto expected = metadata[context->rank].sizes();
+      for (const auto i : c10::irange(context->size)) {
+        if (i == context->rank) {
+          continue;
+        }
+        const auto actual = metadata[i].sizes();
+        TORCH_CHECK(actual == expected, "Sparse dimensions do not match");
+      }
+    }
+
+    // Gather all indices and all values.
+    auto indices = allgather_indices(input, metadata);
+    auto values = allgather_values(input, metadata);
+
+    // Perform global reduction.
+    AT_ASSERT(static_cast<int>(indices.size()) == context->size);
+    AT_ASSERT(static_cast<int>(values.size()) == context->size);
+    auto output = at::sparse_coo_tensor(
+        indices[0], values[0], input.sizes(), input.options());
+    for (const auto i : c10::irange(1, context->size)) {
+      output += at::sparse_coo_tensor(
+          indices[i], values[i], input.sizes(), input.options());
+    }
+
+    // Coalesce for good measure.
+    return output.coalesce();
+  }
+
+  void run() override {
+    auto output = allreduce(inputs);
+
+    // This copy is needed when we run a multi-gpu version of reduce (multiple
+    // inputs per rank).
+    for (const auto i : c10::irange(inputs.size())) {
+      inputs[i].copy_(output);
+    }
+  }
+
+ private:
+  std::vector<SparseTensorMetadata> allgather_metadata(
+      const at::Tensor& tensor) {
+    auto buffer =
+        at::zeros({context->size, SparseTensorMetadata::dim}, at::kLong);
+
+    // Prepare metadata vector (1 entry per rank)
+    std::vector<SparseTensorMetadata> metadata;
+    metadata.reserve(context->size);
+    for (const auto i : c10::irange(context->size)) {
+      metadata.emplace_back(buffer.select(0, i));
+    }
+
+    // Populate data for this rank
+    metadata[context->rank].populate_from_sparse_tensor(tensor);
+
+    // Allgather metadata
+    gloo::AllgatherOptions opts(context);
+    opts.setOutput(buffer.mutable_data_ptr<int64_t>(), buffer.numel());
+    opts.setTag(tag);
+    gloo::allgather(opts);
+
+    return metadata;
+  }
+
+  std::vector<at::Tensor> allgather_indices(
+      const at::Tensor& tensor,
+      const std::vector<SparseTensorMetadata>& metadata) {
+    const auto sparseDim = tensor.sparse_dim();
+
+    std::vector<size_t> counts(context->size);
+    size_t totalSize = 0;
+    for (const auto i : c10::irange(metadata.size())) {
+      counts[i] = metadata[i].nnz() * sparseDim;
+      totalSize += counts[i];
+    }
+
+    auto output = at::empty({static_cast<int64_t>(totalSize)}, at::kLong);
+
+    // tensors copied from cuda may not be contiguous, get a contiguous
+    // tensor before use its data_ptr
+    auto input = tensor.indices().contiguous();
+
+    // Allgatherv indices.
+    gloo::AllgathervOptions opts(context);
+    opts.setInput(
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast)
+        const_cast<int64_t*>(input.const_data_ptr<int64_t>()),
+        input.numel());
+    opts.setOutput(output.mutable_data_ptr<int64_t>(), counts);
+    opts.setTag(tag);
+    gloo::allgatherv(opts);
+
+    // Compile indices tensor per rank.
+    std::vector<at::Tensor> indices;
+    indices.reserve(metadata.size());
+    int64_t offset = 0;
+    for (const auto& i : metadata) {
+      const auto nnz = i.nnz();
+      const auto numel = sparseDim * nnz;
+      indices.push_back(
+          output.narrow(0, offset, numel).reshape({sparseDim, nnz}));
+      offset += numel;
+    }
+
+    return indices;
+  }
+
+  std::vector<at::Tensor> allgather_values(
+      const at::Tensor& tensor,
+      const std::vector<SparseTensorMetadata>& metadata) {
+    // There are nnz #dense_dim()-dimensional tensors per rank.
+    const auto valueShape = tensor.sizes().slice(tensor.sparse_dim());
+    int64_t denseNumel = 1;
+    for (auto dim : valueShape) {
+      denseNumel *= dim;
+    }
+
+    std::vector<size_t> counts(context->size);
+    int64_t totalSize = 0;
+    for (const auto i : c10::irange(metadata.size())) {
+      counts[i] = metadata[i].nnz() * denseNumel;
+      totalSize += static_cast<int64_t>(counts[i]);
+    }
+
+    auto output = at::empty({totalSize}, tensor.scalar_type());
+
+    // Allgatherv indices.
+    gloo::AllgathervOptions opts(context);
+    // tensors copied from cuda may not be contiguous, get a contiguous
+    // tensor before use its data_ptr
+    at::Tensor valueTensor = tensor.values().contiguous();
+    GENERATE_ALL_TYPES(valueTensor.scalar_type(), setInput, opts, valueTensor);
+    GENERATE_ALL_TYPES(
+        valueTensor.scalar_type(), setOutput, opts, output, counts);
+    opts.setTag(tag);
+    gloo::allgatherv(opts);
+
+    // Compile values tensor per rank.
+    std::vector<at::Tensor> values;
+    values.reserve(metadata.size());
+    int64_t offset = 0;
+    for (const auto& i : metadata) {
+      const auto nnz = i.nnz();
+      const auto numel = denseNumel * nnz;
+      auto tensorShape = std::vector<int64_t>({(int64_t)nnz});
+      std::copy(
+          valueShape.begin(),
+          valueShape.end(),
+          std::back_inserter(tensorShape));
+      values.push_back(output.narrow(0, offset, numel).reshape(tensorShape));
+      offset += numel;
+    }
+
+    return values;
+  }
+};
+
+class AsyncAllreduceCUDAWork : public AsyncAllreduceWork {
+ public:
+  AsyncAllreduceCUDAWork(
+      const std::shared_ptr<gloo::Context>& context,
+      std::vector<at::Tensor>& inputs,
+      ReduceOp reduceOp,
+      uint32_t tag,
+      uint64_t seq)
+      : AsyncAllreduceWork(context, inputs, std::move(reduceOp), tag, seq) {
+    initializeStreamsEvents(inputs, streams, events);
+
+    // Kick off copy from CUDA tensors to pinned CPU tensors.
+    tmp.reserve(inputs.size());
+    c10::OptionalStreamGuard guard;
+    for (const auto i : c10::irange(inputs.size())) {
+      guard.reset_stream(streams[i]);
+      tmp.push_back(pinnedLike(inputs[i]).copy_(inputs[i], true));
+    }
+  }
+
+  void run() override {
+    // Synchronize with copy operations.
+    for (const auto i : c10::irange(inputs.size())) {
+      streams[i].synchronize();
+    }
+
+    // Run allreduce on host side tensors.
+    allreduce(tmp);
+
+    c10::OptionalStreamGuard guard;
+    for (const auto i : c10::irange(inputs.size())) {
+      guard.reset_stream(streams[i]);
+      inputs[i].copy_(tmp[i], /* non_blocking */ true);
+      events[i].record(streams[i]);
+    }
+  }
+
+  void synchronize() override {
+    // Synchronize with the copy back to CUDA tensors.
+    for (const auto i : c10::irange(inputs.size())) {
+      c10::Device device = inputs[i].device();
+      events[i].block(
+          c10::impl::VirtualGuardImpl(device.type()).getStream(device));
+    }
+  }
+
+  std::vector<at::Tensor> tmp;
+  std::vector<c10::Stream> streams{};
+  std::vector<c10::Event> events{};
+};
+
+class AsyncSparseAllreduceCUDAWork : public AsyncSparseAllreduceWork {
+ public:
+  AsyncSparseAllreduceCUDAWork(
+      const std::shared_ptr<gloo::Context>& context,
+      std::vector<at::Tensor>& inputs,
+      uint32_t tag,
+      uint64_t seq)
+      : AsyncSparseAllreduceWork(context, inputs, tag, seq) {
+    initializeStreamsEvents(inputs, streams, events);
+
+    // Kick off copy from CUDA tensors to CPU tensors.
+    // Note that both coalescing the sparse tensor and copying it to CPU
+    // memory must be performed asynchronously, or we block the caller.
+    tmp.reserve(inputs.size());
+    c10::OptionalStreamGuard guard;
+    for (const auto i : c10::irange(inputs.size())) {
+      guard.reset_stream(streams[i]);
+      tmp.push_back(
+          inputs[i].coalesce().to(at::DeviceType::CPU, /*non_blocking=*/true));
+    }
+  }
+
+  void run() override {
+    // Synchronize with copy operations.
+    for (const auto i : c10::irange(inputs.size())) {
+      streams[i].synchronize();
+    }
+
+    // Run allreduce on host side tensors.
+    auto output = allreduce(tmp);
+
+    // Kick off copy back to the CUDA tensors.
+    c10::OptionalStreamGuard guard;
+    for (const auto i : c10::irange(inputs.size())) {
+      guard.reset_stream(streams[i]);
+      inputs[i].copy_(output, /*non_blocking=*/true);
+      events[i].record(streams[i]);
+    }
+  }
+
+  void synchronize() override {
+    // Synchronize with the copy back to CUDA tensors.
+    for (const auto i : c10::irange(inputs.size())) {
+      c10::Device device = inputs[i].device();
+      events[i].block(
+          c10::impl::VirtualGuardImpl(device.type()).getStream(device));
+    }
+  }
+
+  std::vector<at::Tensor> tmp{};
+  std::vector<c10::Stream> streams{};
+  std::vector<c10::Event> events{};
+};
+
+} // namespace
+
 c10::intrusive_ptr<Work> ProcessGroupGloo::allreduce(
     std::vector<at::Tensor>& inputs,
     const AllreduceOptions& opts) {
@@ -917,55 +1514,40 @@ c10::intrusive_ptr<Work> ProcessGroupGloo::allreduce(
   auto tag = nextTag();
   auto context = getContext(tag);
   ++seq_;
-
-  work = GlooAllreduceRegistry()->Create(
-      device.type(), context, inputs, opts.reduceOp, tag, seq_);
+  if (device.type() == at::kCPU) {
+    if (layout == c10::kStrided) {
+      work = c10::make_intrusive<AsyncAllreduceWork>(
+          std::move(context), inputs, opts.reduceOp, tag, seq_);
+    } else if (layout == c10::kSparse) {
+      work = c10::make_intrusive<AsyncSparseAllreduceWork>(
+          std::move(context), inputs, tag, seq_);
+    } else {
+      invalidArgument("unsupported layout");
+    }
+  } else if (device.type() == at::kCUDA) {
+    if (layout == c10::kStrided) {
+      work = c10::make_intrusive<AsyncAllreduceCUDAWork>(
+          std::move(context), inputs, opts.reduceOp, tag, seq_);
+    } else if (layout == c10::kSparse) {
+      work = c10::make_intrusive<AsyncSparseAllreduceCUDAWork>(
+          std::move(context), inputs, tag, seq_);
+    } else {
+      invalidArgument("unsupported layout");
+    }
+  } else {
+    TORCH_CHECK(false, "Invalid backend");
+  }
 
   enqueue(work);
   return work;
 }
-
-static c10::intrusive_ptr<ProcessGroupGloo::AsyncWork> makeAllreduceCPUWork(
-    std::shared_ptr<gloo::Context> context,
-    std::vector<at::Tensor>& inputs,
-    ReduceOp reduceOp,
-    uint32_t tag,
-    uint64_t seq) {
-  auto layout = inputs[0].layout();
-
-  if (layout == c10::kStrided) {
-    return c10::make_intrusive<AsyncAllreduceWork>(
-        std::move(context), inputs, reduceOp, tag, seq);
-  } else if (layout == c10::kSparse) {
-    return c10::make_intrusive<AsyncSparseAllreduceWork>(
-        std::move(context), inputs, tag, seq);
-  } else {
-    TORCH_CHECK(false, "ProcessGroupGloo::allreduce: unsupported layout");
-  }
-}
-
-C10_DEFINE_TYPED_REGISTRY(
-    GlooAllreduceRegistry,
-    c10::DeviceType,
-    ProcessGroupGloo::AsyncWork,
-    c10::intrusive_ptr,
-    std::shared_ptr<gloo::Context>,
-    std::vector<at::Tensor>&,
-    ReduceOp,
-    uint32_t,
-    uint64_t)
-
-C10_REGISTER_TYPED_CREATOR(
-    GlooAllreduceRegistry,
-    at::kCPU,
-    makeAllreduceCPUWork)
 
 c10::intrusive_ptr<Work> ProcessGroupGloo::allreduce_sparse(
     std::vector<at::Tensor>& inputs,
     const AllreduceOptions& opts) {
   // all reduce sparse calls into default allreduce which
   // implemented with all_gathering indices and values
-  // we do this we do not have a native cuda implementation
+  // we do ths we do not have a native cuda implementation
   return allreduce(inputs, opts);
 }
 
@@ -1034,7 +1616,7 @@ namespace {
 class AsyncReduceWork : public ProcessGroupGloo::AsyncWork {
  public:
   AsyncReduceWork(
-      std::shared_ptr<gloo::Context> context,
+      const std::shared_ptr<gloo::Context>& context,
       std::vector<at::Tensor>& inputs,
       int rootRank,
       int rootTensor,
@@ -1042,18 +1624,19 @@ class AsyncReduceWork : public ProcessGroupGloo::AsyncWork {
       uint32_t tag,
       uint64_t seq)
       : ProcessGroupGloo::AsyncWork(
-            std::move(context),
             {inputs},
             OpType::REDUCE,
             seq,
             "gloo:reduce",
             inputs),
+        context(context),
         inputs(inputs),
         rootRank(rootRank),
         rootTensor(rootTensor),
         reduceOp(std::move(reduceOp)),
         tag(tag) {}
 
+  std::shared_ptr<gloo::Context> context;
   std::vector<at::Tensor> inputs{};
   const int rootRank;
   const int rootTensor;
@@ -1062,29 +1645,16 @@ class AsyncReduceWork : public ProcessGroupGloo::AsyncWork {
 
   void reduce(std::vector<at::Tensor>& tensors) {
     const auto& scalarType = tensors[0].scalar_type();
-    gloo::ReduceOptions opts(context_);
+    gloo::ReduceOptions opts(context);
     opts.setRoot(rootRank);
     opts.setTag(tag);
     opts.setReduceFunction(getFunction(scalarType, reduceOp));
     GENERATE_ALL_TYPES(scalarType, setOutput, opts, tensors[0]);
     gloo::reduce(opts);
-
-    // Gloo doesn't support AVG so we use SUM + division.
-    if (reduceOp == ReduceOp::AVG) {
-      tensors[0] /= context_->size;
-    }
   }
 
   void run() override {
     reduce(inputs);
-  }
-
-  const std::vector<at::Tensor> getInputTensors() override {
-    return inputs;
-  }
-
-  const std::vector<at::Tensor> getOutputTensors() override {
-    return inputs;
   }
 
  protected:
@@ -1224,22 +1794,23 @@ namespace {
 class AsyncAllgatherWork : public ProcessGroupGloo::AsyncWork {
  public:
   AsyncAllgatherWork(
-      std::shared_ptr<gloo::Context> context,
+      const std::shared_ptr<gloo::Context>& context,
       std::vector<std::vector<at::Tensor>>& outputs,
       std::vector<at::Tensor>& inputs,
       uint32_t tag,
       uint64_t seq)
       : ProcessGroupGloo::AsyncWork(
-            std::move(context),
             outputs,
             OpType::ALLGATHER,
             seq,
             "gloo:all_gather",
             inputs),
+        context(context),
         outputs(outputs),
         inputs(inputs),
         tag(tag) {}
 
+  std::shared_ptr<gloo::Context> context;
   std::vector<std::vector<at::Tensor>> outputs{};
   std::vector<at::Tensor> inputs{};
   const uint32_t tag;
@@ -1248,7 +1819,7 @@ class AsyncAllgatherWork : public ProcessGroupGloo::AsyncWork {
       std::vector<std::vector<at::Tensor>>& outputs,
       std::vector<at::Tensor>& inputs) {
     const auto& scalarType = inputs[0].scalar_type();
-    gloo::AllgatherOptions opts(context_);
+    gloo::AllgatherOptions opts(context);
     opts.setTag(tag);
 
     // Use single flattened input tensor.
@@ -1268,14 +1839,6 @@ class AsyncAllgatherWork : public ProcessGroupGloo::AsyncWork {
         outputgroup[j].copy_(flatOutputTensor[static_cast<int64_t>(j)]);
       }
     }
-  }
-
-  const std::vector<at::Tensor> getInputTensors() override {
-    return inputs;
-  }
-
-  const std::vector<at::Tensor> getOutputTensors() override {
-    return {newLikeFlat(outputs[0])};
   }
 
   void run() override {
@@ -1503,22 +2066,23 @@ namespace {
 class AsyncAllgatherCoalescedWork : public ProcessGroupGloo::AsyncWork {
  public:
   AsyncAllgatherCoalescedWork(
-      std::shared_ptr<gloo::Context> context,
+      const std::shared_ptr<gloo::Context>& context,
       std::vector<std::vector<at::Tensor>>& output_lists,
       std::vector<at::Tensor>& input_list,
       uint32_t tag,
       uint64_t seq)
       : ProcessGroupGloo::AsyncWork(
-            std::move(context),
             output_lists,
             OpType::ALLGATHER_COALESCED,
             seq,
             "gloo:all_gather",
             input_list),
+        context(context),
         output_lists(output_lists),
         input_list(input_list),
         tag(tag) {}
 
+  std::shared_ptr<gloo::Context> context;
   std::vector<std::vector<at::Tensor>> output_lists{};
   std::vector<at::Tensor> input_list{};
   const uint32_t tag;
@@ -1529,7 +2093,7 @@ class AsyncAllgatherCoalescedWork : public ProcessGroupGloo::AsyncWork {
     assert(!input_list.empty());
 
     const auto& scalarType = input_list[0].scalar_type();
-    gloo::AllgatherOptions opts(context_);
+    gloo::AllgatherOptions opts(context);
     opts.setTag(tag);
 
     // Use single flattened input tensor.
@@ -1559,14 +2123,6 @@ class AsyncAllgatherCoalescedWork : public ProcessGroupGloo::AsyncWork {
         current_element += output_tensor.numel();
       }
     }
-  }
-
-  const std::vector<at::Tensor> getInputTensors() override {
-    return input_list;
-  }
-
-  const std::vector<at::Tensor> getOutputTensors() override {
-    return {newLikeFlat(output_lists[0])};
   }
 
   void run() override {
@@ -1652,24 +2208,25 @@ namespace {
 class AsyncGatherWork : public ProcessGroupGloo::AsyncWork {
  public:
   AsyncGatherWork(
-      std::shared_ptr<gloo::Context> context,
+      const std::shared_ptr<gloo::Context>& context,
       std::vector<std::vector<at::Tensor>>& outputs,
       std::vector<at::Tensor>& inputs,
       int root,
       uint32_t tag,
       uint64_t seq)
       : ProcessGroupGloo::AsyncWork(
-            std::move(context),
             outputs,
             OpType::GATHER,
             seq,
             "gloo:gather",
             inputs),
+        context(context),
         outputs(outputs),
         inputs(inputs),
         root(root),
         tag(tag) {}
 
+  std::shared_ptr<gloo::Context> context;
   std::vector<std::vector<at::Tensor>> outputs{};
   std::vector<at::Tensor> inputs{};
   const int root;
@@ -1679,14 +2236,14 @@ class AsyncGatherWork : public ProcessGroupGloo::AsyncWork {
       std::vector<std::vector<at::Tensor>>& outputs,
       std::vector<at::Tensor>& inputs) {
     const auto scalarType = inputs[0].scalar_type();
-    gloo::GatherOptions opts(context_);
+    gloo::GatherOptions opts(context);
     opts.setRoot(root);
     opts.setTag(tag);
 
     // Set single temporary tensor on root process.
     // This is later scattered to the separate output tensors.
     at::Tensor flatOutputTensor;
-    if (context_->rank == root) {
+    if (context->rank == root) {
       flatOutputTensor = newLikeFlat(outputs[0]);
       GENERATE_ALL_TYPES(scalarType, setOutput, opts, flatOutputTensor);
     }
@@ -1696,20 +2253,11 @@ class AsyncGatherWork : public ProcessGroupGloo::AsyncWork {
     gloo::gather(opts);
 
     // Unflatten into output tensors on root process.
-    if (context_->rank == root) {
+    if (context->rank == root) {
       for (const auto i : c10::irange(outputs[0].size())) {
         outputs[0][i].copy_(flatOutputTensor[static_cast<int64_t>(i)]);
       }
     }
-  }
-
-  const std::vector<at::Tensor> getInputTensors() override {
-    return inputs;
-  }
-
-  const std::vector<at::Tensor> getOutputTensors() override {
-    return outputs.empty() ? std::vector<at::Tensor>{}
-                           : std::vector<at::Tensor>{newLikeFlat(outputs[0])};
   }
 
   void run() override {
@@ -1865,25 +2413,26 @@ namespace {
 class AsyncScatterWork : public ProcessGroupGloo::AsyncWork {
  public:
   AsyncScatterWork(
-      std::shared_ptr<gloo::Context> context,
+      const std::shared_ptr<gloo::Context>& context,
       std::vector<at::Tensor>& outputs,
       std::vector<std::vector<at::Tensor>>& inputs,
       int root,
       uint32_t tag,
       uint64_t seq)
       : ProcessGroupGloo::AsyncWork(
-            std::move(context),
             {outputs},
             OpType::SCATTER,
             seq,
             "gloo:scatter",
             !inputs.empty() ? std::optional<std::vector<at::Tensor>>(inputs[0])
-                            : std::nullopt),
+                            : c10::nullopt),
+        context(context),
         outputs(outputs),
         inputs(inputs),
         root(root),
         tag(tag) {}
 
+  std::shared_ptr<gloo::Context> context;
   std::vector<at::Tensor> outputs{};
   std::vector<std::vector<at::Tensor>> inputs{};
   const int root;
@@ -1893,27 +2442,18 @@ class AsyncScatterWork : public ProcessGroupGloo::AsyncWork {
       std::vector<at::Tensor>& outputs,
       std::vector<std::vector<at::Tensor>>& inputs) {
     const auto scalarType = outputs[0].scalar_type();
-    gloo::ScatterOptions opts(context_);
+    gloo::ScatterOptions opts(context);
     opts.setRoot(root);
     opts.setTag(tag);
 
     // Set list of input tensors on root process
-    if (context_->rank == root) {
+    if (context->rank == root) {
       GENERATE_ALL_TYPES(scalarType, setInputs, opts, inputs[0]);
     }
 
     // Set single output tensor on all processes
     GENERATE_ALL_TYPES(scalarType, setOutput, opts, outputs[0]);
     gloo::scatter(opts);
-  }
-
-  const std::vector<at::Tensor> getInputTensors() override {
-    return inputs.empty() ? std::vector<at::Tensor>{}
-                          : std::vector<at::Tensor>{newLikeFlat(inputs[0])};
-  }
-
-  const std::vector<at::Tensor> getOutputTensors() override {
-    return outputs;
   }
 
   void run() override {
@@ -2060,44 +2600,7 @@ c10::intrusive_ptr<Work> ProcessGroupGloo::reduce_scatter(
     std::vector<at::Tensor>& outputs,
     std::vector<std::vector<at::Tensor>>& inputs,
     const ReduceScatterOptions& opts) {
-  const auto rank = getRank();
-  const auto worldSize = getSize();
-
-  TORCH_CHECK(outputs.size() == 1, "reduce_scatter only supports 1 output");
-  TORCH_CHECK(
-      outputs.size() == inputs.size(),
-      "requires input/output tensor lists to have the same length");
-  TORCH_CHECK(
-      static_cast<int>(inputs[0].size()) == worldSize,
-      "invalid input tensor list size, must be world size");
-
-  std::vector<at::Tensor> buffers;
-  for (const auto i : c10::irange(worldSize)) {
-    if (i == rank) {
-      TORCH_CHECK_EQ(outputs[0].dtype(), inputs[0][i].dtype());
-      TORCH_CHECK_EQ(outputs[0].sizes().vec(), inputs[0][i].sizes().vec());
-
-      // for our own input, we can just use the output tensor instead of
-      // allocating a new tensor
-      outputs[0].copy_(inputs[0][i]);
-      buffers.push_back(outputs[0]);
-    } else {
-      buffers.push_back(inputs[0][i].clone());
-    }
-  }
-  std::vector<c10::intrusive_ptr<Work>> works;
-  for (const auto i : c10::irange(buffers.size())) {
-    std::vector<at::Tensor> inp = {buffers[i]};
-    AllreduceOptions arOpts;
-    arOpts.reduceOp = opts.reduceOp;
-    works.push_back(allreduce(inp));
-  }
-  return c10::make_intrusive<LambdaWork>(
-      [worldSize, works = std::move(works)]() {
-        for (const auto i : c10::irange(worldSize)) {
-          works[i]->wait();
-        }
-      });
+  TORCH_CHECK(false, "ProcessGroupGloo does not support reduce_scatter");
 }
 
 namespace {
@@ -2105,7 +2608,7 @@ namespace {
 class AsyncAlltoallWork : public ProcessGroupGloo::AsyncWork {
  public:
   AsyncAlltoallWork(
-      std::shared_ptr<gloo::Context> context,
+      const std::shared_ptr<gloo::Context>& context,
       at::Tensor& outputTensor,
       at::Tensor& inputTensor,
       std::vector<int64_t>& outputCounts,
@@ -2113,18 +2616,19 @@ class AsyncAlltoallWork : public ProcessGroupGloo::AsyncWork {
       uint32_t tag,
       uint64_t seq)
       : ProcessGroupGloo::AsyncWork(
-            std::move(context),
             {{outputTensor}},
             OpType::ALLTOALL,
             seq,
             "gloo:all_to_all",
             std::optional<std::vector<at::Tensor>>({inputTensor})),
+        context(context),
         outputTensor(outputTensor),
         inputTensor(inputTensor),
         outputCounts(std::move(outputCounts)),
         inputCounts(std::move(inputCounts)),
         tag(tag) {}
 
+  std::shared_ptr<gloo::Context> context;
   at::Tensor outputTensor;
   at::Tensor inputTensor;
   std::vector<int64_t> outputCounts{};
@@ -2135,37 +2639,29 @@ class AsyncAlltoallWork : public ProcessGroupGloo::AsyncWork {
     const auto scalarType = outputTensor.scalar_type();
     if (outputCounts.empty() && inputCounts.empty()) {
       // Gloo alltoall
-      gloo::AlltoallOptions opts(context_);
+      gloo::AlltoallOptions opts(context);
       opts.setTag(tag);
       GENERATE_ALL_TYPES(scalarType, setInput, opts, inputTensor);
       GENERATE_ALL_TYPES(scalarType, setOutput, opts, outputTensor);
       gloo::alltoall(opts);
     } else {
       // Gloo alltoallv
-      c10d::checkSplitSizes(inputCounts, inputTensor, context_->size);
-      c10d::checkSplitSizes(outputCounts, outputTensor, context_->size);
-      std::vector<int64_t> sendCounts(context_->size);
-      std::vector<int64_t> recvCounts(context_->size);
-      std::vector<int64_t> sendOffsets(context_->size);
-      std::vector<int64_t> recvOffsets(context_->size);
+      c10d::checkSplitSizes(inputCounts, inputTensor, context->size);
+      c10d::checkSplitSizes(outputCounts, outputTensor, context->size);
+      std::vector<int64_t> sendCounts(context->size);
+      std::vector<int64_t> recvCounts(context->size);
+      std::vector<int64_t> sendOffsets(context->size);
+      std::vector<int64_t> recvOffsets(context->size);
       c10d::computeLengthsAndOffsets(
           inputCounts, inputTensor, &sendCounts, &sendOffsets);
       c10d::computeLengthsAndOffsets(
           outputCounts, outputTensor, &recvCounts, &recvOffsets);
-      gloo::AlltoallvOptions opts(context_);
+      gloo::AlltoallvOptions opts(context);
       opts.setTag(tag);
       GENERATE_ALL_TYPES(scalarType, setInput, opts, inputTensor, sendCounts);
       GENERATE_ALL_TYPES(scalarType, setOutput, opts, outputTensor, recvCounts);
       gloo::alltoallv(opts);
     }
-  }
-
-  const std::vector<at::Tensor> getInputTensors() override {
-    return {inputTensor};
-  }
-
-  const std::vector<at::Tensor> getOutputTensors() override {
-    return {outputTensor};
   }
 
   void run() override {
@@ -2251,10 +2747,6 @@ c10::intrusive_ptr<Work> ProcessGroupGloo::alltoall_base(
       "output tensor and input tensor must be on the same type of device");
   assertDense(invalidArgument, {outputTensor});
   assertDense(invalidArgument, {inputTensor});
-
-  if (!inputTensor.is_contiguous(inputTensor.suggest_memory_format())) {
-    C10_THROW_ERROR(ValueError, "Tensors must be contiguous");
-  }
 
   const auto& device = outputTensor.device();
   c10::intrusive_ptr<AsyncAlltoallWork> work;
@@ -2387,31 +2879,23 @@ namespace {
 class AsyncBarrierWork : public ProcessGroupGloo::AsyncWork {
  public:
   AsyncBarrierWork(
-      std::shared_ptr<gloo::Context> context,
+      const std::shared_ptr<gloo::Context>& context,
       std::vector<c10::weak_intrusive_ptr<AsyncWork>> priorWork,
       uint32_t tag,
       uint64_t seq)
       : ProcessGroupGloo::AsyncWork(
-            std::move(context),
             {},
             OpType::BARRIER,
             seq,
             "gloo:barrier",
-            std::nullopt),
+            c10::nullopt),
+        context(context),
         priorWork(std::move(priorWork)),
         tag(tag) {}
 
+  std::shared_ptr<gloo::Context> context;
   std::vector<c10::weak_intrusive_ptr<AsyncWork>> priorWork{};
   const uint32_t tag;
-  std::vector<at::Tensor> inputs{};
-
-  const std::vector<at::Tensor> getInputTensors() override {
-    return inputs;
-  }
-
-  const std::vector<at::Tensor> getOutputTensors() override {
-    return inputs;
-  }
 
   void run() override {
     // Wait on prior work to complete
@@ -2422,7 +2906,7 @@ class AsyncBarrierWork : public ProcessGroupGloo::AsyncWork {
       }
     }
 
-    gloo::BarrierOptions opts(context_);
+    gloo::BarrierOptions opts(context);
     opts.setTag(tag);
     gloo::barrier(opts);
   }

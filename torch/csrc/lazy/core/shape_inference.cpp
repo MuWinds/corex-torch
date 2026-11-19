@@ -59,7 +59,6 @@
 #include <ATen/NativeFunctions.h>
 #include <ATen/WrapDimUtils.h>
 #include <ATen/native/ConvUtils.h>
-#include <ATen/native/RangeUtils.h>
 #include <ATen/native/ReduceOpsUtils.h>
 #include <ATen/native/TensorConversions.h>
 #include <c10/core/ScalarType.h>
@@ -68,12 +67,12 @@
 #include <torch/csrc/lazy/core/shape.h>
 #include <torch/csrc/lazy/core/util.h>
 #include <ostream>
-#include <utility>
 #include <vector>
 
-namespace torch::lazy {
+namespace torch {
+namespace lazy {
 
-// Copied from ATen/native/utils/ParamUtils.h, which apparently I can't include
+// Copied from ATen/native/utils/ParamUtils.h, which aparently I can't include
 // from here?
 static std::vector<int64_t> expand_param_if_needed(
     at::IntArrayRef list_param,
@@ -86,11 +85,16 @@ static std::vector<int64_t> expand_param_if_needed(
     ss << "expected " << param_name << " to be a single integer value or a "
        << "list of " << expected_dim << " values to match the convolution "
        << "dimensions, but got " << param_name << "=" << list_param;
-    TORCH_CHECK(false, ss.str());
+    AT_ERROR(ss.str());
   } else {
     return list_param.vec();
   }
 }
+
+// It seems more common to not use parameters than to use them, so disable
+// unused-parameter warning
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-parameter"
 
 TORCH_API std::vector<Shape> compute_shape_arange_out(
     const at::Scalar& start,
@@ -107,6 +111,9 @@ TORCH_API std::vector<Shape> compute_shape_arange_out(
         // Note: acc_type further defines an accumulataion type depending on the
         // scalar_t and whether its on cuda vs cpu.
         using accscalar_t = at::acc_type<scalar_t, false>;
+        auto xstart = start.to<accscalar_t>();
+        auto xend = end.to<accscalar_t>();
+        auto xstep = step.to<accscalar_t>();
 
         // we use double precision for (start - end) / step
         // to compute size_d for consistency across devices.
@@ -127,7 +134,18 @@ TORCH_API std::vector<Shape> compute_shape_arange_out(
               step.to<double>());
         }
 
-        at::native::arange_check_bounds(start, end, step);
+        TORCH_CHECK(xstep > 0 || xstep < 0, "step must be nonzero");
+        TORCH_CHECK(
+            std::isfinite(static_cast<double>(xstart)) &&
+                std::isfinite(static_cast<double>(xend)),
+            "unsupported range: ",
+            xstart,
+            " -> ",
+            xend);
+        TORCH_CHECK(
+            ((xstep > 0) && (xend >= xstart)) ||
+                ((xstep < 0) && (xend <= xstart)),
+            "upper bound and larger bound inconsistent with step sign");
 
         TORCH_CHECK(
             size_d >= 0 &&
@@ -159,7 +177,6 @@ std::vector<Shape> compute_shape_abs(const at::Tensor& self) {
 
 std::vector<Shape> compute_shape_bernoulli(
     const at::Tensor& self,
-    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     ::std::optional<at::Generator> generator) {
   return {Shape(self.scalar_type(), self.sizes().vec())};
 }
@@ -168,7 +185,7 @@ std::vector<Shape> compute_shape_bernoulli(
     const at::Tensor& self,
     double p,
     ::std::optional<at::Generator> generator) {
-  return compute_shape_bernoulli(self, std::move(generator));
+  return compute_shape_bernoulli(self, generator);
 }
 
 std::vector<Shape> compute_shape_binary_cross_entropy(
@@ -216,7 +233,6 @@ std::vector<Shape> compute_shape_constant_pad_nd(
       "dimensions.");
 
   std::vector<int64_t> new_shape;
-  new_shape.reserve((size_t)l_diff);
   for (size_t i = 0; i < (size_t)l_diff; i++) {
     new_shape.emplace_back(input_sizes[i]);
   }
@@ -281,7 +297,7 @@ std::vector<Shape> compute_shape_convolution(
   TORCH_CHECK(dim > 0, "weight should have at least three dimensions");
 
   // at::convolution performs parameter expansion before running kernels on
-  // expanded parameters we must do the same.  Shape formulae access different
+  // expanded parameters we must do the same.  Shape formulae access differnent
   // dimensions of e.g. output_padding, but output_padding may be passed in as a
   // scalar.  Sadly, accessing output_padding[1] in this case gives incorrect
   // results rather than indexing error
@@ -354,7 +370,7 @@ static std::vector<Shape> compute_shape_nonzero(
   for (auto dim_size : t.sizes()) {
     max_elements *= dim_size;
   }
-  return {Shape(at::kLong, {max_elements, t.dim()})};
+  return {Shape(at::kLong, {max_elements, (int64_t)t.sizes().size()})};
 }
 
 std::vector<Shape> compute_shape_nonzero(const at::Tensor& self) {
@@ -502,7 +518,7 @@ std::vector<Shape> compute_shape_cat(at::TensorList tensors, int64_t dim) {
       extended_dim_shape <=
           static_cast<size_t>(std::numeric_limits<int64_t>::max()),
       "Size overflow");
-  out_shape[dim] = static_cast<int64_t>(extended_dim_shape);
+  out_shape[dim] = extended_dim_shape;
   return {Shape(tensors[0].scalar_type(), out_shape)};
 }
 
@@ -527,7 +543,7 @@ std::vector<torch::lazy::Shape> compute_shape_native_batch_norm(
 
   // A separate mean and var needs to be kept for each channel.
   TORCH_CHECK(
-      input.dim() >= 2,
+      input.sizes().size() >= 2,
       "Input tensor must have at least batch and channel dimensions!");
   int64_t num_features = input.size(1);
 
@@ -568,7 +584,7 @@ std::vector<torch::lazy::Shape> compute_shape_native_batch_norm_backward(
 
   // A separate mean and var needs to be kept for each channel.
   TORCH_CHECK(
-      input.dim() >= 2,
+      input.sizes().size() >= 2,
       "Input tensor must have at least batch and channel dimensions!");
   int64_t num_features = input.size(1);
 
@@ -676,7 +692,6 @@ std::vector<Shape> compute_shape_native_dropout_backward(
 
 std::vector<Shape> compute_shape_random(
     const at::Tensor& self,
-    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     ::std::optional<at::Generator> generator) {
   return {Shape(self.scalar_type(), self.sizes().vec())};
 }
@@ -685,7 +700,7 @@ std::vector<Shape> compute_shape_random(
     const at::Tensor& self,
     int64_t to,
     ::std::optional<at::Generator> generator) {
-  return compute_shape_random(self, std::move(generator));
+  return compute_shape_random(self, generator);
 }
 
 std::vector<Shape> compute_shape_random(
@@ -693,7 +708,7 @@ std::vector<Shape> compute_shape_random(
     int64_t from,
     ::std::optional<int64_t> to,
     ::std::optional<at::Generator> generator) {
-  return compute_shape_random(self, std::move(generator));
+  return compute_shape_random(self, generator);
 }
 
 std::vector<Shape> compute_shape_relu(const at::Tensor& self) {
@@ -1096,8 +1111,7 @@ std::vector<Shape> compute_shape_stack(at::TensorList tensors, int64_t dim) {
   }
 
   auto result_sizes = tensors[0].sizes().vec();
-  result_sizes.insert(
-      result_sizes.begin() + wrapped_dim, static_cast<long>(tensors.size()));
+  result_sizes.insert(result_sizes.begin() + wrapped_dim, tensors.size());
   return {Shape(tensors[0].scalar_type(), result_sizes)};
 }
 
@@ -1120,7 +1134,6 @@ std::vector<Shape> compute_shape_narrow_copy_symint(
     const at::Tensor& self,
     int64_t dim,
     int64_t start,
-    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     c10::SymInt length) {
   return {Shape(self.scalar_type(), self.sizes().vec())};
 }
@@ -1156,7 +1169,7 @@ std::vector<Shape> compute_shape_view(
     const std::vector<int64_t>& output_sizes) {
   const Shape& input_shape = input.shape();
   const auto complete_output_sizes =
-      at::infer_size(output_sizes, static_cast<int64_t>(input_shape.numel()));
+      at::infer_size(output_sizes, input_shape.numel());
   return {Shape(input_shape.scalar_type(), complete_output_sizes)};
 }
 std::vector<Shape> compute_shape_cast(
@@ -1261,16 +1274,16 @@ std::vector<Shape> compute_shape_select_scatter(
   auto self_meta = at::native::empty_strided_meta_symint(
       self.sym_sizes(),
       self.sym_strides(),
-      /*dtype=*/self.scalar_type(),
-      /*layout=*/self.layout(),
-      /*device=*/c10::Device(c10::kMeta),
+      /*dtype=*/::std::make_optional(self.scalar_type()),
+      /*layout=*/::std::make_optional(self.layout()),
+      /*device=*/::std::make_optional(c10::Device(c10::kMeta)),
       /*pin_memory=*/::std::nullopt);
   auto src_meta = at::native::empty_strided_meta_symint(
       src.sym_sizes(),
       src.sym_strides(),
-      /*dtype=*/src.scalar_type(),
-      /*layout=*/src.layout(),
-      /*device=*/c10::Device(c10::kMeta),
+      /*dtype=*/::std::make_optional(src.scalar_type()),
+      /*layout=*/::std::make_optional(src.layout()),
+      /*device=*/::std::make_optional(c10::Device(c10::kMeta)),
       /*pin_memory=*/::std::nullopt);
   auto out_meta = at::compositeexplicitautogradnonfunctional::select_scatter(
       self_meta, src_meta, dim, index);
@@ -1286,16 +1299,16 @@ std::vector<Shape> compute_shape_diagonal_scatter(
   auto self_meta = at::native::empty_strided_meta_symint(
       self.sym_sizes(),
       self.sym_strides(),
-      /*dtype=*/self.scalar_type(),
-      /*layout=*/self.layout(),
-      /*device=*/c10::Device(c10::kMeta),
+      /*dtype=*/::std::make_optional(self.scalar_type()),
+      /*layout=*/::std::make_optional(self.layout()),
+      /*device=*/::std::make_optional(c10::Device(c10::kMeta)),
       /*pin_memory=*/::std::nullopt);
   auto src_meta = at::native::empty_strided_meta_symint(
       src.sym_sizes(),
       src.sym_strides(),
-      /*dtype=*/src.scalar_type(),
-      /*layout=*/src.layout(),
-      /*device=*/c10::Device(c10::kMeta),
+      /*dtype=*/::std::make_optional(src.scalar_type()),
+      /*layout=*/::std::make_optional(src.layout()),
+      /*device=*/::std::make_optional(c10::Device(c10::kMeta)),
       /*pin_memory=*/::std::nullopt);
   auto out_meta = at::compositeexplicitautogradnonfunctional::diagonal_scatter(
       self_meta, src_meta, offset, dim1, dim2);
@@ -1312,25 +1325,20 @@ std::vector<Shape> compute_shape_slice_scatter_symint(
   auto self_meta = at::native::empty_strided_meta_symint(
       self.sym_sizes(),
       self.sym_strides(),
-      /*dtype=*/self.scalar_type(),
-      /*layout=*/self.layout(),
-      /*device=*/c10::Device(c10::kMeta),
+      /*dtype=*/::std::make_optional(self.scalar_type()),
+      /*layout=*/::std::make_optional(self.layout()),
+      /*device=*/::std::make_optional(c10::Device(c10::kMeta)),
       /*pin_memory=*/::std::nullopt);
   auto src_meta = at::native::empty_strided_meta_symint(
       src.sym_sizes(),
       src.sym_strides(),
-      /*dtype=*/src.scalar_type(),
-      /*layout=*/src.layout(),
-      /*device=*/c10::Device(c10::kMeta),
+      /*dtype=*/::std::make_optional(src.scalar_type()),
+      /*layout=*/::std::make_optional(src.layout()),
+      /*device=*/::std::make_optional(c10::Device(c10::kMeta)),
       /*pin_memory=*/::std::nullopt);
   auto out_meta =
       at::compositeexplicitautogradnonfunctional::slice_scatter_symint(
-          self_meta,
-          src_meta,
-          dim,
-          std::move(start),
-          std::move(end),
-          std::move(step));
+          self_meta, src_meta, dim, start, end, step);
   return {Shape(out_meta.scalar_type(), out_meta.sizes().vec())};
 }
 
@@ -1343,20 +1351,20 @@ std::vector<Shape> compute_shape_as_strided_scatter_symint(
   auto self_meta = at::native::empty_strided_meta_symint(
       self.sym_sizes(),
       self.sym_strides(),
-      /*dtype=*/self.scalar_type(),
-      /*layout=*/self.layout(),
-      /*device=*/c10::Device(c10::kMeta),
+      /*dtype=*/::std::make_optional(self.scalar_type()),
+      /*layout=*/::std::make_optional(self.layout()),
+      /*device=*/::std::make_optional(c10::Device(c10::kMeta)),
       /*pin_memory=*/::std::nullopt);
   auto src_meta = at::native::empty_strided_meta_symint(
       src.sym_sizes(),
       src.sym_strides(),
-      /*dtype=*/src.scalar_type(),
-      /*layout=*/src.layout(),
-      /*device=*/c10::Device(c10::kMeta),
+      /*dtype=*/::std::make_optional(src.scalar_type()),
+      /*layout=*/::std::make_optional(src.layout()),
+      /*device=*/::std::make_optional(c10::Device(c10::kMeta)),
       /*pin_memory=*/::std::nullopt);
   auto out_meta =
       at::compositeexplicitautogradnonfunctional::as_strided_scatter_symint(
-          self_meta, src_meta, size, stride, std::move(storage_offset));
+          self_meta, src_meta, size, stride, storage_offset);
   return {Shape(out_meta.scalar_type(), out_meta.sizes().vec())};
 }
 
@@ -1364,7 +1372,6 @@ std::vector<Shape> compute_shape_normal_functional(
     const at::Tensor& self,
     double mean,
     double std,
-    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     ::std::optional<at::Generator> generator) {
   return {Shape(self.scalar_type(), self.sizes().vec())};
 }
@@ -1373,9 +1380,12 @@ std::vector<Shape> compute_shape_uniform(
     const at::Tensor& self,
     double from,
     double to,
-    // NOLINTNEXTLINE(performance-unnecessary-value-param)
     ::std::optional<at::Generator> generator) {
   return {Shape(self.scalar_type(), self.sizes().vec())};
 }
 
-} // namespace torch::lazy
+// Restore unused-parameters warnings
+#pragma GCC diagnostic pop
+
+} // namespace lazy
+} // namespace torch

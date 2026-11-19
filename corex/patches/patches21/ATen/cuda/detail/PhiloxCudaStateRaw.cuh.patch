@@ -1,0 +1,14 @@
+--- /data/home/2024240384035/build/pytorch-2.1.0/aten/src/ATen/cuda/detail/PhiloxCudaStateRaw.cuh	2023-09-22 06:25:09.000000000 +0800
++++ /data/software/Anaconda3/2024.10-1/envs/py310/lib/python3.10/site-packages/torch/include/ATen/cuda/detail/PhiloxCudaStateRaw.cuh	2025-03-13 11:53:02.253028496 +0800
+@@ -20,7 +20,11 @@
+   PhiloxCudaState(int64_t* seed,
+                   int64_t* offset_extragraph,
+                   uint32_t offset_intragraph) {
++#ifdef __ILUVATAR_WORKAROUND__
++    seed_.val = static_cast<uint64_t>(*seed);
++#else
+     seed_.ptr = seed;
++#endif
+     offset_.ptr = offset_extragraph;
+     offset_intragraph_ = offset_intragraph;
+     captured_ = true;

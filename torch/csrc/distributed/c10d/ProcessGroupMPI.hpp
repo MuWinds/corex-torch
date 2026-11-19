@@ -17,6 +17,8 @@
 #include <torch/csrc/distributed/c10d/Types.hpp>
 #include <torch/csrc/distributed/c10d/Utils.hpp>
 
+#include <c10/util/CallOnce.h>
+
 #include <mpi.h>
 
 namespace c10d {
@@ -65,7 +67,7 @@ struct WorkEntry {
 // That is, The process may be multi-threaded, and multiple threads may make
 // MPI calls, but only one at a time: MPI calls are not made concurrently from
 // two distinct threads (all MPI calls are serialized). However, with
-// MPI_THREAD_SERIALIZED, ProcessGroupMPI will only support a single process
+// MPI_THREAD_SERIALIZED, ProcessGroupMPI will only support a singe process
 // group. In other words, no more than 1 process group can be created globally.
 //
 // If you would like to use multiple ProcessGroupMPI, it requires your MPI
@@ -85,7 +87,7 @@ class TORCH_API ProcessGroupMPI : public Backend {
         std::vector<at::Tensor> outputTensors,
         const char* profilingTitle = nullptr,
         const std::optional<std::vector<at::Tensor>>& inputTensors =
-            std::nullopt)
+            c10::nullopt)
         : Work(-1, OpType::UNKNOWN, profilingTitle, inputTensors),
           outputTensors_(std::move(outputTensors)),
           future_(c10::make_intrusive<at::ivalue::Future>(
@@ -113,7 +115,7 @@ class TORCH_API ProcessGroupMPI : public Backend {
         std::vector<at::Tensor> outputTensors,
         const char* profilingTitle = nullptr,
         const std::optional<std::vector<at::Tensor>>& inputTensors =
-            std::nullopt);
+            c10::nullopt);
 
     ~AsyncWork() override;
 
@@ -144,7 +146,7 @@ class TORCH_API ProcessGroupMPI : public Backend {
   ~ProcessGroupMPI() override;
 
   // Abort the MPI program, needs to be called when exception is detected
-  void abort() override;
+  void abort();
 
   const std::string getBackendName() const override {
     return std::string(MPI_BACKEND_NAME);
@@ -197,11 +199,6 @@ class TORCH_API ProcessGroupMPI : public Backend {
       std::vector<std::vector<at::Tensor>>& inputTensors,
       const ReduceScatterOptions& opts = ReduceScatterOptions()) override;
 
-  c10::intrusive_ptr<Work> _reduce_scatter_base(
-      at::Tensor& outputTensor,
-      at::Tensor& inputTensor,
-      const ReduceScatterOptions& opts = ReduceScatterOptions()) override;
-
   c10::intrusive_ptr<Work> alltoall_base(
       at::Tensor& outputTensor,
       at::Tensor& inputTensor,
@@ -247,7 +244,7 @@ class TORCH_API ProcessGroupMPI : public Backend {
       std::unique_ptr<WorkEntry> entry,
       const char* profilingTitle = nullptr,
       const std::optional<std::vector<at::Tensor>>& inputTensors =
-          std::nullopt);
+          c10::nullopt);
 
   bool stop_;
 
@@ -261,6 +258,7 @@ class TORCH_API ProcessGroupMPI : public Backend {
   // Global states
   static void initMPIOnce();
   static void mpiExit();
+  static c10::once_flag onceFlagInitMPI;
 
   static std::mutex pgGlobalMutex_;
   static int mpiThreadSupport_;

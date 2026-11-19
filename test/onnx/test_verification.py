@@ -6,7 +6,6 @@ import tempfile
 import unittest
 
 import numpy as np
-
 import onnx
 import parameterized
 import pytorch_test_common
@@ -185,9 +184,7 @@ class TestVerificationOnWrongExport(pytorch_test_common.ExportTestCase):
         # {"onnx_backend": verification.OnnxBackend.ONNX},
         {"onnx_backend": verification.OnnxBackend.ONNX_RUNTIME_CPU},
     ],
-    class_name_func=lambda cls,
-    idx,
-    input_dicts: f"{cls.__name__}_{input_dicts['onnx_backend'].name}",
+    class_name_func=lambda cls, idx, input_dicts: f"{cls.__name__}_{input_dicts['onnx_backend'].name}",
 )
 class TestFindMismatch(pytorch_test_common.ExportTestCase):
     onnx_backend: verification.OnnxBackend
@@ -208,7 +205,7 @@ class TestFindMismatch(pytorch_test_common.ExportTestCase):
         )
 
         class Model(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.layers = torch.nn.Sequential(
                     torch.nn.Linear(3, 4),
@@ -253,7 +250,7 @@ class TestFindMismatch(pytorch_test_common.ExportTestCase):
                 leaf_info.pretty_print_mismatch(graph=True)
             self.assertRegex(
                 f.getvalue(),
-                r"(.|\n)*aten::relu.*/torch/nn/functional.py:[0-9]+(.|\n)*",
+                r"(.|\n)*" r"aten::relu.*/torch/nn/functional.py:[0-9]+(.|\n)*",
             )
 
     def test_find_all_mismatch_operators(self):

@@ -1,0 +1,28 @@
+--- /data/home/2024240384035/build/pytorch-2.1.0/aten/src/ATen/native/cuda/SortingRadixSelect.cuh	2023-09-22 06:25:09.000000000 +0800
++++ /data/software/Anaconda3/2024.10-1/envs/py310/lib/python3.10/site-packages/torch/include/ATen/native/cuda/SortingRadixSelect.cuh	2025-03-13 11:53:02.388028398 +0800
+@@ -199,7 +199,7 @@
+ 
+   // Scan over all the data. Upon a read, the warp will accumulate
+   // counts per each digit in the radix using warp voting.
+-#if !defined(USE_ROCM)
++#if !(defined(USE_ROCM) || defined(__ILUVATAR__))
+   // Must be called outside of loop to ensure all threads participate
+   unsigned mask = WARP_BALLOT(threadIdx.x < sliceSize);
+ #endif
+@@ -214,14 +214,14 @@
+ #pragma unroll
+     for (uint32_t j = 0; j < RadixSize; ++j) {
+       bool vote = hasVal && (digitInRadix == j);
+-#if defined(USE_ROCM)
++#if defined(USE_ROCM) || defined(__ILUVATAR__)
+       counts[j] += __popcll(WARP_BALLOT(vote));
+ #else
+       counts[j] += __popc(WARP_BALLOT(vote, mask));
+ #endif
+     }
+     i += blockDim.x;
+-#if !defined(USE_ROCM)
++#if !(defined(USE_ROCM) || defined(__ILUVATAR__))
+     mask = WARP_BALLOT(i < sliceSize, mask);
+ #endif
+   }

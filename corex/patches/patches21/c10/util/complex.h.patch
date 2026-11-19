@@ -1,0 +1,28 @@
+--- /data/home/2024240384035/build/pytorch-2.1.0/c10/util/complex.h	2023-09-22 06:25:09.000000000 +0800
++++ /data/software/Anaconda3/2024.10-1/envs/py310/lib/python3.10/site-packages/torch/include/c10/util/complex.h	2025-03-13 11:53:06.644025329 +0800
+@@ -492,6 +492,12 @@
+   return (lhs.real() == rhs) && (lhs.imag() == T());
+ }
+ 
++#ifdef __ILUVATAR__
++constexpr bool operator==(const complex<double>& lhs, const double& rhs) {
++return (lhs.real() == rhs) && (lhs.imag() == double());
++}
++#endif
++
+ template <typename T>
+ constexpr bool operator==(const T& lhs, const complex<T>& rhs) {
+   return (lhs == rhs.real()) && (T() == rhs.imag());
+@@ -507,6 +513,12 @@
+   return !(lhs == rhs);
+ }
+ 
++#ifdef __ILUVATAR__
++constexpr bool operator!=(const complex<double>& lhs, const double& rhs) {
++return !(lhs == rhs);
++}
++#endif
++
+ template <typename T>
+ constexpr bool operator!=(const T& lhs, const complex<T>& rhs) {
+   return !(lhs == rhs);

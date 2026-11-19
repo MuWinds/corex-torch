@@ -3,12 +3,15 @@
 import functools
 import sys
 import unittest
+
 from unittest import skipIf as skipif
 
 import numpy
+
 import pytest
 
 import torch
+
 from torch.testing._internal.common_utils import (
     instantiate_parametrized_tests,
     parametrize,
@@ -16,9 +19,8 @@ from torch.testing._internal.common_utils import (
     skipIfTorchDynamo,
     TEST_WITH_TORCHDYNAMO,
     TestCase,
-    xpassIfTorchDynamo_np,
+    xpassIfTorchDynamo,
 )
-
 
 if TEST_WITH_TORCHDYNAMO:
     import numpy as np
@@ -37,7 +39,7 @@ IS_PYPY = False
 @skipif(numpy.__version__ < "1.24", reason="numpy.dlpack is new in numpy 1.23")
 @instantiate_parametrized_tests
 class TestDLPack(TestCase):
-    @xpassIfTorchDynamo_np  # (reason="pytorch seems to handle refcounts differently")
+    @xpassIfTorchDynamo  # (reason="pytorch seems to handle refcounts differently")
     @skipif(IS_PYPY, reason="PyPy can't get refcounts.")
     def test_dunder_dlpack_refcount(self):
         x = np.arange(5)
@@ -55,7 +57,7 @@ class TestDLPack(TestCase):
         with pytest.raises(RuntimeError):
             x.__dlpack__(stream=1)
 
-    @xpassIfTorchDynamo_np  # (reason="pytorch seems to handle refcounts differently")
+    @xpassIfTorchDynamo  # (reason="pytorch seems to handle refcounts differently")
     @skipif(IS_PYPY, reason="PyPy can't get refcounts.")
     def test_from_dlpack_refcount(self):
         x = np.arange(5)

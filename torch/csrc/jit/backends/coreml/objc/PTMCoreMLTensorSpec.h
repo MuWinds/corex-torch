@@ -3,10 +3,13 @@
 
 #include <string>
 
-namespace torch::jit::mobile::coreml {
+namespace torch {
+namespace jit {
+namespace mobile {
+namespace coreml {
 
 struct TensorSpec {
-  std::string name;
+  std::string name = "";
   c10::ScalarType dtype = c10::ScalarType::Float;
 };
 
@@ -23,4 +26,7 @@ static inline c10::ScalarType scalar_type(const std::string& type_string) {
   return c10::ScalarType::Undefined;
 }
 
-} // namespace torch::jit::mobile::coreml
+} // namespace coreml
+} // namespace mobile
+} // namespace jit
+} // namespace torch

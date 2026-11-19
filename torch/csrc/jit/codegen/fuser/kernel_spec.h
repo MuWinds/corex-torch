@@ -2,13 +2,13 @@
 
 #include <ATen/ATen.h>
 #include <ATen/core/stack.h>
+#include <c10/util/Optional.h>
 #include <torch/csrc/Export.h>
 #include <torch/csrc/jit/codegen/fuser/arg_spec.h>
 #include <torch/csrc/jit/codegen/fuser/fused_kernel.h>
 #include <torch/csrc/jit/codegen/fuser/interface.h>
 #include <torch/csrc/jit/ir/ir.h>
 #include <torch/csrc/jit/runtime/interpreter.h>
-#include <optional>
 
 #include <cstdint>
 #include <memory>
@@ -16,7 +16,9 @@
 #include <unordered_map>
 #include <vector>
 
-namespace torch::jit::fuser {
+namespace torch {
+namespace jit {
+namespace fuser {
 
 // Helper struct containing partition information: the number of tensors
 // created and the dimension the partitioning is performed on.
@@ -25,7 +27,7 @@ namespace torch::jit::fuser {
 // descriptions to create PartitionDesc objects.
 struct TORCH_API PartitionInfo {
   PartitionInfo(const int64_t _nSubTensors, const int64_t _dim)
-      : nSubTensors_{_nSubTensors}, dim_{_dim} {}
+      : nSubTensors_{_nSubTensors}, dim_{_dim} {};
 
   int64_t nSubTensors() const {
     return nSubTensors_;
@@ -54,16 +56,20 @@ struct TORCH_API KernelSpec {
   // Note: assumes the spec is a single block
   // Note: This is the appropriate place to generalize if you want to add other
   //  passes to upfront compilation that walk the graph.
+  // NOLINTNEXTLINE(cppcoreguidelines-pro-type-member-init)
   KernelSpec(const int64_t _key, const std::shared_ptr<Graph>& _graph)
       : key_{_key},
         graph_{_graph},
         code_{_graph, "<fused code>"},
-        nInputs_{_graph->inputs().size()}
-
-  {
+        nInputs_{_graph->inputs().size()},
+        nTensorInputs_{},
+        inputBroadcastGroups_{},
+        inputChunks_{},
+        has_random_{false},
+        kernels_{} {
     // No need to iterate over reference since n is pointer
     for (const auto n : graph_->nodes()) {
-      static_assert(std::is_pointer_v<decltype(n)>, "n must be a pointer");
+      static_assert(std::is_pointer<decltype(n)>::value, "n must be a pointer");
       if (n->kind() == aten::rand_like) {
         has_random_ = true;
         break;
@@ -116,12 +122,11 @@ struct TORCH_API KernelSpec {
     std::lock_guard<std::mutex> guard{mutex_};
     const auto it = kernels_.find(arg_spec);
     if (it == kernels_.end())
-      return std::nullopt;
+      return c10::nullopt;
     return it->second;
   }
-  void cacheKernel(
-      const ArgSpec& arg_spec,
-      const std::shared_ptr<FusedKernel>& kernel) const {
+  void cacheKernel(const ArgSpec& arg_spec, std::shared_ptr<FusedKernel> kernel)
+      const {
     std::lock_guard<std::mutex> guard{mutex_};
     kernels_.emplace(arg_spec, kernel);
   }
@@ -131,14 +136,16 @@ struct TORCH_API KernelSpec {
   std::shared_ptr<Graph> graph_;
   Code code_;
   uint64_t nInputs_;
-  uint64_t nTensorInputs_{};
+  uint64_t nTensorInputs_;
   std::vector<std::vector<int64_t>> inputBroadcastGroups_;
   std::vector<PartitionInfo> inputChunks_;
-  bool has_random_{false};
+  bool has_random_;
   mutable std::mutex mutex_;
   mutable std::
       unordered_map<ArgSpec, std::shared_ptr<FusedKernel>, c10::hash<ArgSpec>>
           kernels_;
 };
 
-} // namespace torch::jit::fuser
+} // namespace fuser
+} // namespace jit
+} // namespace torch

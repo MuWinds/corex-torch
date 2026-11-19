@@ -4,6 +4,7 @@
 #include <ATen/ExpandUtils.h>
 #include <ATen/core/functional.h>
 #include <ATen/core/stack.h>
+#include <c10/util/Optional.h>
 #include <c10/util/irange.h>
 #include <torch/csrc/jit/codegen/fuser/compiler.h>
 #include <torch/csrc/jit/codegen/fuser/interface.h>
@@ -11,12 +12,17 @@
 #include <torch/csrc/jit/codegen/fuser/kernel_spec.h>
 #include <torch/csrc/jit/codegen/fuser/tensor_info.h>
 #include <torch/csrc/jit/passes/graph_fuser.h>
-#include <optional>
 
 #include <algorithm>
+#include <iostream> // TODO: remove, debugging only
+#include <map>
+#include <stdexcept>
+#include <tuple>
 #include <vector>
 
-namespace torch::jit::fuser {
+namespace torch {
+namespace jit {
+namespace fuser {
 
 // Returns the "map size" for this run, which is the common size for all
 // intermediate tensors.
@@ -38,7 +44,7 @@ static std::optional<std::vector<int64_t>> getMapSize(
       try {
         map_size = at::infer_size(map_size, arg.sizes());
       } catch (...) {
-        return std::nullopt;
+        return c10::nullopt;
       }
     } else {
       auto tensor_sizes = arg.sizes().vec();
@@ -46,13 +52,13 @@ static std::optional<std::vector<int64_t>> getMapSize(
       const auto dim =
           at::maybe_wrap_dim(chunk_desc.dim(), tensor_sizes.size());
       if (tensor_sizes[dim] % num_chunks != 0) {
-        return std::nullopt;
+        return c10::nullopt;
       }
       tensor_sizes[dim] /= num_chunks;
       try {
         map_size = at::infer_size(map_size, tensor_sizes);
       } catch (...) {
-        return std::nullopt;
+        return c10::nullopt;
       }
     }
   }
@@ -77,12 +83,12 @@ static std::optional<std::vector<int64_t>> canRunKernel(
     if (!map_size) {
       map_size = getMapSize(spec, args, broadcast_group);
       if (!map_size)
-        return std::nullopt;
+        return c10::nullopt;
     } else {
       const auto group_map_size = getMapSize(spec, args, broadcast_group);
       // Note: this checks that group_map_size is defined AND equal to map_size
       if (map_size != group_map_size)
-        return std::nullopt;
+        return c10::nullopt;
     }
   }
 
@@ -209,7 +215,8 @@ static void launchFusion(
 
   // Computes map_size, numel from the first input
   at::IntArrayRef map_size;
-  uint32_t numel = 0;
+  // NOLINTNEXTLINE(cppcoreguidelines-init-variables)
+  uint32_t numel;
   std::vector<int64_t> keep_alive_size;
   if (fusion.chunkDesc()[0].isNoop()) {
     map_size = inputs[0].sizes();
@@ -402,4 +409,6 @@ bool runFusion(const int64_t key, Stack& stack, std::string* code_out) {
   return true;
 }
 
-} // namespace torch::jit::fuser
+} // namespace fuser
+} // namespace jit
+} // namespace torch

@@ -4,7 +4,8 @@
 #include <ATen/cuda/AsmUtils.cuh>
 #include <c10/macros/Macros.h>
 
-namespace at::native {
+namespace at {
+namespace native {
 
 template <typename scalar_t>
 struct TopKTypeConfig {};
@@ -199,7 +200,7 @@ __device__ void countRadixUsingMask(
 
   // Scan over all the data. Upon a read, the warp will accumulate
   // counts per each digit in the radix using warp voting.
-#if !defined(USE_ROCM)
+#if !(defined(USE_ROCM) || defined(__ILUVATAR__))
   // Must be called outside of loop to ensure all threads participate
   unsigned mask = WARP_BALLOT(threadIdx.x < sliceSize);
 #endif
@@ -214,14 +215,14 @@ __device__ void countRadixUsingMask(
 #pragma unroll
     for (uint32_t j = 0; j < RadixSize; ++j) {
       bool vote = hasVal && (digitInRadix == j);
-#if defined(USE_ROCM)
+#if defined(USE_ROCM) || defined(__ILUVATAR__)
       counts[j] += __popcll(WARP_BALLOT(vote));
 #else
       counts[j] += __popc(WARP_BALLOT(vote, mask));
 #endif
     }
     i += blockDim.x;
-#if !defined(USE_ROCM)
+#if !(defined(USE_ROCM) || defined(__ILUVATAR__))
     mask = WARP_BALLOT(i < sliceSize, mask);
 #endif
   }
@@ -424,4 +425,5 @@ __device__ void radixSelect(
   // matching `desired` exactly
   *topK = TopKTypeConfig<scalar_t>::deconvert(desired);
 }
-} // namespace at::native
+} // namespace native
+} // namespace at

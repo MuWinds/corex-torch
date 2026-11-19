@@ -1,6 +1,7 @@
 #include <torch/csrc/lazy/ts_backend/tensor_aten_ops.h>
 
 #include <ATen/InferSize.h>
+#include <c10/util/Optional.h>
 #include <torch/csrc/autograd/variable.h>
 #include <torch/csrc/lazy/core/helpers.h>
 #include <torch/csrc/lazy/core/ir_builder.h>
@@ -14,9 +15,9 @@
 #include <torch/csrc/lazy/generated/LazyIr.h>
 #include <algorithm>
 #include <functional>
-#include <optional>
 
-namespace torch::lazy {
+namespace torch {
+namespace lazy {
 namespace {
 
 // to enable operator+-*/ for Value
@@ -63,8 +64,9 @@ void copy_(torch::lazy::LazyTensorPtr& input, torch::lazy::LazyTensorPtr& src) {
     if (src_tensor.sizes() != input_shape.Get().sizes()) {
       src_tensor = src_tensor.expand(input_shape.Get().sizes().vec());
     }
-    input->UpdateFromTensor(src_tensor, /*sync=*/false);
+    input->UpdateFromTensor(std::move(src_tensor), /*sync=*/false);
   }
 }
 
-} // namespace torch::lazy
+} // namespace lazy
+} // namespace torch

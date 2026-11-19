@@ -9,12 +9,17 @@ from typing import Dict, List
 import torch
 from torch.testing import FileCheck
 
-
 # Make the helper files in test/ importable
 pytorch_test_dir = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 sys.path.append(pytorch_test_dir)
-from torch.testing._internal.common_utils import raise_on_run_directly
 from torch.testing._internal.jit_utils import JitTestCase, RUN_CUDA
+
+if __name__ == "__main__":
+    raise RuntimeError(
+        "This test file is not meant to be run directly, use:\n\n"
+        "\tpython test/test_jit.py TESTNAME\n\n"
+        "instead."
+    )
 
 
 class TestBuiltins(JitTestCase):
@@ -24,17 +29,17 @@ class TestBuiltins(JitTestCase):
 
     def test_has_attr(self):
         class HasA(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.a = 0
 
         class HasB(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.b = 1
 
         class Mod(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.mods = torch.nn.ModuleList([HasA(), HasB()])
 
@@ -55,7 +60,7 @@ class TestBuiltins(JitTestCase):
 
     def test_has_attr_invalid_args(self):
         class Mod(torch.nn.Module):
-            def __init__(self) -> None:
+            def __init__(self):
                 super().__init__()
                 self.mod = torch.nn.Linear(1, 1)
 
@@ -280,9 +285,9 @@ class TestTensorBuiltins(JitTestCase):
         def test_func(func, x, tensor):
             try:
                 result = func(x, tensor)
-            except RuntimeError:
+            except RuntimeError as e:
                 result = True
-            except TypeError:
+            except TypeError as e:
                 result = True
             return result
 
@@ -292,7 +297,3 @@ class TestTensorBuiltins(JitTestCase):
                 self.assertEqual(
                     test_func(script_funs[i], x, tensor), test_func(funs[i], x, tensor)
                 )
-
-
-if __name__ == "__main__":
-    raise_on_run_directly("test/test_jit.py")

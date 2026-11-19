@@ -3,16 +3,14 @@ import logging
 import math
 import os
 from collections import Counter, defaultdict
-from collections.abc import Generator, Iterable
 from functools import partial
-from typing import Any
+from typing import Any, Dict, Generator, Iterable, Tuple
 
 import torch
 from torch.testing import make_tensor
 from torch.utils import _pytree as pytree
 from torch.utils._python_dispatch import TorchDispatchMode
 from torch.utils._pytree import tree_map
-
 
 log = logging.getLogger(__name__)
 
@@ -135,7 +133,7 @@ def contains_tensor_types(type):
     )
 
 
-@functools.cache
+@functools.lru_cache(None)
 def non_compute_operator(op):
     schema = op._schema
 
@@ -264,17 +262,17 @@ class OperatorInputsLoader:
 
     def get_inputs_for_operator(
         self, operator, dtype=None, device="cuda"
-    ) -> Generator[tuple[Iterable[Any], dict[str, Any]], None, None]:
-        assert str(operator) in self.operator_db, (
-            f"Could not find {operator}, must provide overload"
-        )
+    ) -> Generator[Tuple[Iterable[Any], Dict[str, Any]], None, None]:
+        assert (
+            str(operator) in self.operator_db
+        ), f"Could not find {operator}, must provide overload"
 
         if "embedding" in str(operator):
             log.warning("Embedding inputs NYI, input data cannot be randomized")
             yield
             return
 
-        # line[1] represents number of times these inputs occurred, ignored for now
+        # line[1] represents number of times these inputs occured, ignored for now
         for line in self.operator_db[str(operator)].items():
             inps = line[0]
 
@@ -302,9 +300,9 @@ class OperatorInputsLoader:
             yield op
 
     def get_call_frequency(self, op):
-        assert str(op) in self.operator_db, (
-            f"Could not find {op}, must provide overload"
-        )
+        assert (
+            str(op) in self.operator_db
+        ), f"Could not find {op}, must provide overload"
 
         count = 0
         for counter in self.operator_db[str(op)].values():

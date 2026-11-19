@@ -1,6 +1,4 @@
 #include <c10/util/Exception.h>
-#include <c10/util/env.h>
-#include <c10/util/error.h>
 #include <c10/util/tempfile.h>
 #include <fmt/format.h>
 
@@ -24,11 +22,10 @@ static std::string make_filename(std::string_view name_prefix) {
   // We see if any of these environment variables is set and use their value, or
   // else default the temporary directory to `/tmp`.
 
-  std::string tmp_directory = "/tmp";
+  const char* tmp_directory = "/tmp";
   for (const char* variable : {"TMPDIR", "TMP", "TEMP", "TEMPDIR"}) {
-    auto path_opt = c10::utils::get_env(variable);
-    if (path_opt.has_value()) {
-      tmp_directory = path_opt.value();
+    if (const char* path = getenv(variable)) {
+      tmp_directory = path;
       break;
     }
   }
@@ -75,8 +72,7 @@ TempFile make_tempfile(std::string_view name_prefix) {
   if (auto tempfile = try_make_tempfile(name_prefix)) {
     return std::move(*tempfile);
   }
-  TORCH_CHECK(
-      false, "Error generating temporary file: ", c10::utils::str_error(errno));
+  TORCH_CHECK(false, "Error generating temporary file: ", std::strerror(errno));
 }
 
 /// Attempts to return a temporary directory or returns `nullopt` if an error
@@ -158,9 +154,7 @@ TempDir make_tempdir(std::string_view name_prefix) {
   }
 #if !defined(_WIN32)
   TORCH_CHECK(
-      false,
-      "Error generating temporary directory: ",
-      c10::utils::str_error(errno));
+      false, "Error generating temporary directory: ", std::strerror(errno));
 #else // defined(_WIN32)
   TORCH_CHECK(false, "Error generating temporary directory");
 #endif // defined(_WIN32)

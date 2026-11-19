@@ -1,10 +1,10 @@
-#include <torch/csrc/autograd/python_nested_functions.h>
 #include <torch/csrc/utils/nested.h>
 #include <torch/csrc/utils/pycfunction_helpers.h>
 #include <torch/csrc/utils/python_arg_parser.h>
 #include <torch/torch.h>
 
-namespace torch::autograd {
+namespace torch {
+namespace autograd {
 
 static PyObject* THPVariable_nested_tensor(
     PyObject* /*self*/,
@@ -40,4 +40,5 @@ PyMethodDef* get_nested_functions_manual() {
   return nested_functions_manual;
 }
 
-} // namespace torch::autograd
+} // namespace autograd
+} // namespace torch
